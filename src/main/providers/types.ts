@@ -1,7 +1,7 @@
 ﻿/**
  * AgentHub 模型提供商系统 - 类型定义
  *
- * 参考 CC-Switch v3.16.1 设计：
+ * AgentHub provider design:
  *   - 多厂商统一抽象（OpenAI 兼容 / Anthropic 原生 / Gemini 原生 / 自定义 OpenAI 兼容）
  *   - 每个 Provider 持有独立 endpoint / apiKey / 模型白名单
  *   - 思考能力通过 providerCapabilities + 任务级 thinkingConfig 组合表达

@@ -1,16 +1,25 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Icon, IC, AgentMark } from '../glass/ui'
-import { tr } from '../glass/i18n'
+import { getLang, tr } from '../glass/i18n'
 import { AGENT_META } from '../glass/meta'
 import type { AgentUIStatus, BindingDef, ProviderDef } from '../glass/meta'
 import { WorkspaceItem } from './types'
 import { localAgentLabel, localAgentOptions } from './localAgentOptions'
+import { formatContextWindow } from './contextCapacity'
+import { defaultDialogPath, rememberDialogPath } from '../appearance'
 
 type ComposerThinkingConfig = { mode: 'off' | 'auto' | 'enabled'; level: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; collapseInUI?: boolean; budgetTokens?: number }
 type PickerAgentRow =
   | { source: 'local-agent'; id: string; label: string; subtitle: string; agentId: string }
   | { source: 'provider-agent'; id: string; label: string; subtitle: string; providerId: string; modelCount: number }
 type PickerModelRow = { source: 'provider-model'; id: string; label: string; subtitle: string; providerId: string; modelId: string; contextWindow?: number }
+type ComposerSendOverrides = { mode?: DispatchPreset; targetAgent?: string | null; customSchedule?: SchedulePreview; modelSelection?: ModelSelection | null }
+type ApprovalMode = 'ask' | 'auto' | 'full'
+type ComposerQuickCard =
+  | { id: string; kind: 'schedule'; mode: DispatchPreset; title: string; detail: string; icon: React.ReactNode; tone: string }
+  | { id: string; kind: 'quick-role'; role: 'reviewer' | 'executor' | 'gatekeeper'; title: string; detail: string; icon: React.ReactNode; tone: string }
+  | { id: string; kind: 'workspace'; title: string; detail: string; icon: React.ReactNode; tone: string }
+  | { id: string; kind: 'insert'; token: string; title: string; detail: string; icon: React.ReactNode; tone: string }
 
 export function ComposerBar({
   mode,
@@ -36,10 +45,7 @@ export function ComposerBar({
   onRunCommand,
   externalAttachments,
   onExternalAttachmentsConsumed,
-  gitBranchNode,
-  threadId,
-  turns,
-  events
+  gitBranchNode
 }: {
   mode: DispatchPreset
   setMode: (mode: DispatchPreset) => void
@@ -51,7 +57,7 @@ export function ComposerBar({
   setThinking: (thinking: ComposerThinkingConfig) => void
   schedules: SchedulePreview[]
   sending: boolean
-  onSend: (prompt: string, attachments?: WorkbenchAttachment[]) => void
+  onSend: (prompt: string, attachments?: WorkbenchAttachment[], overrides?: ComposerSendOverrides) => void
   onCancel: () => void
   workspaceId: string | null
   workspaces: WorkspaceItem[]
@@ -81,18 +87,20 @@ export function ComposerBar({
   const [modelQuery, setModelQuery] = useState('')
   const [activeProviderId, setActiveProviderId] = useState<string | null>(null)
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false)
-  const [contextCapacityOpen, setContextCapacityOpen] = useState(false)
+  const [approvalPickerOpen, setApprovalPickerOpen] = useState(false)
+  const [approvalMode, setApprovalMode] = useState<ApprovalMode>('full')
+  const [quickRole, setQuickRole] = useState<'none' | 'reviewer' | 'executor' | 'gatekeeper'>('none')
+  const [quickCardsCollapsed, setQuickCardsCollapsed] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const modelPickerRef = useRef<HTMLDivElement | null>(null)
   const workspacePickerRef = useRef<HTMLDivElement | null>(null)
-  const contextCapacityRef = useRef<HTMLDivElement | null>(null)
+  const approvalPickerRef = useRef<HTMLDivElement | null>(null)
+  const composingRef = useRef(false)
+  const compositionEndedAtRef = useRef(0)
   const workspace = workspaces.find(item => item.id === workspaceId) ?? null
-  void mode
-  void setMode
   void bindings
   void thinking
   void setThinking
-  void schedules
   void agents
   const readyAgentIds = localAgentOptions(localAgents)
   const apiProviderRows = providerAgentRows(providers)
@@ -118,17 +126,11 @@ export function ComposerBar({
     ? apiProviderRows.find(row => row.source === 'provider-agent' && row.providerId === activeProviderId)
     : null
   const selectedPickerLabel = selectedProviderModel?.label || selectedProviderAgent?.label || activeProviderAgent?.label || selectedAgentLabel
+  const pickerTitle = pickerAvailable
+    ? tr('切换 Agent 或 API 厂商', 'Switch agent or API provider')
+    : tr('请先在设置里配置本地 Agent 或 API 厂商', 'Configure a local agent or API provider in Settings first')
   const activeModelRows = filterPickerModelRows(activeProviderId ? apiModelRows : [], modelQuery)
   const selectedPickerModelKey = modelSelectionKey(modelSelection)
-  const contextCapacity = useMemo(() => buildContextCapacity({
-    turns: turns || [],
-    events: events || [],
-    attachments,
-    workspaceBound: !!workspaceId,
-    modelSelection,
-    providers
-  }), [turns, events, attachments, workspaceId, modelSelection, providers])
-
   useEffect(() => {
     const el = textareaRef.current
     if (!el) return
@@ -138,6 +140,7 @@ export function ComposerBar({
 
   useEffect(() => {
     window.electronAPI.commands.list().then(setCommands).catch(() => {})
+    refreshApprovalMode().catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -169,18 +172,24 @@ export function ComposerBar({
   }, [workspacePickerOpen])
 
   useEffect(() => {
-    if (!contextCapacityOpen) return
+    if (!approvalPickerOpen) return
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node
-      if (contextCapacityRef.current?.contains(target)) return
-      setContextCapacityOpen(false)
+      if (approvalPickerRef.current?.contains(target)) return
+      setApprovalPickerOpen(false)
     }
     document.addEventListener('pointerdown', onPointerDown)
     return () => document.removeEventListener('pointerdown', onPointerDown)
-  }, [contextCapacityOpen])
+  }, [approvalPickerOpen])
 
   const slashQuery = slashCommandQuery(text)
   const commandMatches = slashQuery !== null ? rankCommandsForPalette(filterCommands(commands, slashQuery), slashQuery).slice(0, 12) : []
+  const quickCards = useMemo(() => buildComposerQuickCards({
+    mode,
+    readyAgentIds,
+    hasWorkspace: !!workspaceId,
+    text: text.trim()
+  }), [mode, readyAgentIds, workspaceId, text])
 
   useEffect(() => {
     setPaletteOpen(slashQuery !== null)
@@ -190,7 +199,7 @@ export function ComposerBar({
   const send = async () => {
     const prompt = text.trim() || (attachments.length ? tr('请分析我附加的内容。', 'Please analyze the attached content.') : '')
     if (!prompt || sending) return
-    if ((prompt.startsWith('/') || prompt.startsWith('@')) && onRunCommand) {
+    if (shouldRunComposerCommand(prompt, commands) && onRunCommand) {
       const handled = await onRunCommand({ text: prompt })
       if (handled) {
         setText('')
@@ -200,10 +209,55 @@ export function ComposerBar({
       setAttachError(tr('未识别的指令，请从 / 指令面板选择，或移除开头的 / 或 @ 后再发送。', 'Unknown command. Choose one from the / palette, or remove the leading / or @ before sending.'))
       return
     }
+    const quickSchedule = quickRole === 'none' ? undefined : quickRoleSchedule(quickRole, readyAgentIds)
+    if (quickRole !== 'none' && !quickSchedule) {
+      setAttachError(tr('没有可用本地 Agent，无法派发子 Agent。请先在设置里配置 CLI。', 'No usable local agent is available for child-agent dispatch. Configure a CLI in Settings first.'))
+      return
+    }
     const nextAttachments = attachments
     setText('')
     setAttachments([])
-    onSend(prompt, nextAttachments)
+    setQuickRole('none')
+    onSend(prompt, nextAttachments, quickRoleSendOverrides(quickSchedule))
+  }
+
+  const applyQuickCard = (card: ComposerQuickCard) => {
+    setAttachError(null)
+    if (card.kind === 'schedule') {
+      selectScheduleMode(card.mode)
+      return
+    }
+    if (card.kind === 'quick-role') {
+      const schedule = quickRoleSchedule(card.role, readyAgentIds)
+      if (!schedule) {
+        setAttachError(tr('没有可用本地 Agent，无法派发子 Agent。请先在设置里配置 CLI。', 'No usable local agent is available. Configure a CLI first.'))
+        return
+      }
+      if (text.trim()) {
+        const nextAttachments = attachments
+        setText('')
+        setAttachments([])
+        setQuickRole('none')
+        onSend(text.trim(), nextAttachments, quickRoleSendOverrides(schedule))
+      } else {
+        setQuickRole(card.role)
+        textareaRef.current?.focus()
+      }
+      return
+    }
+    if (card.kind === 'workspace') {
+      onCreateProject()
+      return
+    }
+    if (card.kind === 'insert') {
+      insertToken(card.token)
+      textareaRef.current?.focus()
+    }
+  }
+
+  const isImeConfirming = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const native = event.nativeEvent as KeyboardEvent & { isComposing?: boolean }
+    return composingRef.current || native.isComposing || native.keyCode === 229 || Date.now() - compositionEndedAtRef.current < 40
   }
 
   const addAttachments = (items: WorkbenchAttachment[]) => {
@@ -226,7 +280,8 @@ export function ComposerBar({
   const pickAttachments = async () => {
     if (sending) return
     try {
-      const picked = await window.electronAPI.app.pickFiles()
+      const picked = await window.electronAPI.app.pickFiles({ defaultPath: defaultDialogPath('file', workspace?.rootPath) })
+      if (picked[0]?.path) rememberDialogPath('file', picked[0].path)
       addAttachments(picked)
     } catch (e: any) {
       setAttachError(e?.message || tr('添加附件失败。', 'Failed to add attachments.'))
@@ -272,10 +327,7 @@ export function ComposerBar({
   const selectProviderChoice = (providerId: string) => {
     setTargetAgent(null)
     setActiveProviderId(providerId)
-    if (modelSelection?.providerId !== providerId || modelSelection?.source !== 'provider') {
-      const firstModel = providers.find(provider => provider.id === providerId)?.models?.[0]
-      setModelSelection(firstModel ? { providerId, modelId: firstModel.id, source: 'provider' } : null)
-    }
+    if (modelSelection?.source === 'provider' && modelSelection.providerId !== providerId) setModelSelection(null)
     setModelQuery('')
   }
 
@@ -285,6 +337,32 @@ export function ComposerBar({
     setModelPickerOpen(false)
     setModelQuery('')
     setActiveProviderId(providerId)
+  }
+
+  const selectScheduleMode = (nextMode: DispatchPreset) => {
+    setMode(nextMode)
+    if (nextMode !== 'auto') {
+      setTargetAgent(null)
+      setModelSelection(null)
+      setActiveProviderId(null)
+      setModelQuery('')
+    }
+  }
+
+  const refreshApprovalMode = async () => {
+    const config = await window.electronAPI.agentic.getApprovalConfig()
+    setApprovalMode(modeFromApprovalDefaults(config.default))
+  }
+
+  const applyApprovalMode = async (nextMode: ApprovalMode) => {
+    const policies = approvalPoliciesForMode(nextMode)
+    setApprovalMode(nextMode)
+    setApprovalPickerOpen(false)
+    await Promise.all([
+      window.electronAPI.agentic.setApprovalDefault('write', policies.write),
+      window.electronAPI.agentic.setApprovalDefault('exec', policies.exec)
+    ])
+    await refreshApprovalMode().catch(() => {})
   }
 
   const selectWorkspace = (nextWorkspaceId: string | null) => {
@@ -370,13 +448,37 @@ export function ComposerBar({
       onDrop={handleDrop}
     >
       <div className="wb-composer">
+        {!quickCardsCollapsed && quickCards.length > 0 && (
+          <div className="wb-composer-quick-cards" role="list" aria-label={tr('快速选择', 'Quick choices')}>
+            {quickCards.map(card => (
+              <button key={card.id} type="button" className={'wb-composer-quick-card ' + card.tone} onClick={() => applyQuickCard(card)}>
+                <Icon d={card.icon} size={15} />
+                <span>
+                  <strong>{card.title}</strong>
+                  <small>{card.detail}</small>
+                </span>
+              </button>
+            ))}
+            <button type="button" className="wb-composer-quick-card-close" onClick={() => setQuickCardsCollapsed(true)} title={tr('隐藏快速选择', 'Hide quick choices')}>
+              <Icon d={IC.x} size={12} />
+            </button>
+          </div>
+        )}
         <div className="wb-composer-input-layer">
           <textarea
             ref={textareaRef}
             value={text}
             onChange={e => setText(e.target.value)}
             onPaste={handlePaste}
+            onCompositionStart={() => {
+              composingRef.current = true
+            }}
+            onCompositionEnd={() => {
+              composingRef.current = false
+              compositionEndedAtRef.current = Date.now()
+            }}
             onKeyDown={e => {
+              if (e.key === 'Enter' && !e.shiftKey && isImeConfirming(e)) return
               if (paletteOpen && commandMatches.length > 0) {
                 if (e.key === 'ArrowDown') {
                   e.preventDefault()
@@ -420,13 +522,55 @@ export function ComposerBar({
             <button className="wb-icon-button" title={tr('添加文件或图片', 'Attach file or image')} disabled={sending} onClick={pickAttachments}>
               <Icon d={IC.plus} size={17} />
             </button>
+            <div className="wb-approval-mode-host" ref={approvalPickerRef}>
+              <button
+                type="button"
+                className={'wb-approval-mode-trigger mode-' + approvalMode}
+                onClick={() => setApprovalPickerOpen(open => !open)}
+                aria-expanded={approvalPickerOpen}
+                title={tr('审批模式', 'Approval mode')}
+              >
+                <Icon d={approvalIconForMode(approvalMode)} size={14} />
+                <span>{approvalModeLabel(approvalMode)}</span>
+                <Icon d={IC.chevDown} size={11} />
+              </button>
+              {approvalPickerOpen && (
+                <div className="wb-approval-mode-popover" role="menu" aria-label={tr('审批模式', 'Approval mode')}>
+                  <div className="wb-approval-mode-head">
+                    <strong>{tr('应该如何批准 Agent 操作？', 'How should AgentHub approve operations?')}</strong>
+                  </div>
+                  {approvalModes().map(item => (
+                    <button key={item.id} type="button" className={approvalMode === item.id ? 'selected' : ''} onClick={() => applyApprovalMode(item.id).catch(err => setAttachError(err?.message || tr('切换审批模式失败。', 'Failed to switch approval mode.')))}>
+                      <Icon d={item.icon} size={16} />
+                      <span>
+                        <strong>{item.label}</strong>
+                        <small>{item.detail}</small>
+                      </span>
+                      {approvalMode === item.id && <Icon d={IC.check} size={14} />}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <select
+              className="wb-subagent-select"
+              value={quickRole}
+              onChange={event => setQuickRole(event.target.value as any)}
+              title={tr('派发子 Agent', 'Dispatch child agent')}
+              disabled={sending || readyAgentIds.length === 0}
+            >
+              <option value="none">{tr('子 Agent', 'Sub-agent')}</option>
+              <option value="reviewer">{tr('评审', 'Reviewer')}</option>
+              <option value="executor">{tr('执行', 'Executor')}</option>
+              <option value="gatekeeper">{tr('门禁', 'Gatekeeper')}</option>
+            </select>
             <div className="wb-composer-model-menu-host" ref={modelPickerRef}>
               <button
                 type="button"
                 className="wb-agent-picker-trigger"
                 disabled={!pickerAvailable}
-                title={readyAgentIds.length ? tr('切换 Agent', 'Switch agent') : tr('请先在设置里配置本地 Agent', 'Configure a local agent in Settings first')}
-                aria-label={tr('切换 Agent', 'Switch agent')}
+                title={pickerTitle}
+                aria-label={pickerTitle}
                 aria-expanded={modelPickerOpen}
                 onClick={() => setModelPickerOpen(open => {
                   const next = !open
@@ -526,7 +670,7 @@ export function ComposerBar({
                 <code>{command.label}</code>
                 <span>
                   <strong>{commandCategoryLabel(command.category)}</strong>
-                  {command.description}
+                  {commandDescription(command)}
                 </span>
               </button>
             ))}
@@ -605,45 +749,18 @@ export function ComposerBar({
               )}
             </div>
             {gitBranchNode}
-            <div className="wb-context-capacity-host" ref={contextCapacityRef}>
-              <button
-                type="button"
-                className={'wb-context-capacity-trigger ' + contextCapacity.tone}
-                onClick={() => setContextCapacityOpen(open => !open)}
-                aria-expanded={contextCapacityOpen}
-                title={tr('查看本轮上下文容量估算', 'View context capacity estimate')}
-              >
-                <Icon d={IC.brain} size={13} />
-                <span>{tr('上下文', 'Context')}</span>
-                <strong>{Math.round(contextCapacity.usedRatio * 100)}%</strong>
-              </button>
-              {contextCapacityOpen && (
-                <div className="wb-context-capacity-popover">
-                  <div className="wb-context-capacity-head">
-                    <strong>{tr('上下文容量', 'Context capacity')}</strong>
-                    <span>{formatCompactTokens(contextCapacity.usedTokens)} / {formatCompactTokens(contextCapacity.windowTokens)}</span>
-                  </div>
-                  <div className="wb-context-capacity-bar" aria-hidden="true">
-                    {contextCapacity.categories.map(item => (
-                      <i key={item.key} className={item.key} style={{ width: `${Math.max(1, item.ratio * 100)}%` }} />
-                    ))}
-                  </div>
-                  <div className="wb-context-capacity-rows">
-                    {contextCapacity.categories.map(item => (
-                      <div key={item.key}>
-                        <span><i className={item.key}></i>{contextCategoryLabel(item.key)}</span>
-                        <strong>{formatCompactTokens(item.tokens)}</strong>
-                      </div>
-                    ))}
-                    <div>
-                      <span><i className="free"></i>{tr('空余', 'Free')}</span>
-                      <strong>{formatCompactTokens(contextCapacity.freeTokens)}</strong>
-                    </div>
-                  </div>
-                  <p>{tr('数值为估算；75% 开始建议压缩，85% 需要压缩。', 'Estimated only; consider compaction at 75%, required near 85%.')}</p>
-                </div>
-              )}
-            </div>
+            <select
+              className="wb-composer-schedule-select"
+              value={mode}
+              onChange={event => selectScheduleMode(event.target.value as DispatchPreset)}
+              title={tr('调度安排', 'Dispatch schedule')}
+              aria-label={tr('调度安排', 'Dispatch schedule')}
+              disabled={sending}
+            >
+              {schedules.map(schedule => (
+                <option key={schedule.preset} value={schedule.preset}>{scheduleDisplayLabel(schedule)}</option>
+              ))}
+            </select>
           </div>
           <button className="wb-command-open-hint" type="button" onClick={() => insertToken('/')} title={tr('输入 / 打开命令', 'Type / to open commands')}>
             {tr('输入 / 打开命令', 'Type / for commands')}
@@ -699,7 +816,7 @@ function localAgentRows(agentIds: string[]): PickerAgentRow[] {
     source: 'local-agent',
     id: `local-agent:${agentId}`,
     label: agentDisplayName(agentId),
-    subtitle: 'Local CLI',
+    subtitle: tr('本地 CLI', 'Local CLI'),
     agentId
   }))
 }
@@ -711,7 +828,7 @@ function providerAgentRows(providers: ProviderDef[]): PickerAgentRow[] {
       source: 'provider-agent',
       id: `provider-agent:${provider.id}`,
       label: provider.name,
-      subtitle: `${provider.models.length} models`,
+      subtitle: tr(`${provider.models.length} 个模型`, `${provider.models.length} models`),
       providerId: provider.id,
       modelCount: provider.models.length
     }))
@@ -737,6 +854,188 @@ function providerModelRows(providers: ProviderDef[], onlyProviderId?: string | n
   return rows
 }
 
+export function quickRoleSchedule(role: 'reviewer' | 'executor' | 'gatekeeper', readyAgentIds: string[]): SchedulePreview | null {
+  const agentId = pickAgentForRole(role, readyAgentIds)
+  if (!agentId) return null
+  if (role === 'executor') {
+    const reviewerAgentId = pickAgentForRole('reviewer', readyAgentIds) || agentId
+    return {
+      preset: 'custom',
+      label: 'Quick executor',
+      labelZh: '快速执行',
+      labelEn: 'Quick executor',
+      description: 'Temporarily review and dispatch one executor child agent for this turn.',
+      descriptionZh: '本轮临时先审查，再派发一个执行子 Agent。',
+      descriptionEn: 'Temporarily review and dispatch one executor child agent for this turn.',
+      steps: [
+        {
+          id: 'quick-reviewer',
+          label: 'Quick reviewer',
+          labelZh: '快速评审',
+          labelEn: 'Quick reviewer',
+          agentId: reviewerAgentId,
+          role: 'reviewer',
+          mode: 'auto'
+        } as any,
+        {
+          id: 'quick-executor',
+          label: 'Quick executor',
+          labelZh: '快速执行',
+          labelEn: 'Quick executor',
+          agentId,
+          role,
+          mode: 'auto',
+          dependsOn: ['quick-reviewer']
+        } as any
+      ]
+    }
+  }
+  const label = role === 'reviewer' ? 'Quick reviewer' : 'Quick gatekeeper'
+  const labelZh = role === 'reviewer' ? '快速评审' : '快速门禁'
+  return {
+    preset: 'custom',
+    label: `Quick ${role}`,
+    labelZh,
+    labelEn: `Quick ${role}`,
+    description: `Temporarily dispatch one ${role} child agent for this turn.`,
+    descriptionZh: `本轮临时派发一个${role === 'reviewer' ? '评审' : '门禁'}子 Agent。`,
+    descriptionEn: `Temporarily dispatch one ${role} child agent for this turn.`,
+    steps: [
+      {
+        id: `quick-${role}`,
+        label,
+        labelZh,
+        labelEn: label,
+        agentId,
+        role,
+        mode: 'auto'
+      } as any
+    ]
+  }
+}
+
+export function quickRoleSendOverrides(schedule: SchedulePreview | null | undefined): ComposerSendOverrides | undefined {
+  if (!schedule) return undefined
+  return {
+    mode: 'custom',
+    targetAgent: null,
+    customSchedule: schedule,
+    modelSelection: null
+  }
+}
+
+export function pickAgentForRole(role: 'reviewer' | 'executor' | 'gatekeeper', readyAgentIds: string[]): string | null {
+  const fallback = readyAgentIds[0] || null
+  const preferred = role === 'executor'
+    ? ['codex', 'minimax-code', 'claude']
+    : ['claude', 'codex', 'minimax-code']
+  return preferred.find(id => readyAgentIds.includes(id)) || fallback
+}
+
+function buildComposerQuickCards(input: {
+  mode: DispatchPreset
+  readyAgentIds: string[]
+  hasWorkspace: boolean
+  text: string
+}): ComposerQuickCard[] {
+  const cards: ComposerQuickCard[] = []
+  const hasAgents = input.readyAgentIds.length > 0
+  if (hasAgents && input.mode !== 'firefly-custom') {
+    cards.push({
+      id: 'smart-five-role',
+      kind: 'schedule',
+      mode: 'firefly-custom',
+      title: tr('智能五角色', 'Smart five-role'),
+      detail: tr('主对话、路由、审查、执行、门禁一起运行', 'Main, router, review, execute, gate'),
+      icon: IC.brain,
+      tone: 'primary'
+    })
+  }
+  if (hasAgents) {
+    cards.push({
+      id: 'quick-reviewer',
+      kind: 'quick-role',
+      role: 'reviewer',
+      title: tr('让子 Agent 审查', 'Ask reviewer'),
+      detail: input.text ? tr('直接发送当前内容进行审查', 'Send current text for review') : tr('选择后输入内容再发送', 'Select, then type and send'),
+      icon: IC.check,
+      tone: 'neutral'
+    })
+    cards.push({
+      id: 'quick-executor',
+      kind: 'quick-role',
+      role: 'executor',
+      title: tr('执行前审查', 'Review then execute'),
+      detail: tr('适合文件、终端、浏览器操作', 'For file, terminal, browser actions'),
+      icon: IC.bolt,
+      tone: 'warn'
+    })
+  }
+  if (!input.hasWorkspace) {
+    cards.push({
+      id: 'bind-workspace',
+      kind: 'workspace',
+      title: tr('绑定工作目录', 'Bind folder'),
+      detail: tr('启用文件、Git、终端上下文', 'Enable files, Git, terminal context'),
+      icon: IC.folder,
+      tone: 'neutral'
+    })
+  }
+  cards.push({
+    id: 'open-commands',
+    kind: 'insert',
+    token: '/',
+    title: tr('打开指令', 'Open commands'),
+    detail: tr('计划、审查、验证等快捷入口', 'Plan, review, verify shortcuts'),
+    icon: IC.terminal,
+    tone: 'subtle'
+  })
+  return cards.slice(0, 4)
+}
+
+function approvalModes(): Array<{ id: ApprovalMode; label: string; detail: string; icon: React.ReactNode }> {
+  return [
+    {
+      id: 'ask',
+      label: tr('请求批准', 'Ask for approval'),
+      detail: tr('编辑外部文件和使用互联网时始终询问', 'Ask before writing files or running commands'),
+      icon: IC.tasks
+    },
+    {
+      id: 'auto',
+      label: tr('替我审批', 'Auto approve'),
+      detail: tr('仅对检测到的风险操作请求批准', 'Ask only for riskier write operations'),
+      icon: IC.broadcast
+    },
+    {
+      id: 'full',
+      label: tr('完全访问权限', 'Full access'),
+      detail: tr('不受限制地访问互联网和电脑文件', 'Allow writes and commands without prompts'),
+      icon: IC.bolt
+    }
+  ]
+}
+
+function approvalPoliciesForMode(mode: ApprovalMode): { write: 'allow' | 'ask' | 'deny'; exec: 'allow' | 'ask' | 'deny' } {
+  if (mode === 'ask') return { write: 'ask', exec: 'ask' }
+  if (mode === 'auto') return { write: 'ask', exec: 'allow' }
+  return { write: 'allow', exec: 'allow' }
+}
+
+function modeFromApprovalDefaults(defaults: { write?: 'allow' | 'ask' | 'deny'; exec?: 'allow' | 'ask' | 'deny' }): ApprovalMode {
+  if (defaults.write === 'ask' && defaults.exec === 'ask') return 'ask'
+  if (defaults.write === 'ask' && defaults.exec === 'allow') return 'auto'
+  return 'full'
+}
+
+function approvalModeLabel(mode: ApprovalMode): string {
+  return approvalModes().find(item => item.id === mode)?.label || tr('审批', 'Approval')
+}
+
+function approvalIconForMode(mode: ApprovalMode): React.ReactNode {
+  return approvalModes().find(item => item.id === mode)?.icon || IC.tasks
+}
+
 function filterPickerAgentRows(rows: PickerAgentRow[], query: string): PickerAgentRow[] {
   const q = query.trim().toLowerCase()
   if (!q) return rows
@@ -759,94 +1058,25 @@ function modelSelectionKey(selection: ModelSelection | null): string {
   return ''
 }
 
-function formatContextWindow(tokens: number): string {
-  if (tokens >= 1_000_000) return `${Math.round(tokens / 1_000_000)}M`
-  if (tokens >= 1000) return `${Math.round(tokens / 1000)}k`
-  return String(tokens)
-}
-
-type ContextCapacityCategoryKey = 'system' | 'messages' | 'attachments' | 'skills' | 'workspace'
-type ContextCapacityCategory = { key: ContextCapacityCategoryKey; tokens: number; ratio: number }
-
-function buildContextCapacity(input: {
-  turns: WorkbenchTurn[]
-  events: RuntimeEvent[]
-  attachments: WorkbenchAttachment[]
-  workspaceBound: boolean
-  modelSelection: ModelSelection | null
-  providers: ProviderDef[]
-}): { windowTokens: number; usedTokens: number; freeTokens: number; usedRatio: number; tone: 'ok' | 'warn' | 'danger'; categories: ContextCapacityCategory[] } {
-  const windowTokens = resolveContextWindow(input.modelSelection, input.providers)
-  const system = 1800
-  const skills = 420
-  const workspace = input.workspaceBound ? 900 : 80
-  const messages = estimateTokens(input.turns.map(turn => turn.prompt).join('\n\n')) +
-    estimateTokens(input.events.filter(event => event.kind === 'agent:done').map(event => event.payload?.content || '').join('\n\n'))
-  const attachments = input.attachments.reduce((sum, item) => sum + estimateTokens(item.text || item.name || item.path || ''), 0)
-  const rawCategories: Array<{ key: ContextCapacityCategoryKey; tokens: number }> = [
-    { key: 'system', tokens: system },
-    { key: 'messages', tokens: messages },
-    { key: 'attachments', tokens: attachments },
-    { key: 'skills', tokens: skills },
-    { key: 'workspace', tokens: workspace }
-  ]
-  const usedTokens = Math.min(windowTokens, rawCategories.reduce((sum, item) => sum + item.tokens, 0))
-  const scale = usedTokens > 0 ? usedTokens / Math.max(usedTokens, rawCategories.reduce((sum, item) => sum + item.tokens, 0)) : 1
-  const categories = rawCategories.map(item => ({
-    key: item.key,
-    tokens: Math.round(item.tokens * scale),
-    ratio: Math.max(0, Math.round(item.tokens * scale) / windowTokens)
-  }))
-  const usedRatio = usedTokens / windowTokens
-  return {
-    windowTokens,
-    usedTokens,
-    freeTokens: Math.max(0, windowTokens - usedTokens),
-    usedRatio,
-    tone: usedRatio >= 0.85 ? 'danger' : usedRatio >= 0.75 ? 'warn' : 'ok',
-    categories
-  }
-}
-
-function resolveContextWindow(selection: ModelSelection | null, providers: ProviderDef[]): number {
-  if (selection?.providerId) {
-    const provider = providers.find(item => item.id === selection.providerId)
-    const model = provider?.models?.find(item => item.id === selection.modelId)
-    const contextWindow = (model as any)?.contextWindow
-    if (typeof contextWindow === 'number' && contextWindow > 0) return contextWindow
-  }
-  return 258_000
-}
-
-function estimateTokens(value: string): number {
-  const text = String(value || '')
-  if (!text) return 0
-  let cjk = 0
-  for (let i = 0; i < text.length; i += 1) {
-    const code = text.charCodeAt(i)
-    if ((code >= 0x3400 && code <= 0x9fff) || (code >= 0xf900 && code <= 0xfaff)) cjk += 1
-  }
-  return Math.ceil(cjk * 0.9 + (text.length - cjk) / 4)
-}
-
-function formatCompactTokens(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
-  if (value >= 1000) return `${Math.round(value / 1000)}k`
-  return String(value)
-}
-
-function contextCategoryLabel(key: ContextCapacityCategoryKey): string {
-  if (key === 'system') return tr('系统', 'System')
-  if (key === 'messages') return tr('消息', 'Messages')
-  if (key === 'attachments') return tr('附件', 'Attachments')
-  if (key === 'skills') return tr('技能', 'Skills')
-  return tr('工作目录', 'Workspace')
-}
-
 function slashCommandQuery(value: string): string | null {
   const trimmed = value.trimStart()
   if (!trimmed.startsWith('/') && !trimmed.startsWith('@')) return null
+  if (trimmed.startsWith('@') && !looksLikeAgentMentionCommand(trimmed)) return null
   return normalizeCommandToken(trimmed.split(/\s+/, 1)[0] || '').replace(/^\/+/, '').toLowerCase()
+}
+
+export function shouldRunComposerCommand(value: string, commands: WorkbenchCommand[]): boolean {
+  const trimmed = value.trimStart()
+  if (trimmed.startsWith('/')) return true
+  if (!trimmed.startsWith('@') || !looksLikeAgentMentionCommand(trimmed)) return false
+  const token = normalizeCommandToken(trimmed.split(/\s+/, 1)[0] || '')
+  return commands.some(command => command.label.toLowerCase() === token)
+}
+
+function looksLikeAgentMentionCommand(value: string): boolean {
+  const token = value.trimStart().split(/\s+/, 1)[0] || ''
+  if (!token.startsWith('@')) return false
+  return /^@[a-z0-9][a-z0-9_-]*(?::[a-z0-9][a-z0-9_-]*)?$/i.test(token)
 }
 
 function normalizeCommandToken(value: string): string {
@@ -856,6 +1086,7 @@ function normalizeCommandToken(value: string): string {
     return `/agent:${alias === 'minimax-code' ? 'opencode' : alias}`
   }
   if (lower.startsWith('/agent:minimax-code')) return '/agent:opencode'
+  if (lower === '/schedule:firefly-custom') return '/schedule:smart-five-role'
   return lower
 }
 
@@ -881,6 +1112,8 @@ function filterCommands(commands: WorkbenchCommand[], query: string): WorkbenchC
       command.label,
       command.label.replace(/^\/agent:/, ''),
       command.description,
+      command.descriptionZh,
+      command.descriptionEn,
       command.category,
       command.source,
       command.payload?.name,
@@ -913,21 +1146,23 @@ function commandRank(command: WorkbenchCommand, query: string): number {
 
 const COMMON_COMMAND_ORDER = new Map<string, number>([
   ['/plan', 0],
-  ['/tdd', 1],
-  ['/code-review', 2],
-  ['/review', 3],
-  ['/verify', 4],
-  ['/bug-hunt', 5],
-  ['/ui-polish', 6],
-  ['/docs', 7],
-  ['/research', 8],
-  ['/new', 10],
-  ['/clear', 11],
-  ['/context', 12],
+  ['/goal', 1],
+  ['/loop', 2],
+  ['/tdd', 3],
+  ['/code-review', 4],
+  ['/review', 5],
+  ['/verify', 6],
+  ['/bug-hunt', 7],
+  ['/ui-polish', 8],
+  ['/docs', 9],
+  ['/research', 10],
+  ['/new', 12],
+  ['/clear', 13],
+  ['/context', 14],
   ['/terminal', 20],
   ['/git', 21],
   ['/browser', 22],
-  ['/memory', 23]
+  ['/todo', 23]
 ])
 
 function commandCategoryLabel(category: WorkbenchCommand['category']): string {
@@ -936,8 +1171,19 @@ function commandCategoryLabel(category: WorkbenchCommand['category']): string {
   if (category === 'schedule') return tr('调度', 'Schedule')
   if (category === 'tool') return tr('工具', 'Tool')
   if (category === 'skill') return tr('技能', 'Skill')
-  if (category === 'ecc') return 'ECC 指令'
+  if (category === 'ecc') return tr('工作流指令', 'Workflow')
   return tr('工作区', 'Workspace')
+}
+
+function commandDescription(command: WorkbenchCommand): string {
+  if (getLang() === 'en') return command.descriptionEn || command.description
+  return command.descriptionZh || command.description
+}
+
+function scheduleDisplayLabel(schedule: SchedulePreview): string {
+  if (getLang() === 'zh' && schedule.labelZh) return schedule.labelZh
+  if (getLang() === 'en' && schedule.labelEn) return schedule.labelEn
+  return schedule.label
 }
 
 function agentDisplayName(agentId: string): string {

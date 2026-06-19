@@ -42,6 +42,9 @@ type SkillCategoryId =
   | 'terminal'
   | 'general'
 type SkillFilter = 'all' | 'installed' | 'local' | SkillCategoryId
+type SkillBrowserItem =
+  | { kind: 'installed'; id: string; skill: SkillDef }
+  | { kind: 'local'; id: string; candidate: LocalSkillCandidate; importedSkill?: SkillDef }
 
 const LEGACY_SKILL_CATEGORIES: Array<{ id: SkillCategoryId; zh: string; en: string; hint: string }> = [
   { id: 'coding', zh: '编码', en: 'Coding', hint: '代码实现、重构、架构' },
@@ -79,6 +82,48 @@ const CAP_LABEL: Record<string, { zh: string; en: string }> = {
 }
 
 const api = () => (window as any).electronAPI
+const SKILL_UI = {
+  skillCatalog: '\u6280\u80fd\u76ee\u5f55',
+  importedSuffix: '\u4e2a\u5df2\u5bfc\u5165',
+  installed: '\u5df2\u5b89\u88c5',
+  localFolders: '\u672c\u5730\u76ee\u5f55',
+  addSkill: '\u6dfb\u52a0\u6280\u80fd',
+  searchPlaceholder: '\u641c\u7d22 Skill \u540d\u79f0\u3001\u6807\u7b7e\u3001\u6765\u6e90\u6216\u8def\u5f84',
+  all: '\u5168\u90e8',
+  local: '\u672c\u5730',
+  editSkill: '\u7f16\u8f91\u6280\u80fd',
+  newSkill: '\u65b0\u5efa\u6280\u80fd',
+  name: '\u540d\u79f0',
+  namePlaceholder: '\u7ed9\u8fd9\u4e2a\u6280\u80fd\u8d77\u4e2a\u540d\u5b57',
+  tags: '\u6807\u7b7e',
+  category: '\u5206\u7c7b',
+  description: '\u4e00\u884c\u63cf\u8ff0',
+  instructions: 'SKILL.md \u6307\u4ee4\u6b63\u6587',
+  templates: '\u5185\u7f6e\u6a21\u677f',
+  cancel: '\u53d6\u6d88',
+  save: '\u4fdd\u5b58',
+  create: '\u521b\u5efa',
+  imported: '\u5df2\u5bfc\u5165',
+  noImported: '\u6682\u65e0\u5df2\u5bfc\u5165 Skill',
+  noLocal: '\u6ca1\u6709\u5339\u914d\u7684\u672c\u5730 SKILL.md',
+  selectPrompt: '\u9009\u62e9\u5de6\u4fa7 Skill \u67e5\u770b\u8be6\u60c5\u3002',
+  noSelection: '\u672a\u9009\u62e9 Skill',
+  edit: '\u7f16\u8f91',
+  remove: '\u5220\u9664',
+  importing: '\u5bfc\u5165\u4e2d',
+  import: '\u5bfc\u5165',
+  source: '\u6765\u6e90',
+  status: '\u72b6\u6001',
+  preview: '\u672c\u5730\u9884\u89c8',
+  installs: '\u5b89\u88c5',
+  importFirst: '\u5bfc\u5165\u540e\u53ef\u5b89\u88c5',
+  localNote: '\u6b64 Skill \u6765\u81ea\u672c\u5730\u76ee\u5f55\uff0c\u53ef\u76f4\u63a5\u9884\u89c8\u3002\u5bfc\u5165\u540e\u5373\u53ef\u5b89\u88c5\u5230\u5177\u4f53 Agent\u3002',
+  installToAgents: '\u5b89\u88c5\u5230 Agent',
+  uninstallAll: '\u5168\u90e8\u5378\u8f7d',
+  installAll: '\u5168\u90e8\u5b89\u88c5',
+  importFailed: '\u5bfc\u5165\u672c\u5730 Skill \u5931\u8d25',
+  noContent: '\u6ca1\u6709\u53ef\u663e\u793a\u7684 Skill \u5185\u5bb9\u3002'
+} as const
 
 export function SkillsTab() {
   const [caps, setCaps] = useState<CapState[]>([])
@@ -151,10 +196,8 @@ export function SkillsTab() {
 
       {caps.length > 0 && <ApprovalPolicyPanel caps={caps} />}
 
-      <LocalSkillImport skills={skills} localSkills={localSkills} onChanged={refresh} />
-
-      <SkillCatalog skills={skills} onChanged={refresh} onRemove={removeSkill} onEdit={editSkill}
-        onInstallAll={installAllForSkill} installs={installs} agentIds={agentIds} />
+      <SkillCatalog skills={skills} localSkills={localSkills} onChanged={refresh} onRemove={removeSkill} onEdit={editSkill}
+        onInstallAll={installAllForSkill} onToggleInstall={toggleInstall} installs={installs} agentIds={agentIds} />
 
       {skills.length > 0 && agentIds.length > 0 && (
         <InstallMatrix skills={skills} caps={caps} isInstalled={isInstalled}
@@ -416,7 +459,7 @@ function ApprovalPolicyPanel({ caps }: { caps: CapState[] }) {
 }
 
 /* ---------- 技能目录 + 添加 ---------- */
-function SkillCatalog({ skills, onChanged, onRemove, onEdit, onInstallAll, installs, agentIds }: {
+function LegacySkillCatalog({ skills, onChanged, onRemove, onEdit, onInstallAll, installs, agentIds }: {
   skills: SkillDef[]; onChanged: () => void; onRemove: (id: string, name: string) => void
   onEdit: (id: string, patch: { name: string; description: string; instructions: string; tags: string[] }) => void
   onInstallAll: (skillId: string, on: boolean) => void; installs: Installs; agentIds: string[]
@@ -612,6 +655,260 @@ function SkillCatalog({ skills, onChanged, onRemove, onEdit, onInstallAll, insta
   )
 }
 
+
+function SkillCatalog({ skills, localSkills, onChanged, onRemove, onEdit, onInstallAll, onToggleInstall, installs, agentIds }: {
+  skills: SkillDef[]
+  localSkills: LocalSkillCandidate[]
+  onChanged: () => void | Promise<void>
+  onRemove: (id: string, name: string) => void
+  onEdit: (id: string, patch: { name: string; description: string; instructions: string; tags: string[] }) => void
+  onInstallAll: (skillId: string, on: boolean) => void
+  onToggleInstall: (agentId: string, skillId: string) => void
+  installs: Installs
+  agentIds: string[]
+}) {
+  const [activeFilter, setActiveFilter] = useState<SkillFilter>('all')
+  const [query, setQuery] = useState('')
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [adding, setAdding] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draft, setDraft] = useState({ name: '', description: '', instructions: '', tags: '', category: 'general' as SkillCategoryId })
+  const [builtins, setBuiltins] = useState<Array<{ name: string; description?: string; instructions: string; tags?: string[]; source?: string }>>([])
+  const [busyLocalPath, setBusyLocalPath] = useState<string | null>(null)
+  const [localError, setLocalError] = useState<string | null>(null)
+
+  useEffect(() => { api()?.skills?.builtins?.().then((b: any) => setBuiltins(Array.isArray(b) ? b : [])).catch(() => {}) }, [])
+
+  const installedSkillIds = useMemo(() => new Set(Object.values(installs).flat()), [installs])
+  const importedBySource = useMemo(() => new Map(skills.map(skill => [skill.source, skill])), [skills])
+  const categoryCounts = useMemo(() => buildSkillCategoryCounts(skills), [skills])
+  const treeItems = useMemo<SkillBrowserItem[]>(() => {
+    const needle = query.trim().toLowerCase()
+    const skillMatches = (skill: SkillDef) => {
+      const category = skillCategoryOf(skill)
+      if (activeFilter === 'installed' && !installedSkillIds.has(skill.id)) return false
+      if (activeFilter === 'local' && !isLocalSkill(skill)) return false
+      if (isSkillCategory(activeFilter) && category !== activeFilter) return false
+      if (!needle) return true
+      return [skill.name, skill.description, skill.source, category, ...(skill.tags || [])].join(' ').toLowerCase().includes(needle)
+    }
+    const localMatches = (candidate: LocalSkillCandidate) => {
+      const category = localSkillCategory(candidate)
+      if (activeFilter === 'installed') return false
+      if (isSkillCategory(activeFilter) && category !== activeFilter) return false
+      if (!needle) return true
+      return [candidate.name, candidate.description, candidate.sourcePath, candidate.agentSource, category, ...(candidate.tags || [])].join(' ').toLowerCase().includes(needle)
+    }
+    return [
+      ...skills.filter(skillMatches).map(skill => ({ kind: 'installed' as const, id: `installed:${skill.id}`, skill })),
+      ...localSkills.filter(localMatches).map(candidate => ({
+        kind: 'local' as const,
+        id: `local:${candidate.id}`,
+        candidate,
+        importedSkill: importedBySource.get(candidate.sourcePath)
+      }))
+    ]
+  }, [activeFilter, importedBySource, installedSkillIds, localSkills, query, skills])
+
+  const installedItems = treeItems.filter(item => item.kind === 'installed')
+  const localItems = treeItems.filter(item => item.kind === 'local')
+  const selectedItem = treeItems.find(item => item.id === selectedId) || treeItems[0] || null
+
+  useEffect(() => {
+    if (!treeItems.length) {
+      setSelectedId(null)
+      return
+    }
+    if (!selectedId || !treeItems.some(item => item.id === selectedId)) setSelectedId(treeItems[0].id)
+  }, [selectedId, treeItems])
+
+  const installedCount = (skillId: string) => agentIds.filter(agentId => (installs[agentId] || []).includes(skillId)).length
+  const isInstalledForAgent = (agentId: string, skillId: string) => (installs[agentId] || []).includes(skillId)
+  const resetForm = () => { setDraft({ name: '', description: '', instructions: '', tags: '', category: 'general' }); setEditingId(null); setAdding(false) }
+  const startAdd = () => { setEditingId(null); setDraft({ name: '', description: '', instructions: '', tags: '', category: defaultCategoryForFilter(activeFilter) }); setAdding(v => editingId ? true : !v) }
+  const startEdit = (skill: SkillDef) => {
+    setEditingId(skill.id)
+    setDraft({ name: skill.name, description: skill.description, instructions: skill.instructions, tags: publicSkillTags(skill).join(', '), category: skillCategoryOf(skill) })
+    setAdding(true)
+  }
+  const save = async () => {
+    if (!draft.name.trim() || !draft.instructions.trim()) return
+    const tags = normalizedSkillTags(draft.tags, draft.category)
+    const patch = { name: draft.name.trim(), description: draft.description.trim(), instructions: draft.instructions, tags, category: draft.category }
+    if (editingId) onEdit(editingId, patch)
+    else await api()?.skills?.add?.({ ...patch, source: 'paste' })
+    resetForm()
+    if (!editingId) await Promise.resolve(onChanged())
+  }
+  const addBuiltin = async (builtin: typeof builtins[0]) => {
+    const category = inferSkillCategoryClean({ name: builtin.name, description: builtin.description || '', tags: builtin.tags || [], source: builtin.source || 'builtin' })
+    await api()?.skills?.add?.({ ...builtin, category, tags: normalizedSkillTags((builtin.tags || []).join(', '), category) })
+    await Promise.resolve(onChanged())
+  }
+  const importLocal = async (candidate: LocalSkillCandidate) => {
+    setBusyLocalPath(candidate.sourcePath)
+    setLocalError(null)
+    try {
+      await api()?.skills?.importLocal?.(candidate.sourcePath)
+      await Promise.resolve(onChanged())
+    } catch (e: any) {
+      setLocalError(e?.message || SKILL_UI.importFailed)
+    } finally {
+      setBusyLocalPath(null)
+    }
+  }
+
+  return (
+    <Enter className="glass wb-skill-browser" delay={60}>
+      <div className="wb-skill-browser-head">
+        <Icon d={IC.bolt} size={17} style={{ color: 'var(--ag-claude)' }} />
+        <div className="wb-skill-browser-title">{SKILL_UI.skillCatalog}</div>
+        <span className="ah-hint">{skills.length} {SKILL_UI.importedSuffix}</span>
+        <span className="ah-chip mint" style={{ fontSize: 10 }}>{SKILL_UI.installed} {installedSkillIds.size}</span>
+        <span className="ah-chip" style={{ fontSize: 10 }}>{SKILL_UI.localFolders} {localSkills.length}</span>
+        <div className="wb-flex-spacer" />
+        <button className="ah-btn sm primary" onClick={startAdd}><Icon d={IC.plus} size={13} /> {SKILL_UI.addSkill}</button>
+      </div>
+
+      <div className="wb-skill-browser-tools">
+        <input className="ah-input" value={query} onChange={event => setQuery(event.target.value)} placeholder={SKILL_UI.searchPlaceholder} />
+        <button className={filterButtonClass(activeFilter === 'all')} onClick={() => setActiveFilter('all')}>{SKILL_UI.all} {skills.length + localSkills.length}</button>
+        <button className={filterButtonClass(activeFilter === 'installed')} onClick={() => setActiveFilter('installed')}>{SKILL_UI.installed} {installedSkillIds.size}</button>
+        <button className={filterButtonClass(activeFilter === 'local')} onClick={() => setActiveFilter('local')}>{SKILL_UI.local} {localSkills.length}</button>
+        {SKILL_CATEGORIES.map(category => (
+          <button key={category.id} className={filterButtonClass(activeFilter === category.id)} onClick={() => setActiveFilter(category.id)} title={category.hint}>
+            {skillCategoryLabel(category.id)} {categoryCounts[category.id] || 0}
+          </button>
+        ))}
+      </div>
+
+      {localError && <div className="ah-hint" style={{ color: 'var(--st-error)' }}>{localError}</div>}
+
+      {adding && (
+        <div className="glass" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, borderColor: 'var(--mint-line)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, fontSize: 13 }}>
+            <Icon d={editingId ? IC.pencil : IC.plus} size={14} style={{ color: 'var(--mint)' }} />
+            {editingId ? SKILL_UI.editSkill : SKILL_UI.newSkill}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10 }}>
+            <div><div className="ah-label" style={{ marginBottom: 5 }}>{SKILL_UI.name}</div><input className="ah-input" value={draft.name} onChange={e => setDraft(d => ({ ...d, name: e.target.value }))} placeholder={SKILL_UI.namePlaceholder} /></div>
+            <div><div className="ah-label" style={{ marginBottom: 5 }}>{SKILL_UI.tags}</div><input className="ah-input" value={draft.tags} onChange={e => setDraft(d => ({ ...d, tags: e.target.value }))} placeholder="review, coding" /></div>
+            <div><div className="ah-label" style={{ marginBottom: 5 }}>{SKILL_UI.category}</div><select className="ah-select" value={draft.category} onChange={e => setDraft(d => ({ ...d, category: e.target.value as SkillCategoryId }))}>{SKILL_CATEGORIES.map(category => <option key={category.id} value={category.id}>{skillCategoryLabel(category.id)} · {category.hint}</option>)}</select></div>
+          </div>
+          <div><div className="ah-label" style={{ marginBottom: 5 }}>{SKILL_UI.description}</div><input className="ah-input" value={draft.description} onChange={e => setDraft(d => ({ ...d, description: e.target.value }))} /></div>
+          <div><div className="ah-label" style={{ marginBottom: 5 }}>{SKILL_UI.instructions}</div><textarea className="ah-input mono" style={{ minHeight: 120, resize: 'vertical', width: '100%' }} value={draft.instructions} onChange={e => setDraft(d => ({ ...d, instructions: e.target.value }))} placeholder="When the user asks for X, do Y..." /></div>
+          {builtins.length > 0 && <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}><span className="ah-label">{SKILL_UI.templates}:</span>{builtins.map((b, i) => <button key={i} className="ah-btn sm" onClick={() => addBuiltin(b)} title={b.description}><Icon d={IC.plus} size={12} /> {b.name}</button>)}</div>}
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button className="ah-btn sm" onClick={resetForm}>{SKILL_UI.cancel}</button>
+            <button className="ah-btn sm primary" disabled={!draft.name.trim() || !draft.instructions.trim()} onClick={save}><Icon d={IC.check} size={13} /> {editingId ? SKILL_UI.save : SKILL_UI.create}</button>
+          </div>
+        </div>
+      )}
+
+      <div className="wb-skill-browser-grid">
+        <div className="wb-skill-tree">
+          <div className="wb-skill-tree-section"><span>{SKILL_UI.imported}</span><small>{installedItems.length}</small></div>
+          {installedItems.map(item => item.kind === 'installed' && (
+            <button key={item.id} className={selectedItem?.id === item.id ? 'active' : ''} onClick={() => setSelectedId(item.id)}>
+              <Icon d={IC.file} size={13} /><span>{item.skill.name}</span><small>{skillCategoryLabel(skillCategoryOf(item.skill))}</small>
+            </button>
+          ))}
+          {!installedItems.length && <div className="wb-skill-empty">{SKILL_UI.noImported}</div>}
+          <div className="wb-skill-tree-section"><span>{SKILL_UI.localFolders}</span><small>{localItems.length}</small></div>
+          {localItems.map(item => item.kind === 'local' && (
+            <button key={item.id} className={selectedItem?.id === item.id ? 'active' : ''} onClick={() => setSelectedId(item.id)}>
+              <Icon d={item.importedSkill ? IC.check : IC.folder} size={13} /><span>{item.candidate.name}</span><small>{item.importedSkill ? SKILL_UI.imported : item.candidate.agentSource}</small>
+            </button>
+          ))}
+          {!localItems.length && <div className="wb-skill-empty">{SKILL_UI.noLocal}</div>}
+        </div>
+
+        <div className="wb-skill-detail">
+          {selectedItem ? <SkillDetailPane
+            item={selectedItem}
+            agentIds={agentIds}
+            busyLocalPath={busyLocalPath}
+            installedCount={installedCount}
+            isInstalledForAgent={isInstalledForAgent}
+            onEdit={startEdit}
+            onRemove={onRemove}
+            onImportLocal={importLocal}
+            onInstallAll={onInstallAll}
+            onToggleInstall={onToggleInstall}
+          /> : <div className="wb-skill-empty">{SKILL_UI.selectPrompt}</div>}
+        </div>
+      </div>
+    </Enter>
+  )
+}
+
+function SkillDetailPane({ item, agentIds, busyLocalPath, installedCount, isInstalledForAgent, onEdit, onRemove, onImportLocal, onInstallAll, onToggleInstall }: {
+  item: SkillBrowserItem
+  agentIds: string[]
+  busyLocalPath: string | null
+  installedCount: (skillId: string) => number
+  isInstalledForAgent: (agentId: string, skillId: string) => boolean
+  onEdit: (skill: SkillDef) => void
+  onRemove: (id: string, name: string) => void
+  onImportLocal: (candidate: LocalSkillCandidate) => void
+  onInstallAll: (skillId: string, on: boolean) => void
+  onToggleInstall: (agentId: string, skillId: string) => void
+}) {
+  const selectedSkill = item.kind === 'installed' ? item.skill : item.importedSkill
+  const candidate = item.kind === 'local' ? item.candidate : null
+  const name = selectedSkill?.name || candidate?.name || SKILL_UI.noSelection
+  const description = selectedSkill?.description || candidate?.description || ''
+  const instructions = selectedSkill?.instructions || candidate?.instructions || ''
+  const source = selectedSkill?.source || candidate?.sourcePath || ''
+  const category = selectedSkill ? skillCategoryOf(selectedSkill) : candidate ? localSkillCategory(candidate) : 'general'
+  const installCount = selectedSkill ? installedCount(selectedSkill.id) : 0
+  const allOn = selectedSkill ? installCount >= agentIds.length && agentIds.length > 0 : false
+  const tags = selectedSkill ? publicSkillTags(selectedSkill) : (candidate?.tags || [])
+
+  return (
+    <>
+      <div className="wb-skill-detail-head">
+        <div>
+          <span className="ah-chip mint" style={{ fontSize: 10 }}>{skillCategoryLabel(category)}</span>
+          <h3>{name}</h3>
+          {description && <p>{description}</p>}
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          {selectedSkill ? <>
+            <button className="ah-btn sm" onClick={() => onEdit(selectedSkill)}><Icon d={IC.pencil} size={13} /> {SKILL_UI.edit}</button>
+            <button className="ah-btn sm danger" onClick={() => onRemove(selectedSkill.id, selectedSkill.name)}><Icon d={IC.trash} size={13} /> {SKILL_UI.remove}</button>
+          </> : candidate ? <button className="ah-btn sm primary" disabled={busyLocalPath === candidate.sourcePath} onClick={() => onImportLocal(candidate)}><Icon d={IC.plus} size={13} /> {busyLocalPath === candidate.sourcePath ? SKILL_UI.importing : SKILL_UI.import}</button> : null}
+        </div>
+      </div>
+
+      <div className="wb-skill-meta-grid">
+        <div><span>{SKILL_UI.source}</span><strong title={source}>{source || '-'}</strong></div>
+        <div><span>{SKILL_UI.status}</span><strong>{selectedSkill ? SKILL_UI.imported : SKILL_UI.preview}</strong></div>
+        <div><span>{SKILL_UI.installs}</span><strong>{selectedSkill ? `${installCount}/${agentIds.length}` : SKILL_UI.importFirst}</strong></div>
+      </div>
+
+      {candidate && !selectedSkill && <div className="wb-skill-local-note">{SKILL_UI.localNote}</div>}
+
+      {selectedSkill && <div className="wb-skill-agent-installs">
+        <div className="wb-skill-agent-installs-head"><strong>{SKILL_UI.installToAgents}</strong><button className="ah-btn sm" onClick={() => onInstallAll(selectedSkill.id, !allOn)}>{allOn ? SKILL_UI.uninstallAll : SKILL_UI.installAll}</button></div>
+        <div className="wb-skill-agent-list">
+          {agentIds.map(agentId => {
+            const on = isInstalledForAgent(agentId, selectedSkill.id)
+            return <button key={agentId} className={on ? 'installed' : ''} onClick={() => onToggleInstall(agentId, selectedSkill.id)}>
+              {AGENT_META[agentId] ? <AgentMark id={agentId} size={22} radius={6} /> : null}
+              {AGENT_META[agentId]?.name || agentId}
+              {on && <Icon d={IC.check} size={13} />}
+            </button>
+          })}
+        </div>
+      </div>}
+
+      <div className="wb-skill-md-head"><strong>SKILL.md</strong><span>{tags.join(' / ')}</span></div>
+      <pre className="wb-skill-md">{instructions || SKILL_UI.noContent}</pre>
+    </>
+  )
+}
+
 function skillCategoryOf(skill: SkillDef): SkillCategoryId {
   const explicitValue = typeof skill.category === 'string' ? skill.category : skill.category?.id
   const explicit = explicitValue && isSkillCategory(explicitValue) ? explicitValue : null
@@ -621,6 +918,17 @@ function skillCategoryOf(skill: SkillDef): SkillCategoryId {
     description: skill.description,
     tags: skill.tags,
     source: skill.source
+  })
+}
+
+function localSkillCategory(candidate: LocalSkillCandidate): SkillCategoryId {
+  const explicit = candidate.category?.id
+  if (explicit && isSkillCategory(explicit)) return explicit
+  return inferSkillCategoryClean({
+    name: candidate.name,
+    description: candidate.description,
+    tags: candidate.tags,
+    source: candidate.sourcePath
   })
 }
 

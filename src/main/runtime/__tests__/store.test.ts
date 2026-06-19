@@ -1,7 +1,8 @@
-import { describe, expect, it, vi, beforeEach } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const memory: Record<string, any> = {}
 let setCount = 0
+const runtimes: Array<{ dispose?: () => void }> = []
 
 vi.mock("../../store", () => ({
   store: {
@@ -17,9 +18,15 @@ describe("WorkbenchRuntimeStore", () => {
     vi.resetModules()
   })
 
+  afterEach(() => {
+    for (const runtime of runtimes.splice(0)) runtime.dispose?.()
+    vi.useRealTimers()
+  })
+
   it("creates threads, turns, and replayable events", async () => {
     const { WorkbenchRuntimeStore } = await import("../store")
     const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
     const { thread, turn } = runtime.createTurn({ prompt: "Read the project", mode: "parallel-review", workspaceId: "ws-1" })
 
     expect(thread.title).toBe("Read the project")
@@ -34,6 +41,7 @@ describe("WorkbenchRuntimeStore", () => {
   it("allows personal threads and turns without a workspace", async () => {
     const { WorkbenchRuntimeStore } = await import("../store")
     const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
     const thread = runtime.createThread({ workspaceId: null, title: "个人会话" })
     const { turn } = runtime.createTurn({
       threadId: thread.id,
@@ -52,6 +60,7 @@ describe("WorkbenchRuntimeStore", () => {
   it("maps extended scheduling presets to existing dispatcher modes", async () => {
     const { WorkbenchRuntimeStore } = await import("../store")
     const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
 
     expect(runtime.dispatcherMode("lead-workers")).toBe("orchestrate")
     expect(runtime.dispatcherMode("parallel-review")).toBe("broadcast")
@@ -61,6 +70,7 @@ describe("WorkbenchRuntimeStore", () => {
   it("persists direct target agents so retries keep the selected agent", async () => {
     const { WorkbenchRuntimeStore } = await import("../store")
     const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
     const { thread, turn } = runtime.createTurn({
       prompt: "只让 Claude 回答",
       mode: "lead-workers",
@@ -79,6 +89,7 @@ describe("WorkbenchRuntimeStore", () => {
   it("persists attachments and custom schedule graphs on turns", async () => {
     const { WorkbenchRuntimeStore } = await import("../store")
     const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
     const { thread, turn } = runtime.createTurn({
       prompt: "分析图片和文件",
       mode: "custom",
@@ -106,6 +117,7 @@ describe("WorkbenchRuntimeStore", () => {
     vi.useFakeTimers()
     const { WorkbenchRuntimeStore } = await import("../store")
     const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
     const { thread, turn } = runtime.createTurn({ prompt: "stream", mode: "auto", workspaceId: null })
     const beforeSetCount = setCount
 
@@ -122,5 +134,52 @@ describe("WorkbenchRuntimeStore", () => {
     expect(memory["runtime.workbench.v1"].events.some((event: any) => event.kind === "agent:done")).toBe(true)
     expect(runtime.eventsSince(thread.id, 0).some(event => event.kind === "agent:done")).toBe(true)
     vi.useRealTimers()
+  })
+
+  it("persists custom schedule stream roles on run nodes", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const { turn } = runtime.createTurn({ prompt: "guarded run", mode: "firefly-custom", workspaceId: null })
+
+    runtime.appendStreamEvent(turn.id, {
+      kind: "start",
+      agentId: "reviewer-agent",
+      providerId: "local-cli",
+      modelId: "reviewer-agent",
+      mode: "content",
+      scheduleRole: "reviewer",
+      visibility: "run"
+    })
+
+    expect(runtime.snapshot(undefined).runs[0]).toMatchObject({
+      agentId: "reviewer-agent",
+      role: "reviewer"
+    })
+    expect(runtime.eventsSince(turn.threadId, 0).find(event => event.kind === "agent:start")?.payload).toMatchObject({
+      scheduleRole: "reviewer",
+      visibility: "run"
+    })
+  })
+
+  it("prunes old stream deltas before completion events", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const { thread, turn } = runtime.createTurn({ prompt: "long stream", mode: "auto", workspaceId: null })
+    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
+      providerId: "openai",
+      modelId: "gpt-4o",
+      content: "old usage",
+      usage: { input_tokens: 1, output_tokens: 1 }
+    })
+
+    for (let i = 0; i < 5100; i += 1) {
+      runtime.appendStreamEvent(turn.id, { kind: "delta", agentId: "codex", text: "x", channel: "content" })
+    }
+
+    const events = runtime.eventsSince(thread.id, 0)
+    expect(events.length).toBeLessThanOrEqual(5000)
+    expect(events.some(event => event.kind === "agent:done" && event.payload?.usage)).toBe(true)
   })
 })

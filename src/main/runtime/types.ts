@@ -7,6 +7,7 @@ export type DispatchPreset =
   | "orchestrate"
   | "lead-workers"
   | "parallel-review"
+  | "firefly-custom"
   | "custom"
 
 export interface WorkbenchAttachment {
@@ -93,7 +94,7 @@ export interface AgentRunNode {
   id: string
   turnId: string
   agentId: string
-  role: "lead" | "worker" | "reviewer" | "synthesizer" | "target"
+  role: "lead" | "worker" | "reviewer" | "synthesizer" | "target" | "router" | "executor" | "gatekeeper"
   status: WorkbenchTurnStatus
   parentRunId?: string
   startedAt: number
@@ -117,6 +118,9 @@ export interface RuntimeEvent {
     | "agent:done"
     | "agent:error"
     | "orchestrate"
+    | "route:decision"
+    | "guard:verdict"
+    | "memory:candidate"
     | "schedule:preview"
     | "turn:summary"
   agentId?: string
@@ -134,6 +138,8 @@ export interface WorkbenchSnapshot {
 export interface ScheduleStep {
   id: string
   label: string
+  labelZh?: string
+  labelEn?: string
   agentId: string
   role: AgentRunNode["role"]
   mode: "auto" | "broadcast" | "chain" | "orchestrate"
@@ -143,7 +149,11 @@ export interface ScheduleStep {
 export interface SchedulePreview {
   preset: DispatchPreset
   label: string
+  labelZh?: string
+  labelEn?: string
   description: string
+  descriptionZh?: string
+  descriptionEn?: string
   steps: ScheduleStep[]
 }
 
@@ -151,6 +161,8 @@ export interface WorkbenchCommand {
   id: string
   label: string
   description: string
+  descriptionZh?: string
+  descriptionEn?: string
   category: "session" | "agent" | "schedule" | "tool" | "skill" | "workspace" | "ecc"
   insertText?: string
   action:
@@ -164,8 +176,19 @@ export interface WorkbenchCommand {
     | "use-schedule"
     | "use-skill"
     | "use-agent"
+    | "set-goal"
+    | "run-loop"
   source: "builtin" | "schedule" | "skill" | "local-agent" | "ecc"
   payload?: Record<string, any>
+}
+
+export interface WorkbenchGoal {
+  threadId: string
+  goal: string
+  createdAt: number
+  updatedAt: number
+  loopLimit: number
+  status: "active" | "cleared"
 }
 
 export interface EccCommand extends WorkbenchCommand {
@@ -204,14 +227,19 @@ export interface GitQueryResult {
 export interface McpServerConfig {
   id: string
   name: string
-  source: "user" | "workspace" | "local" | "ecc" | "kun"
+  source: "user" | "workspace" | "local" | "ecc" | "kun" | "claude" | "codex" | "gemini" | "opencode" | "ccgui"
   enabled: boolean
   transport: "stdio" | "sse" | "http"
   command?: string
   args?: string[]
   env?: Record<string, string>
+  headers?: Record<string, string>
   cwd?: string
   url?: string
+  timeoutMs?: number
+  trustScope?: string
+  trustedWorkspaceRoots?: string[]
+  sourcePath?: string
   status?: "unknown" | "ok" | "error"
   error?: string
 }
@@ -223,7 +251,21 @@ export interface McpConfigState {
 }
 
 export type UsageRange = "all" | "90d" | "30d" | "7d"
-export type UsageView = "overview" | "models"
+export type UsageView = "overview" | "models" | "requests" | "providers" | "pricing"
+export type UsageSource = "actual" | "estimated" | "none"
+
+export interface UsageTokenBreakdown {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  billableInputTokens: number
+  totalTokens: number
+  inputSurfaceTokens?: number
+  cacheReadInputIncluded?: boolean
+  reasoningTokens?: number
+  modelId?: string
+}
 
 export interface UsageHeatmapDay {
   date: string
@@ -232,18 +274,118 @@ export interface UsageHeatmapDay {
   actualTokens: number
   estimatedTokens: number
   hasEstimated: boolean
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  cacheSavingsTokens: number
+  costUsd: number | null
+  hasUnpriced: boolean
   level: 0 | 1 | 2 | 3 | 4
   selected?: boolean
 }
 
 export interface UsageModelRow {
   modelId: string
+  providerId?: string
   agentId?: string
   turns: number
+  requests: number
   tokens: number
   actualTokens: number
   estimatedTokens: number
   hasEstimated: boolean
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  cacheSavingsTokens: number
+  costUsd: number | null
+  hasUnpriced: boolean
+}
+
+export interface UsageProviderRow {
+  providerId: string
+  turns: number
+  requests: number
+  tokens: number
+  actualTokens: number
+  estimatedTokens: number
+  hasEstimated: boolean
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  cacheSavingsTokens: number
+  costUsd: number | null
+  hasUnpriced: boolean
+}
+
+export interface UsageRequestRecord {
+  id: string
+  eventId: string
+  threadId: string
+  turnId: string
+  agentId?: string
+  providerId: string
+  modelId: string
+  requestModelId?: string
+  source: UsageSource
+  status: "completed" | "failed" | "cancelled"
+  createdAt: number
+  latencyMs?: number
+  firstTokenMs?: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  billableInputTokens: number
+  inputSurfaceTokens?: number
+  totalTokens: number
+  actualTokens: number
+  estimatedTokens: number
+  hasEstimated: boolean
+  reasoningTokens?: number
+  costUsd: number | null
+  hasUnpriced: boolean
+  promptPreview?: string
+  responsePreview?: string
+  errorMessage?: string
+  rawUsage?: any
+}
+
+export interface UsagePricingRule {
+  id: string
+  providerId?: string
+  modelId: string
+  displayName?: string
+  inputUsdPerMillion: number
+  outputUsdPerMillion: number
+  cacheReadUsdPerMillion?: number
+  cacheCreationUsdPerMillion?: number
+  createdAt: number
+  updatedAt: number
+}
+
+export interface UsageRecordFilter {
+  range?: UsageRange
+  from?: number
+  to?: number
+  providerId?: string
+  modelId?: string
+  agentId?: string
+  source?: UsageSource | "all"
+  status?: "completed" | "failed" | "cancelled" | "all"
+  query?: string
+  sortBy?: "createdAt" | "tokens" | "cost" | "latencyMs"
+  sortDir?: "asc" | "desc"
+}
+
+export interface PaginatedUsageRecords {
+  records: UsageRequestRecord[]
+  total: number
+  page: number
+  pageSize: number
 }
 
 export interface UsageStats {
@@ -255,15 +397,25 @@ export interface UsageStats {
   actualTokens: number
   estimatedTokens: number
   hasEstimated: boolean
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  cacheSavingsTokens: number
+  billableInputTokens: number
   activeDays: number
   currentStreak: number
   longestStreak: number
   cost: number | null
+  costUsd: number | null
+  hasUnpriced: boolean
   cacheSavings: number | null
   contextSavings: number | null
   cacheRate: number | null
+  requests: number
   heatmap: UsageHeatmapDay[]
   models: UsageModelRow[]
+  providers: UsageProviderRow[]
 }
 
 export interface TerminalRun {

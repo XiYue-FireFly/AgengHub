@@ -4,6 +4,9 @@ import { tr } from '../glass/i18n'
 import { WorkspaceItem } from './types'
 
 const PERSONAL_WORKSPACE_KEY = '__personal__'
+const SIDEBAR_WIDTH_KEY = 'agenthub.workbench.sidebarWidth.v1'
+const MIN_SIDEBAR_WIDTH = 248
+const MAX_SIDEBAR_WIDTH = 420
 
 export function SessionSidebar({
   view,
@@ -40,6 +43,7 @@ export function SessionSidebar({
   setSearch: (value: string) => void
   proxyHost: string
 }) {
+  const [sidebarWidth, setSidebarWidth] = useState(312)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const [renaming, setRenaming] = useState<WorkbenchThread | null>(null)
   const [renameValue, setRenameValue] = useState('')
@@ -77,6 +81,38 @@ export function SessionSidebar({
   }, [grouped, query, workspaces])
 
   useEffect(() => {
+    window.electronAPI.store.get(SIDEBAR_WIDTH_KEY)
+      .then(value => {
+        if (typeof value === 'number' && Number.isFinite(value)) {
+          setSidebarWidth(clampSidebarWidth(value))
+        }
+      })
+      .catch(() => {})
+  }, [])
+
+  const startResize = (event: React.PointerEvent) => {
+    const startX = event.clientX
+    const startWidth = sidebarWidth
+    document.body.classList.add('wb-sidebar-resizing')
+    const move = (moveEvent: PointerEvent) => {
+      setSidebarWidth(clampSidebarWidth(startWidth + moveEvent.clientX - startX))
+    }
+    const up = (upEvent: PointerEvent) => {
+      const nextWidth = clampSidebarWidth(startWidth + upEvent.clientX - startX)
+      setSidebarWidth(nextWidth)
+      window.electronAPI.store.set(SIDEBAR_WIDTH_KEY, nextWidth).catch(() => {})
+      document.body.classList.remove('wb-sidebar-resizing')
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', up)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
+    event.preventDefault()
+  }
+
+  useEffect(() => {
     if (!workspaceId) return
     setCollapsed(current => ({ ...current, [workspaceId]: false }))
   }, [workspaceId])
@@ -109,11 +145,18 @@ export function SessionSidebar({
   }
 
   return (
-    <aside className="wb-sidebar">
+    <aside className="wb-sidebar" style={{ width: sidebarWidth, flexBasis: sidebarWidth } as React.CSSProperties}>
       <div className="wb-mode-tabs">
         <button className={view !== 'write' ? 'active' : ''} onClick={() => setView('chat')}><Icon d={IC.terminal} size={15} /> {tr('代码', 'Code')}</button>
         <button className={view === 'write' ? 'active' : ''} onClick={() => setView('write')}><Icon d={IC.pencil} size={15} /> {tr('写作', 'Write')}</button>
       </div>
+      <button
+        type="button"
+        className="wb-sidebar-resize-handle"
+        onPointerDown={startResize}
+        aria-label={tr('调整侧边栏宽度', 'Resize sidebar')}
+        title={tr('调整侧边栏宽度', 'Resize sidebar')}
+      />
 
       <nav className="wb-nav">
         <button className={view === 'chat' ? 'active' : ''} onClick={() => createThread()}>
@@ -307,6 +350,10 @@ export function SessionSidebar({
       )}
     </aside>
   )
+}
+
+function clampSidebarWidth(width: number): number {
+  return Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, Math.round(width)))
 }
 
 function ThreadItem({

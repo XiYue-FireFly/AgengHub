@@ -1,7 +1,9 @@
 export type ThemeMode = 'light' | 'dark' | 'system'
 export type MotionLevel = 'off' | 'subtle' | 'rich'
 export type DiffMarkerStyle = 'color' | 'sign'
-export type DefaultOpenTarget = 'chat' | 'last' | 'settings'
+export type DefaultOpenTarget = 'antigravity' | 'explorer' | 'system'
+export type StartupOpenTarget = 'chat' | 'last' | 'settings'
+export type DefaultDialogLocation = 'last' | 'workspace' | 'custom'
 export type AgentEnvironment = 'inherit' | 'clean' | 'login-shell'
 export type TerminalShell = 'system' | 'powershell' | 'cmd' | 'git-bash' | 'wsl'
 
@@ -19,7 +21,12 @@ export interface AppearancePreferences {
   contrast: number
   motion: MotionLevel
   diffMarker: DiffMarkerStyle
+  startupOpenTarget: StartupOpenTarget
   defaultOpenTarget: DefaultOpenTarget
+  defaultFileLocation: DefaultDialogLocation
+  defaultFolderLocation: DefaultDialogLocation
+  defaultFilePath: string
+  defaultFolderPath: string
   agentEnvironment: AgentEnvironment
   terminalShell: TerminalShell
   language: 'zh' | 'en'
@@ -27,6 +34,8 @@ export interface AppearancePreferences {
 
 export const APPEARANCE_KEY = 'appearance.preferences'
 const LOCAL_KEY = 'ah-appearance'
+const LAST_FILE_FOLDER_KEY = 'ah-dialog-last-file-folder'
+const LAST_FOLDER_KEY = 'ah-dialog-last-folder'
 
 export const DEFAULT_APPEARANCE: AppearancePreferences = {
   themeMode: 'system',
@@ -42,7 +51,12 @@ export const DEFAULT_APPEARANCE: AppearancePreferences = {
   contrast: 100,
   motion: 'rich',
   diffMarker: 'color',
-  defaultOpenTarget: 'chat',
+  startupOpenTarget: 'chat',
+  defaultOpenTarget: 'explorer',
+  defaultFileLocation: 'last',
+  defaultFolderLocation: 'last',
+  defaultFilePath: '',
+  defaultFolderPath: '',
   agentEnvironment: 'inherit',
   terminalShell: 'system',
   language: 'zh'
@@ -65,11 +79,20 @@ export function normalizeAppearance(input: Partial<AppearancePreferences> | null
     contrast: clampNumber(value.contrast, 80, 125, DEFAULT_APPEARANCE.contrast),
     motion: pick(value.motion, ['off', 'subtle', 'rich'], DEFAULT_APPEARANCE.motion),
     diffMarker: pick(value.diffMarker, ['color', 'sign'], DEFAULT_APPEARANCE.diffMarker),
-    defaultOpenTarget: pick(value.defaultOpenTarget, ['chat', 'last', 'settings'], DEFAULT_APPEARANCE.defaultOpenTarget),
+    startupOpenTarget: pick(value.startupOpenTarget || (isLegacyStartupTarget(value.defaultOpenTarget) ? value.defaultOpenTarget : undefined), ['chat', 'last', 'settings'], DEFAULT_APPEARANCE.startupOpenTarget),
+    defaultOpenTarget: pick(value.defaultOpenTarget, ['antigravity', 'explorer', 'system'], DEFAULT_APPEARANCE.defaultOpenTarget),
+    defaultFileLocation: pick(value.defaultFileLocation, ['last', 'workspace', 'custom'], DEFAULT_APPEARANCE.defaultFileLocation),
+    defaultFolderLocation: pick(value.defaultFolderLocation, ['last', 'workspace', 'custom'], DEFAULT_APPEARANCE.defaultFolderLocation),
+    defaultFilePath: textOrEmpty(value.defaultFilePath),
+    defaultFolderPath: textOrEmpty(value.defaultFolderPath),
     agentEnvironment: pick(value.agentEnvironment, ['inherit', 'clean', 'login-shell'], DEFAULT_APPEARANCE.agentEnvironment),
     terminalShell: pick(value.terminalShell, ['system', 'powershell', 'cmd', 'git-bash', 'wsl'], DEFAULT_APPEARANCE.terminalShell),
     language: pick(value.language, ['zh', 'en'], DEFAULT_APPEARANCE.language)
   }
+}
+
+function isLegacyStartupTarget(value: unknown): value is StartupOpenTarget {
+  return value === 'chat' || value === 'last' || value === 'settings'
 }
 
 export function readAppearanceLocal(): AppearancePreferences {
@@ -157,6 +180,30 @@ export function applyAppearance(preferences: AppearancePreferences): void {
   root.style.setProperty('--ah-contrast', String(preferences.contrast / 100))
 }
 
+export function defaultDialogPath(kind: 'file' | 'folder', workspacePath?: string | null): string | undefined {
+  const preferences = readAppearanceLocal()
+  const location = kind === 'file' ? preferences.defaultFileLocation : preferences.defaultFolderLocation
+  if (location === 'workspace') return workspacePath || undefined
+  if (location === 'custom') {
+    const custom = kind === 'file' ? preferences.defaultFilePath : preferences.defaultFolderPath
+    return custom || workspacePath || undefined
+  }
+  const last = readLastDialogPath(kind)
+  return last || workspacePath || undefined
+}
+
+export function rememberDialogPath(kind: 'file' | 'folder', pickedPath?: string | null): void {
+  const path = String(pickedPath || '').trim()
+  if (!path) return
+  const folder = kind === 'file' ? parentPath(path) : path
+  if (!folder) return
+  try { localStorage.setItem(kind === 'file' ? LAST_FILE_FOLDER_KEY : LAST_FOLDER_KEY, folder) } catch { /* noop */ }
+}
+
+export function readLastDialogPath(kind: 'file' | 'folder'): string {
+  try { return localStorage.getItem(kind === 'file' ? LAST_FILE_FOLDER_KEY : LAST_FOLDER_KEY) || '' } catch { return '' }
+}
+
 export function subscribeSystemTheme(preferences: AppearancePreferences, callback: () => void): () => void {
   if (typeof window === 'undefined' || !window.matchMedia) return () => {}
   const media = window.matchMedia('(prefers-color-scheme: dark)')
@@ -188,10 +235,21 @@ function text(value: unknown, fallback: string): string {
   return typeof value === 'string' && value.trim() ? value.trim() : fallback
 }
 
+function textOrEmpty(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
   const n = Number(value)
   if (!Number.isFinite(n)) return fallback
   return Math.min(max, Math.max(min, Math.round(n)))
+}
+
+function parentPath(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean)
+  if (parts.length <= 1) return ''
+  const root = /^[a-z]:/i.test(parts[0]) ? `${parts.shift()}\\` : path.startsWith('\\\\') ? '\\\\' : path.startsWith('/') ? '/' : ''
+  return root + parts.slice(0, -1).join(root === '/' ? '/' : '\\')
 }
 
 const LIGHT_PRESET = {

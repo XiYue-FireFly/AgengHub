@@ -49,11 +49,24 @@ export function buildAgentTaskPrompt(agentId: string, userTask: string, memories
 
 export function selectRelevantMemories(memories: RuntimeMemoryEntry[], taskText = '', limit = 6): RuntimeMemoryEntry[] {
   const terms = tokenize(taskText)
-  return memories
+  const safeLimit = Math.max(0, limit)
+  const ranked = memories
     .map((memory, index) => ({ memory, index, score: scoreMemory(memory, terms) }))
     .sort((a, b) => b.score - a.score || a.index - b.index)
-    .slice(0, Math.max(0, limit))
-    .map(item => item.memory)
+  const pinned = ranked.filter(item => isPinnedMemory(item.memory))
+  const selected = new Set<RuntimeMemoryEntry>()
+  const out: RuntimeMemoryEntry[] = []
+  for (const item of pinned) {
+    if (out.length >= safeLimit) break
+    selected.add(item.memory)
+    out.push(item.memory)
+  }
+  for (const item of ranked) {
+    if (out.length >= safeLimit) break
+    if (selected.has(item.memory)) continue
+    out.push(item.memory)
+  }
+  return out
 }
 
 function formatMemories(memories: RuntimeMemoryEntry[]): string {
@@ -84,7 +97,12 @@ function scoreMemory(memory: RuntimeMemoryEntry, terms: string[]): number {
   if (memory.category === 'conversation') score += 1.5
   if (memory.category === 'task') score += 1
   if (memory.category === 'skill') score += 0.8
+  if (isPinnedMemory(memory)) score += 12
   return score
+}
+
+function isPinnedMemory(memory: RuntimeMemoryEntry): boolean {
+  return Boolean(memory.metadata?.pinned || memory.metadata?.pin)
 }
 
 function tokenize(text: string): string[] {

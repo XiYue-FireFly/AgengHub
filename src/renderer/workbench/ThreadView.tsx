@@ -12,10 +12,12 @@ export function ThreadView({
   events,
   onRetry,
   onCancelAgent,
+  onResolveGuard,
   openSetup,
   onCreateProject,
   onCreateThread,
   hasWorkspace,
+  workspaceRoot,
   scrollRef,
   onScroll
 }: {
@@ -24,10 +26,12 @@ export function ThreadView({
   events: RuntimeEvent[]
   onRetry: (turnId: string) => void
   onCancelAgent: (turnId: string, agentId: string) => void
+  onResolveGuard: (requestId: string, approved: boolean) => void
   openSetup: (tab?: SetupTab | 'appearance') => void
   onCreateProject: () => void
   onCreateThread: () => void
   hasWorkspace: boolean
+  workspaceRoot?: string | null
   scrollRef?: React.RefObject<HTMLElement>
   onScroll?: () => void
 }) {
@@ -64,18 +68,19 @@ export function ThreadView({
               <button onClick={() => onRetry(turn.id)} title={tr('重试', 'Retry')}><Icon d={IC.refresh} size={14} /></button>
             )}
           </div>
-          <AgentOutputs turn={turn} events={byTurn.get(turn.id) ?? []} openSetup={openSetup} onCancelAgent={onCancelAgent} />
+          <AgentOutputs turn={turn} events={byTurn.get(turn.id) ?? []} openSetup={openSetup} onCancelAgent={onCancelAgent} onResolveGuard={onResolveGuard} workspaceRoot={workspaceRoot} />
         </article>
       ))}
     </section>
   )
 }
 
-function AgentOutputs({ turn, events, openSetup, onCancelAgent }: { turn: WorkbenchTurn; events: RuntimeEvent[]; openSetup: (tab?: SetupTab | 'appearance') => void; onCancelAgent: (turnId: string, agentId: string) => void }) {
+function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, workspaceRoot }: { turn: WorkbenchTurn; events: RuntimeEvent[]; openSetup: (tab?: SetupTab | 'appearance') => void; onCancelAgent: (turnId: string, agentId: string) => void; onResolveGuard: (requestId: string, approved: boolean) => void; workspaceRoot?: string | null }) {
   const grouped = new Map<string, RuntimeEvent[]>()
   const visibleEvents = events.filter(event => event.kind !== 'turn:created' && event.kind !== 'turn:status' && event.kind !== 'run:created' && event.kind !== 'run:status')
   for (const event of visibleEvents) {
-    if (!event.agentId && event.kind !== 'orchestrate' && !event.payload?.kind?.startsWith?.('orchestrate:')) continue
+    if (event.kind === 'memory:candidate') continue
+    if (!event.agentId && event.kind !== 'orchestrate' && event.kind !== 'route:decision' && event.kind !== 'guard:verdict' && !event.payload?.kind?.startsWith?.('orchestrate:')) continue
     const key = event.agentId || 'orchestrate'
     const bucket = grouped.get(key)
     if (bucket) bucket.push(event)
@@ -86,21 +91,18 @@ function AgentOutputs({ turn, events, openSetup, onCancelAgent }: { turn: Workbe
   return (
     <div className="wb-agent-output-list">
       {[...grouped.entries()].map(([agentId, agentEvents]) => {
-        const rawText = agentEvents.filter(e => e.kind === 'agent:delta' && e.payload?.channel !== 'thinking').map(e => e.payload?.text || '').join('')
-        const done = agentEvents.find(e => e.kind === 'agent:done')
-        const error = agentEvents.find(e => e.kind === 'agent:error')
-        const steps = dedupeSteps(agentEvents.filter(e => e.kind === 'agent:activity' && e.payload?.step).map(e => e.payload.step))
-        const orch = agentEvents.filter(e => e.kind === 'orchestrate' || String(e.payload?.kind || '').startsWith('orchestrate:'))
-        const action = error?.payload?.error ? firstRunActionForError(error.payload.error) : null
-        const status = outputStatus(turn.status, agentEvents, agentId)
-        const text = status === 'running' ? rawText.trim() : normalizeOutput(rawText)
-        const doneContent = normalizeOutput(done?.payload?.content || '')
+        const summary = summarizeAgentEvents(agentEvents)
+        const rawText = summary.rawText
+        const action = summary.error?.payload?.error ? firstRunActionForError(summary.error.payload.error) : null
+        const status = outputStatus(turn.status, summary, agentId)
+        const text = normalizeOutput(rawText)
+        const doneContent = summary.done?.payload?.visibility === 'run' ? '' : normalizeOutput(summary.done?.payload?.content || '')
 
         return (
           <div key={agentId} className={'wb-agent-output ' + status}>
             <div className="wb-agent-output-head">
               {AGENT_META[agentId] ? <AgentMark id={agentId} size={26} radius={7} /> : <div className="wb-system-mark"><Icon d={IC.broadcast} size={14} /></div>}
-              <span>{agentOutputName(agentId, agentEvents)}</span>
+              <span>{agentOutputName(agentId, summary.providerPayload)}</span>
               <small>{statusLabel(status)}</small>
               {status === 'running' && agentId !== 'orchestrate' && (
                 <button className="wb-agent-stop" onClick={() => onCancelAgent(turn.id, agentId)} title={tr('暂停该 Agent', 'Pause this agent')}>
@@ -108,21 +110,32 @@ function AgentOutputs({ turn, events, openSetup, onCancelAgent }: { turn: Workbe
                 </button>
               )}
             </div>
-            {steps.length > 0 && <ActivityTrail steps={steps as any} running={!done && !error} />}
-            {orch.length > 0 && <OrchestrateCompact events={orch} turnStatus={turn.status} />}
-            {text && (status === 'running' ? <pre className="wb-streaming-text">{text}</pre> : <MarkdownBlock content={text} />)}
-            {doneContent && !text && <MarkdownBlock content={doneContent} />}
-            {!text && !doneContent && !error && orch.length === 0 && (
+            <ProcessDetails
+              agentId={agentId}
+              events={agentEvents}
+              summary={summary}
+              status={status}
+              workspaceRoot={workspaceRoot}
+            />
+            {summary.steps.length > 0 && <ActivityTrail steps={summary.steps as any} running={!summary.done && !summary.error} />}
+            {summary.orch.length > 0 && <OrchestrateCompact events={summary.orch} turnStatus={turn.status} workspaceRoot={workspaceRoot} />}
+            {(summary.routeEvents.length > 0 || summary.guardEvents.length > 0) && (
+              <RoleEvents routeEvents={summary.routeEvents} guardEvents={summary.guardEvents} onResolveGuard={onResolveGuard} />
+            )}
+            {text && (status === 'running' ? <pre className="wb-streaming-text">{text}</pre> : <MarkdownBlock content={text} workspaceRoot={workspaceRoot} />)}
+            {doneContent && !text && <MarkdownBlock content={doneContent} workspaceRoot={workspaceRoot} />}
+            {!text && !doneContent && !summary.error && summary.orch.length === 0 && summary.routeEvents.length === 0 && summary.guardEvents.length === 0 && (
               turn.status === 'running'
                 ? <ProcessingState events={agentEvents} turn={turn} />
                 : <div className="wb-muted-box">{tr('本轮没有可展示的文本输出。', 'No displayable text output for this turn.')}</div>
             )}
-            {error && (
+            {summary.error && (
               <div className="wb-output-error">
-                {friendlyError(error.payload?.error)}
+                {friendlyError(summary.error.payload?.error)}
                 {action && <button onClick={() => openSetup(action.tab)}>{tr(action.labelZh, action.labelEn)}</button>}
               </div>
             )}
+            {status !== 'running' && <CompletionSummary agentId={agentId} events={agentEvents} summary={summary} status={status} workspaceRoot={workspaceRoot} />}
           </div>
         )
       })}
@@ -130,7 +143,351 @@ function AgentOutputs({ turn, events, openSetup, onCancelAgent }: { turn: Workbe
   )
 }
 
-function OrchestrateCompact({ events, turnStatus }: { events: RuntimeEvent[]; turnStatus: WorkbenchTurnStatus }) {
+interface AgentEventSummary {
+  rawText: string
+  done?: RuntimeEvent
+  error?: RuntimeEvent
+  steps: any[]
+  orch: RuntimeEvent[]
+  routeEvents: RuntimeEvent[]
+  guardEvents: RuntimeEvent[]
+  providerPayload?: any
+  hasDone: boolean
+  hasError: boolean
+  hasOrchestrateFinal: boolean
+  hasOrchestrateError: boolean
+  latestAgentStatus?: WorkbenchTurnStatus
+}
+
+function ProcessDetails({
+  agentId,
+  events,
+  summary,
+  status,
+  workspaceRoot
+}: {
+  agentId: string
+  events: RuntimeEvent[]
+  summary: AgentEventSummary
+  status: WorkbenchTurnStatus
+  workspaceRoot?: string | null
+}) {
+  const [open, setOpen] = useState(false)
+  const processRows = buildProcessRows(agentId, events, summary)
+  if (processRows.length === 0) return null
+  const completed = status === 'completed'
+  return (
+    <div className={'wb-agent-process' + (open ? ' open' : '')}>
+      <button className="wb-agent-process-head" type="button" onClick={() => setOpen(value => !value)}>
+        <Icon d={IC.chev} size={12} />
+        <span>{completed ? tr('查看执行过程', 'View run process') : tr('执行过程', 'Run process')}</span>
+        <small>{processRows.length} {tr('项活动', 'activities')}</small>
+      </button>
+      {open && (
+        <div className="wb-agent-process-list">
+          {processRows.map(row => (
+            <div key={row.id} className={'wb-agent-process-row ' + row.kind}>
+              <span className="wb-agent-process-icon"><Icon d={row.icon} size={13} /></span>
+              <div>
+                <strong>{row.title}</strong>
+                {row.detail && row.filePath
+                  ? <MarkdownBlock content={`\`${row.filePath}${row.line ? `:${row.line}` : ''}\` ${row.detail}`} workspaceRoot={workspaceRoot} />
+                  : row.detail ? <small>{row.detail}</small> : null}
+              </div>
+              <em>{relativeEventTime(row.createdAt)}</em>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CompletionSummary({
+  agentId,
+  events,
+  summary,
+  status,
+  workspaceRoot
+}: {
+  agentId: string
+  events: RuntimeEvent[]
+  summary: AgentEventSummary
+  status: WorkbenchTurnStatus
+  workspaceRoot?: string | null
+}) {
+  const stats = completionStats(events, summary, status)
+  if (status === 'cancelled' && stats.activities === 0) return null
+  return (
+    <div className={'wb-completion-summary ' + status}>
+      <div className="wb-completion-summary-head">
+        <Icon d={status === 'failed' ? IC.x : status === 'cancelled' ? IC.stop : IC.check} size={14} />
+        <strong>{completionTitle(status)}</strong>
+        <small>{formatEventDuration(events)}</small>
+      </div>
+      <ul>
+        {stats.activities > 0 && <li>{tr(`完成 ${stats.activities} 个执行活动。`, `${stats.activities} execution activities recorded.`)}</li>}
+        {stats.guardVerdicts > 0 && <li>{tr(`完成 ${stats.guardVerdicts} 个审查/门禁检查。`, `${stats.guardVerdicts} review/gate checks completed.`)}</li>}
+        {stats.routeDecisions > 0 && <li>{tr(`记录 ${stats.routeDecisions} 个路由决策。`, `${stats.routeDecisions} route decisions recorded.`)}</li>}
+        {stats.files.length > 0 && (
+          <li>
+            {tr('相关文件：', 'Related files: ')}
+            <MarkdownBlock content={stats.files.slice(0, 6).map(file => `\`${file}\``).join('、')} workspaceRoot={workspaceRoot} />
+          </li>
+        )}
+        {stats.finalPreview && <li>{stats.finalPreview}</li>}
+        {status === 'failed' && summary.error?.payload?.error && <li>{friendlyError(summary.error.payload.error)}</li>}
+      </ul>
+    </div>
+  )
+}
+
+type ProcessRow = {
+  id: string
+  kind: string
+  title: string
+  detail?: string
+  icon: React.ReactNode
+  createdAt: number
+  filePath?: string
+  line?: number
+}
+
+function buildProcessRows(agentId: string, events: RuntimeEvent[], summary: AgentEventSummary): ProcessRow[] {
+  const rows: ProcessRow[] = []
+  for (const event of events) {
+    if (event.kind === 'route:decision') {
+      rows.push({
+        id: event.id,
+        kind: 'route',
+        title: tr('路由决策', 'Route decision'),
+        detail: `${event.payload?.state || 'chat'} -> ${event.payload?.selectedAgentId || agentId}`,
+        icon: IC.git,
+        createdAt: event.createdAt
+      })
+      continue
+    }
+    if (event.kind === 'guard:verdict') {
+      rows.push({
+        id: event.id,
+        kind: 'guard',
+        title: roleName(event.payload?.role || 'guard'),
+        detail: guardStatusText(event.payload),
+        icon: IC.check,
+        createdAt: event.createdAt
+      })
+      continue
+    }
+    if (event.kind === 'agent:activity' && event.payload?.step) {
+      const step = event.payload.step
+      const filePath = filePathFromText(`${step.label || ''}\n${step.detail || ''}`)
+      rows.push({
+        id: event.id,
+        kind: 'activity',
+        title: step.label || step.tool || tr('活动', 'Activity'),
+        detail: step.detail || step.output || step.status,
+        icon: iconForProcessStep(step),
+        createdAt: event.createdAt,
+        filePath: filePath?.path,
+        line: filePath?.line
+      })
+      continue
+    }
+    const payloadKind = String(event.payload?.kind || '')
+    if (event.kind === 'orchestrate' || payloadKind.startsWith('orchestrate:')) {
+      rows.push({
+        id: event.id,
+        kind: 'orchestrate',
+        title: payloadKind.replace('orchestrate:', '') || tr('编排', 'Orchestrate'),
+        detail: conciseOrchestrateText(event.payload?.content || event.payload?.note || event.payload?.status || event.payload?.error || '', 140),
+        icon: IC.broadcast,
+        createdAt: event.createdAt
+      })
+    }
+  }
+  if ((summary.hasDone || summary.hasError) && events.length > 0) {
+    rows.push({
+      id: `final-${events[events.length - 1]?.id || agentId}`,
+      kind: summary.hasError ? 'error' : 'done',
+      title: summary.hasError ? tr('执行失败', 'Run failed') : tr('执行完成', 'Run completed'),
+      detail: summary.hasError ? friendlyError(summary.error?.payload?.error) : doneSummaryText(summary),
+      icon: summary.hasError ? IC.x : IC.check,
+      createdAt: summary.error?.createdAt || summary.done?.createdAt || events[events.length - 1]?.createdAt || Date.now()
+    })
+  }
+  return rows.slice(-28)
+}
+
+function iconForProcessStep(step: any): React.ReactNode {
+  const haystack = `${step.kind || ''} ${step.tool || ''} ${step.label || ''}`
+  if (/bash|shell|exec|command|terminal|run|cmd/i.test(haystack)) return IC.terminal
+  if (/write|edit|create|update|patch|apply/i.test(haystack)) return IC.pencil
+  if (/read|grep|glob|search|find|list|ls|cat|view/i.test(haystack)) return IC.search
+  if (/fetch|web|http|browse|url/i.test(haystack)) return IC.link
+  return IC.bolt
+}
+
+function completionStats(events: RuntimeEvent[], summary: AgentEventSummary, status: WorkbenchTurnStatus) {
+  const files = extractReferencedFiles(events, [summary.rawText, summary.done?.payload?.content || ''].join('\n'))
+  return {
+    activities: summary.steps.length + summary.orch.filter(event => String(event.payload?.kind || '').includes('subtask')).length,
+    guardVerdicts: summary.guardEvents.length,
+    routeDecisions: summary.routeEvents.length,
+    files,
+    finalPreview: status === 'completed' ? doneSummaryText(summary) : ''
+  }
+}
+
+function doneSummaryText(summary: AgentEventSummary): string {
+  const content = normalizeOutput(summary.done?.payload?.content || summary.rawText || '')
+  if (!content) return tr('本轮已完成，没有额外文本输出。', 'This run completed with no extra text output.')
+  const firstMeaningful = content.split(/\r?\n/).map(line => line.trim()).find(Boolean) || ''
+  return short(firstMeaningful.replace(/^[-*]\s*/, ''), 150)
+}
+
+function completionTitle(status: WorkbenchTurnStatus): string {
+  if (status === 'failed') return tr('执行未完成', 'Run did not complete')
+  if (status === 'cancelled') return tr('已停止执行', 'Run stopped')
+  return tr('执行完成总结', 'Completion summary')
+}
+
+function formatEventDuration(events: RuntimeEvent[]): string {
+  if (events.length === 0) return ''
+  const started = events[0].createdAt
+  const ended = events[events.length - 1].createdAt
+  return formatDuration(Math.max(0, Math.round((ended - started) / 1000)))
+}
+
+function roleName(role: string): string {
+  if (role === 'reviewer') return 'reviewer'
+  if (role === 'gatekeeper') return 'gatekeeper'
+  if (role === 'executor') return 'executor'
+  if (role === 'router') return 'router'
+  return role || 'guard'
+}
+
+function summarizeAgentEvents(events: RuntimeEvent[]): AgentEventSummary {
+  const textParts: string[] = []
+  const steps = new Map<string, any>()
+  const orch: RuntimeEvent[] = []
+  const routeEvents: RuntimeEvent[] = []
+  const guardEvents: RuntimeEvent[] = []
+  let done: RuntimeEvent | undefined
+  let error: RuntimeEvent | undefined
+  let providerPayload: any
+  let hasOrchestrateFinal = false
+  let hasOrchestrateError = false
+  let latestAgentStatus: WorkbenchTurnStatus | undefined
+
+  for (const event of events) {
+    if (event.payload?.providerId || event.payload?.modelId) providerPayload = event.payload
+    if (event.kind === 'agent:start') latestAgentStatus = 'running'
+    if (event.kind === 'agent:delta' && event.payload?.channel !== 'thinking') {
+      latestAgentStatus = 'running'
+      if (event.payload?.visibility !== 'run') textParts.push(event.payload?.text || '')
+      continue
+    }
+    if (event.kind === 'agent:done') {
+      done = event
+      latestAgentStatus = 'completed'
+      continue
+    }
+    if (event.kind === 'agent:error') {
+      error = event
+      latestAgentStatus = 'failed'
+      continue
+    }
+    if (event.kind === 'agent:activity' && event.payload?.step) {
+      const step = event.payload.step
+      steps.set(String(step.id || step.label || steps.size), step)
+      latestAgentStatus = step.status === 'error'
+        ? 'failed'
+        : step.status === 'done'
+        ? latestAgentStatus
+        : 'running'
+      continue
+    }
+    const payloadKind = String(event.payload?.kind || '')
+    if (event.kind === 'orchestrate' || payloadKind.startsWith('orchestrate:')) {
+      orch.push(event)
+      if (payloadKind === 'orchestrate:final') hasOrchestrateFinal = true
+      if (payloadKind === 'orchestrate:error') hasOrchestrateError = true
+      continue
+    }
+    if (event.kind === 'route:decision') routeEvents.push(event)
+    else if (event.kind === 'guard:verdict') guardEvents.push(event)
+  }
+
+  return {
+    rawText: textParts.join(''),
+    done,
+    error,
+    steps: [...steps.values()],
+    orch,
+    routeEvents,
+    guardEvents,
+    providerPayload,
+    hasDone: !!done,
+    hasError: !!error,
+    hasOrchestrateFinal,
+    hasOrchestrateError,
+    latestAgentStatus
+  }
+}
+
+function RoleEvents({
+  routeEvents,
+  guardEvents,
+  onResolveGuard
+}: {
+  routeEvents: RuntimeEvent[]
+  guardEvents: RuntimeEvent[]
+  onResolveGuard: (requestId: string, approved: boolean) => void
+}) {
+  const resolvedGuardRequests = new Set(guardEvents
+    .filter(event => event.payload?.requestId && event.payload?.decision)
+    .map(event => String(event.payload.requestId)))
+  const visibleGuards = guardEvents.filter(event => {
+    const requestId = event.payload?.requestId
+    if (!requestId) return true
+    if (event.payload?.decision) return true
+    return !resolvedGuardRequests.has(String(requestId))
+  })
+  return (
+    <div className="wb-role-events">
+      {routeEvents.slice(-2).map(event => (
+        <div key={event.id} className="wb-role-event route">
+          <strong>Route</strong>
+          <span>{`${event.payload?.state || 'chat'} -> ${event.payload?.selectedAgentId || '-'}`}</span>
+          {Array.isArray(event.payload?.scores) && <small>{event.payload.scores.slice(0, 3).map((item: any) => `${item.id} ${item.score}`).join(' / ')}</small>}
+        </div>
+      ))}
+      {visibleGuards.slice(-4).map(event => (
+        <div key={event.id} className={'wb-role-event guard ' + (event.payload?.level || 'low') + (event.payload?.requiresUserDecision ? ' pending' : '')}>
+          <strong>{event.payload?.role || 'Guard'}</strong>
+          <span>{guardStatusText(event.payload)}</span>
+          {Array.isArray(event.payload?.reasons) && <small>{event.payload.reasons.join('; ')}</small>}
+          {event.payload?.requiresUserDecision && event.payload?.requestId && (
+            <div className="wb-role-event-actions">
+              <button onClick={() => onResolveGuard(event.payload.requestId, true)}>{tr('继续执行', 'Continue')}</button>
+              <button onClick={() => onResolveGuard(event.payload.requestId, false)}>{tr('停止', 'Stop')}</button>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function guardStatusText(payload: any): string {
+  if (payload?.requiresUserDecision) return tr('高风险 / 等待你确认', 'High risk / waiting for you')
+  if (payload?.decision === 'approved') return tr('已确认继续', 'Approved')
+  if (payload?.decision === 'denied') return tr('已停止', 'Stopped')
+  if (payload?.decision === 'timeout') return tr('确认超时', 'Timed out')
+  return `${payload?.level || 'low'} / ${payload?.status || 'pass'}`
+}
+
+function OrchestrateCompact({ events, turnStatus, workspaceRoot }: { events: RuntimeEvent[]; turnStatus: WorkbenchTurnStatus; workspaceRoot?: string | null }) {
   const plan = [...events].reverse().find(event => event.payload?.kind === 'orchestrate:plan' && Array.isArray(event.payload?.subtasks) && event.payload.subtasks.length > 0)
   const subtasks = Array.isArray(plan?.payload?.subtasks) ? plan.payload.subtasks : []
   const final = [...events].reverse().find(event => event.payload?.kind === 'orchestrate:final')
@@ -158,7 +515,7 @@ function OrchestrateCompact({ events, turnStatus }: { events: RuntimeEvent[]; tu
         </div>
       ))}
       {final?.payload?.content && (
-        <MarkdownBlock content={normalizeOutput(final.payload.content)} />
+        <MarkdownBlock content={normalizeOutput(final.payload.content)} workspaceRoot={workspaceRoot} />
       )}
       {error?.payload?.error && (
         <div className="wb-output-error">{friendlyError(error.payload.error)}</div>
@@ -198,6 +555,13 @@ function formatDuration(seconds: number): string {
   const minutes = Math.floor(seconds / 60)
   const rest = seconds % 60
   return `${minutes}m ${rest}s`
+}
+
+function relativeEventTime(ts: number): string {
+  const diff = Date.now() - ts
+  if (diff < 60_000) return tr('刚刚', 'now')
+  if (diff < 3_600_000) return `${Math.round(diff / 60_000)}${tr('分钟前', 'm ago')}`
+  return `${Math.round(diff / 3_600_000)}${tr('小时前', 'h ago')}`
 }
 
 function AttachmentStrip({ attachments }: { attachments: WorkbenchAttachment[] }) {
@@ -243,13 +607,12 @@ function turnLabel(turn: WorkbenchTurn): string {
     'lead-workers': tr('主控 + 工作者', 'Lead + workers'),
     'parallel-review': tr('并行评审', 'Parallel review'),
     custom: tr('自定义调度', 'Custom schedule')
-  } as Record<DispatchPreset, string>)[turn.mode] || turn.mode
+  } as Partial<Record<DispatchPreset, string>>)[turn.mode] || turn.mode
 }
 
-function agentOutputName(agentId: string, events?: RuntimeEvent[]): string {
+function agentOutputName(agentId: string, providerPayload?: any): string {
   if (agentId.startsWith('provider:')) {
-    const payload = [...(events || [])].reverse().find(event => event.payload?.providerId || event.payload?.modelId)?.payload
-    return providerOutputName(payload?.providerId || agentId.slice('provider:'.length), payload?.modelId)
+    return providerOutputName(providerPayload?.providerId || agentId.slice('provider:'.length), providerPayload?.modelId)
   }
   if (agentId === 'orchestrate') return tr('编排器', 'Orchestrator')
   if (agentId === 'system') return tr('系统', 'System')
@@ -278,9 +641,17 @@ function statusLabel(status: WorkbenchTurnStatus | 'done' | 'running' | 'failed'
   return status
 }
 
-function outputStatus(turnStatus: WorkbenchTurnStatus, events: RuntimeEvent[], agentId: string): WorkbenchTurnStatus {
-  if (events.some(event => event.kind === 'agent:error' || event.payload?.kind === 'orchestrate:error')) return 'failed'
-  if (events.some(event => event.kind === 'agent:done' || event.payload?.kind === 'orchestrate:final')) return 'completed'
+function outputStatus(turnStatus: WorkbenchTurnStatus, eventsOrSummary: RuntimeEvent[] | AgentEventSummary, agentId: string): WorkbenchTurnStatus {
+  if (Array.isArray(eventsOrSummary)) {
+    if (eventsOrSummary.some(event => event.kind === 'agent:error' || event.payload?.kind === 'orchestrate:error')) return 'failed'
+    if (eventsOrSummary.some(event => event.kind === 'agent:done' || event.payload?.kind === 'orchestrate:final')) return 'completed'
+  } else {
+    if (eventsOrSummary.latestAgentStatus === 'failed') return 'failed'
+    if (eventsOrSummary.latestAgentStatus === 'running') return 'running'
+    if (eventsOrSummary.latestAgentStatus === 'completed') return 'completed'
+    if (eventsOrSummary.hasError || eventsOrSummary.hasOrchestrateError) return 'failed'
+    if (eventsOrSummary.hasDone || eventsOrSummary.hasOrchestrateFinal) return 'completed'
+  }
   if (agentId === 'orchestrate' && turnStatus !== 'running' && turnStatus !== 'queued') return turnStatus
   return turnStatus === 'queued' ? 'running' : turnStatus
 }
@@ -318,12 +689,6 @@ function subtaskStatus(status: string): string {
   if (status === 'done') return tr('已完成', 'Done')
   if (status === 'error') return tr('出错', 'Error')
   return tr('待处理', 'Pending')
-}
-
-function dedupeSteps(steps: any[]): any[] {
-  const latest = new Map<string, any>()
-  for (const step of steps) latest.set(String(step.id || step.label || latest.size), step)
-  return [...latest.values()]
 }
 
 function normalizeOutput(value: string): string {
@@ -377,6 +742,38 @@ function conciseOrchestrateText(value: any, max: number): string {
     .replace(/\s+/g, ' ')
     .trim()
   return short(text, max)
+}
+
+function extractReferencedFiles(events: RuntimeEvent[], extraText = ''): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  const scan = (value: any) => {
+    const text = String(value || '')
+    const matches = text.match(/(?:[A-Za-z]:[\\/][^\s'"`<>]+|(?:\.{1,2}[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+|[A-Za-z0-9_.-]+\.(?:tsx?|jsx?|mjs|cjs|json|ya?ml|toml|md|css|scss|html|py|go|rs|java|cs|cpp|c|h|hpp|vue|svelte))(?:\:\d+)?/g) || []
+    for (const match of matches) {
+      const parsed = filePathFromText(match)
+      if (!parsed || seen.has(parsed.path)) continue
+      seen.add(parsed.path)
+      out.push(parsed.line ? `${parsed.path}:${parsed.line}` : parsed.path)
+    }
+  }
+  scan(extraText)
+  for (const event of events) {
+    scan(event.payload?.path)
+    scan(event.payload?.filePath)
+    scan(event.payload?.content)
+    scan(event.payload?.text)
+    scan(event.payload?.step?.label)
+    scan(event.payload?.step?.detail)
+    scan(event.payload?.step?.output)
+  }
+  return out.slice(0, 12)
+}
+
+function filePathFromText(value: string): { path: string; line?: number } | null {
+  const match = value.match(/(?:^|\s|["'`])((?:[A-Za-z]:[\\/][^\s'"`<>]+|(?:\.{1,2}[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+|[A-Za-z0-9_.-]+\.(?:tsx?|jsx?|mjs|cjs|json|ya?ml|toml|md|css|scss|html|py|go|rs|java|cs|cpp|c|h|hpp|vue|svelte)))(?:\:(\d+))?/)
+  if (!match) return null
+  return { path: match[1], line: match[2] ? Number(match[2]) : undefined }
 }
 
 function describePlan(subtasks: any[]): string {

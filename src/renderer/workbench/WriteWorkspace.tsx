@@ -77,13 +77,18 @@ export function WriteWorkspace({
   const stats = useMemo(() => documentStats(content), [content])
   const assistantEvents = useMemo(() => latestAssistantItems(events), [events])
   const usableAgentIds = useMemo(() => localAgentOptions(localAgents), [localAgents])
+  const usableAgentSignature = usableAgentIds.join('|')
+  const selectedTargetAgent = targetAgent && usableAgentIds.includes(targetAgent) ? targetAgent : null
   const visibleAgentIds = useMemo(() => {
-    const selected = targetAgent && usableAgentIds.includes(targetAgent) ? targetAgent : null
-    return selected
-      ? [selected, ...usableAgentIds.filter(id => id !== selected)].slice(0, 3)
+    return selectedTargetAgent
+      ? [selectedTargetAgent, ...usableAgentIds.filter(id => id !== selectedTargetAgent)].slice(0, 3)
       : usableAgentIds.slice(0, 3)
-  }, [targetAgent, usableAgentIds])
+  }, [selectedTargetAgent, usableAgentSignature])
   const readyAgents = usableAgentIds.length
+
+  useEffect(() => {
+    if (targetAgent && !usableAgentIds.includes(targetAgent)) setTargetAgent(null)
+  }, [targetAgent, setTargetAgent, usableAgentSignature])
 
   const sendWriteAction = (action: WriteAction) => {
     if (sending) return
@@ -165,7 +170,7 @@ export function WriteWorkspace({
               <strong>{tr('写作助手', 'Writing assistant')}</strong>
               {readyAgents > 0 && <span>{readyAgents} {tr('个本地 Agent 可用', 'local agents ready')}</span>}
             </div>
-            <select value={targetAgent ?? '__auto__'} onChange={event => setTargetAgent(event.target.value === '__auto__' ? null : event.target.value)}>
+            <select value={selectedTargetAgent ?? '__auto__'} onChange={event => setTargetAgent(event.target.value === '__auto__' ? null : event.target.value)}>
               <option value="__auto__">{tr('按模式调度', 'Use schedule')}</option>
               {usableAgentIds.map(agentId => (
                 <option key={agentId} value={agentId}>{agentName(agentId)} · {statusText(agents[agentId]?.status)}</option>
@@ -175,8 +180,8 @@ export function WriteWorkspace({
               {visibleAgentIds.map(agentId => (
                 <button
                   key={agentId}
-                  className={targetAgent === agentId ? 'active' : ''}
-                  onClick={() => setTargetAgent(targetAgent === agentId ? null : agentId)}
+                  className={selectedTargetAgent === agentId ? 'active' : ''}
+                  onClick={() => setTargetAgent(selectedTargetAgent === agentId ? null : agentId)}
                   title={tr(`直连 ${agentName(agentId)}`, `Direct ${agentName(agentId)}`)}
                 >
                   <AgentMark id={agentId} size={22} radius={6} />

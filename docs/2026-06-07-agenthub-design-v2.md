@@ -1,27 +1,27 @@
 ﻿# AgentHub 设计文档 v2
 
-> 基于 OpenAgents Network Model 参考，融合多 Agent 协同 UX 设计原则
+> AgentHub 多 Agent 协同 UX 与桌面工作台设计说明
 > 更新日期: 2026-06-07
 
 ## 1. 设计目标
 
 从用户体验角度人性化多 Agent 协同工具，打包为 Windows 桌面应用。
 
-### 核心原则（参考 Victor Dibia, 2025）
+### 核心原则
 
 1. Capability Discovery — 让用户知道每个 Agent 能做什么
 2. Observability & Provenance — Agent 行为全程可追踪
 3. Interruptibility — 随时中断/暂停/恢复任务
 4. Cost-Aware Delegation — 知晓成本后再决策
 
-### 参考项目
+### 设计素材来源
 
-| 项目 | 关键参考点 |
+| 方向 | 关键设计点 |
 |------|-----------|
-| OpenAgents Workspace | 事件驱动网络模型、Mod Pipeline、统一寻址、Electron + React + Tailwind + Zustand 技术栈 |
-| Stanshy/AgentHub | Harness Engineering、看板任务板、Gate 质量关卡、xterm 终端集成 |
-| Microsoft Magentic-UI (2025) | 六种人机交互机制、MCP 工具集成、Action Guards |
-| OrchVis (2025) | 层次化多 Agent 编排可视化、目标级进度追踪 |
+| 事件驱动工作台 | 统一事件流、调度预览、状态可追踪 |
+| Agent Harness | 任务板、质量关卡、终端集成 |
+| 人机协作机制 | MCP 工具集成、操作确认、Action Guards |
+| 编排可视化 | 层次化多 Agent 流程、目标级进度追踪 |
 
 ## 2. 项目结构
 

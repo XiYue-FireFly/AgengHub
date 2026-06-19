@@ -1,0 +1,54 @@
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+import { describe, expect, it } from "vitest"
+
+describe("Workbench provider/local routing state", () => {
+  it("clears provider model selection when a local agent is selected", () => {
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+
+    expect(source).toContain("const selectTargetAgent = useCallback")
+    expect(source).toContain("if (agentId) setModelSelection(null)")
+    expect(source).toContain("const requestedModelSelection = requestedTargetAgent ? null")
+    expect(source).toContain("setTargetAgent={selectTargetAgent}")
+    expect(source).toContain("selectTargetAgent(agentId)")
+    expect(source).toContain("goChat={(agentId) => { selectTargetAgent(agentId); setView('chat') }}")
+    expect(source).not.toContain("selectionForAgentBinding(targetAgent")
+  })
+
+  it("does not auto-select the first provider model as default routing state", () => {
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+
+    expect(source).toContain("if (modelSelection && isSelectableModel(modelSelection, props.providers)) return")
+    expect(source).not.toContain("setModelSelection(selectableModels[0]")
+    expect(source).not.toContain("source: 'provider' } : null)")
+  })
+
+  it("describes provider rows as valid picker targets when no local agent is ready", () => {
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ComposerBar.tsx"), "utf8")
+
+    expect(source).toContain("Switch agent or API provider")
+    expect(source).toContain("Configure a local agent or API provider")
+    expect(source).toContain("const pickerTitle = pickerAvailable")
+  })
+
+  it("blocks smart five-role scheduling before dispatch when no local agent is usable", () => {
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+
+    expect(source).toContain("const usableLocalAgents = localAgentOptions(localAgents)")
+    expect(source).toContain("nextMode === 'firefly-custom'")
+    expect(source).toContain("usableLocalAgents.length === 0")
+    expect(source).toContain("智能/自定义调度需要至少一个可用本地 Agent")
+  })
+
+  it("clears direct routing selections when switching to a schedule", () => {
+    const composer = readFileSync(join(process.cwd(), "src/renderer/workbench/ComposerBar.tsx"), "utf8")
+    const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+
+    expect(composer).toContain("const selectScheduleMode")
+    expect(composer).toContain("setTargetAgent(null)")
+    expect(composer).toContain("setModelSelection(null)")
+    expect(composer).toContain("onChange={event => selectScheduleMode(event.target.value as DispatchPreset)}")
+    expect(layout).toContain("if (command.action === 'use-schedule' && command.payload?.preset)")
+    expect(layout).toContain("setModelSelection(null)")
+  })
+})

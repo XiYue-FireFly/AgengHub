@@ -64,4 +64,26 @@ describe("context ledger", () => {
     expect(projection.blocks.map(block => block.kind)).toEqual(expect.arrayContaining(["recent_turns", "attachment", "workspace_state"]))
     expect(projection.blocks.find(block => block.kind === "attachment")?.title).toBe("screen.png")
   })
+
+  it("uses memory summaries as context content when full content is absent", async () => {
+    const { buildContextProjection, contextProjectionPrompt } = await import("../context-ledger")
+    const projection = buildContextProjection({
+      thread: undefined,
+      prompt: "release notes",
+      workspaceId: null,
+      attachments: [],
+      snapshot: { threads: [], turns: [], runs: [], activeThreadId: null },
+      events: [],
+      memories: [{
+        id: "pref-1",
+        category: "preference",
+        title: "Release note style",
+        summary: "Use concise Chinese and include verification notes."
+      }]
+    })
+
+    const memoryBlock = projection.blocks.find(block => block.id === "ctx-memory-pref-1")
+    expect(memoryBlock?.content).toContain("verification notes")
+    expect(contextProjectionPrompt(projection)).toContain("verification notes")
+  })
 })

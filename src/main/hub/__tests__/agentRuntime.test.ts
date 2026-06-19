@@ -40,4 +40,16 @@ describe('agent runtime capability injection', () => {
     expect(selected).toHaveLength(2)
     expect(selected[0].title).toBe('AgentHub 记忆库')
   })
+
+  it('keeps pinned memories inside the bounded runtime prompt selection', () => {
+    const selected = selectRelevantMemories([
+      { category: 'preference', title: 'Pinned style', summary: 'Always answer concisely.', metadata: { pinned: true } },
+      { category: 'project', title: 'Search match 1', summary: 'router route memory agent schedule' },
+      { category: 'project', title: 'Search match 2', summary: 'router route memory agent schedule' },
+      { category: 'project', title: 'Search match 3', summary: 'router route memory agent schedule' }
+    ], 'router route memory agent schedule', 2)
+
+    expect(selected.map(item => item.title)).toContain('Pinned style')
+    expect(selected).toHaveLength(2)
+  })
 })

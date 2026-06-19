@@ -1,13 +1,11 @@
-import { execFile } from "node:child_process"
+import { spawn } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
-import { promisify } from "node:util"
 import { store } from "../store"
 import { getWorkspaceManager } from "../hub/workspace"
 import type { McpConfigState, McpServerConfig } from "./types"
 
-const execFileAsync = promisify(execFile)
 const STORAGE_KEY = "runtime.mcp.v1"
 
 function emptyState(): McpConfigState {
@@ -46,8 +44,9 @@ export function scanLocalMcpServers(workspaceId?: string | null): McpServerConfi
   for (const item of configCandidates(workspaceId)) {
     if (!existsSync(item.path)) continue
     try {
-      const json = JSON.parse(readFileSync(item.path, "utf-8"))
-      out.push(...serversFromConfig(json, item.source, item.path))
+      const raw = readFileSync(item.path, "utf-8")
+      const parsed = parseConfigFile(raw, item.path)
+      out.push(...serversFromConfig(parsed, item.source, item.path))
     } catch {
       // invalid local configs are ignored here; explicit mcp:test reports failures per server.
     }
@@ -87,7 +86,7 @@ export function removeMcpServer(id: string): boolean {
   return before !== state.servers.length
 }
 
-export function setMcpEnabled(id: string, enabled: boolean): McpServerConfig | null {
+export function setMcpEnabled(id: string, enabled: boolean, workspaceId?: string | null): McpServerConfig | null {
   const state = readState()
   const server = state.servers.find(item => item.id === id)
   if (server) {
@@ -96,7 +95,7 @@ export function setMcpEnabled(id: string, enabled: boolean): McpServerConfig | n
     state.overrides[id] = { ...(state.overrides[id] || {}), enabled }
   }
   writeState(state)
-  return listMcpServers().find(item => item.id === id) ?? null
+  return listMcpServers(workspaceId).find(item => item.id === id) ?? null
 }
 
 export async function testMcpServer(id: string, workspaceId?: string | null): Promise<McpServerConfig> {
@@ -105,15 +104,10 @@ export async function testMcpServer(id: string, workspaceId?: string | null): Pr
   try {
     if (server.transport === "stdio") {
       if (!server.command) throw new Error("Missing command")
-      await execFileAsync(server.command, [...(server.args || []), "--help"], {
-        cwd: server.cwd || undefined,
-        windowsHide: true,
-        timeout: 2500,
-        maxBuffer: 128 * 1024
-      })
+      await probeStdioServer(server)
     } else if (server.url) {
-      const res = await fetch(server.url, { method: "HEAD" }).catch(() => null)
-      if (!res || res.status >= 500) throw new Error(`HTTP ${res?.status ?? "unreachable"}`)
+      const res = await fetch(server.url, { method: "HEAD", headers: server.headers }).catch(() => null)
+      if (!res || res.status < 200 || res.status >= 400) throw new Error(`HTTP ${res?.status ?? "unreachable"}`)
     } else {
       throw new Error("Missing URL")
     }
@@ -121,6 +115,61 @@ export async function testMcpServer(id: string, workspaceId?: string | null): Pr
   } catch (e: any) {
     return persistStatus(server, "error", e?.message || String(e))
   }
+}
+
+async function probeStdioServer(server: McpServerConfig): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(server.command!, server.args || [], {
+      cwd: server.cwd || undefined,
+      env: { ...process.env, ...(server.env || {}) },
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"]
+    })
+    let stderr = ""
+    let stdout = ""
+    let settled = false
+    const finish = (error?: Error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      child.kill()
+      if (error) reject(error)
+      else resolve()
+    }
+    const timer = setTimeout(() => {
+      const detail = (stderr || stdout).trim()
+      finish(new Error(detail ? `MCP initialize timed out: ${detail}` : "MCP initialize timed out; no JSON-RPC initialize response was received."))
+    }, Math.max(2500, Math.min(15000, server.timeoutMs || 5000)))
+    child.stdout?.on("data", chunk => {
+      stdout += String(chunk).slice(0, 2048)
+      if (/"jsonrpc"\s*:\s*"2\.0"/.test(stdout) && /"id"\s*:\s*1/.test(stdout)) finish()
+    })
+    child.stderr?.on("data", chunk => {
+      stderr += String(chunk).slice(0, 2048)
+      if (/mcp|json-rpc|server|listening|ready/i.test(stderr)) finish()
+    })
+    child.on("error", error => {
+      const message = (error as any)?.code === "ENOENT"
+        ? `MCP command not found: ${server.command}`
+        : error.message
+      finish(new Error(message))
+    })
+    child.on("exit", code => {
+      if (settled) return
+      if (stdout && /"jsonrpc"\s*:\s*"2\.0"/.test(stdout)) finish()
+      else finish(new Error((stderr || `MCP process exited with code ${code}`).trim()))
+    })
+    child.stdin?.write(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "AgentHub", version: "0.5.4" }
+      }
+    }) + "\n")
+  })
 }
 
 export function acpMcpServersForWorkspace(workspaceId?: string | null): any[] {
@@ -154,8 +203,16 @@ function configCandidates(workspaceId?: string | null): Array<{ path: string; so
   const candidates: Array<{ path: string; source: McpServerConfig["source"] }> = [
     { path: join(home, ".mcp.json"), source: "local" },
     { path: join(home, ".config", "agenthub", "mcp.json"), source: "user" },
+    { path: join(home, ".claude.json"), source: "claude" },
+    { path: join(home, ".claude", "settings.json"), source: "claude" },
     { path: join(home, ".codex", "mcp.json"), source: "local" },
+    { path: join(home, ".codex", "config.json"), source: "codex" },
+    { path: join(home, ".codex", "config.toml"), source: "codex" },
     { path: join(home, ".claude", "mcp.json"), source: "local" },
+    { path: join(home, ".gemini", "settings.json"), source: "gemini" },
+    { path: join(home, ".opencode", "mcp.json"), source: "opencode" },
+    { path: join(home, ".opencode.json"), source: "opencode" },
+    { path: join(home, ".ccgui", "config.json"), source: "ccgui" },
     { path: join(home, ".agents", "mcp.json"), source: "local" },
     { path: join(home, ".agents", "plugins", "mcp.json"), source: "kun" },
     { path: join(home, ".ecc", "mcp.json"), source: "ecc" }
@@ -168,22 +225,128 @@ function configCandidates(workspaceId?: string | null): Array<{ path: string; so
   return candidates
 }
 
+function parseConfigFile(raw: string, path: string): any {
+  if (path.toLowerCase().endsWith(".toml")) return parseMcpToml(raw)
+  return JSON.parse(raw)
+}
+
+function parseMcpToml(raw: string): any {
+  const servers: Record<string, any> = {}
+  let currentName: string | null = null
+  const ensureServer = (name: string) => {
+    if (!servers[name]) servers[name] = {}
+    currentName = name
+  }
+  for (const line of raw.split(/\r?\n/)) {
+    const stripped = stripTomlComment(line).trim()
+    if (!stripped) continue
+    const section = stripped.match(/^\[(.+)]$/)
+    if (section) {
+      const name = section[1].trim()
+      const mcpMatch = name.match(/^mcp_servers\.("?)(.+?)\1$/i) || name.match(/^mcpServers\.("?)(.+?)\1$/i)
+      if (mcpMatch) ensureServer(mcpMatch[2])
+      else currentName = null
+      continue
+    }
+    if (!currentName) continue
+    const assignment = stripped.match(/^([A-Za-z0-9_-]+)\s*=\s*(.+)$/)
+    if (!assignment) continue
+    const key = assignment[1]
+    const value = parseTomlValue(assignment[2])
+    const target = servers[currentName]
+    if (key === "env" && value && typeof value === "object" && !Array.isArray(value)) {
+      target.env = value
+    } else {
+      target[key] = value
+    }
+  }
+  return { mcpServers: servers }
+}
+
+function stripTomlComment(line: string): string {
+  let quote: string | null = null
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]
+    if ((ch === '"' || ch === "'") && line[i - 1] !== "\\") quote = quote === ch ? null : quote || ch
+    if (ch === "#" && !quote) return line.slice(0, i)
+  }
+  return line
+}
+
+function parseTomlValue(raw: string): any {
+  const text = raw.trim()
+  if (/^true$/i.test(text)) return true
+  if (/^false$/i.test(text)) return false
+  if (/^-?\d+(\.\d+)?$/.test(text)) return Number(text)
+  if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+    return text.slice(1, -1)
+  }
+  if (text.startsWith("[") && text.endsWith("]")) {
+    const inner = text.slice(1, -1).trim()
+    if (!inner) return []
+    return splitTomlInline(inner).map(parseTomlValue)
+  }
+  if (text.startsWith("{") && text.endsWith("}")) {
+    const out: Record<string, any> = {}
+    for (const part of splitTomlInline(text.slice(1, -1))) {
+      const match = part.match(/^([A-Za-z0-9_-]+)\s*=\s*(.+)$/)
+      if (match) out[match[1]] = parseTomlValue(match[2])
+    }
+    return out
+  }
+  return text
+}
+
+function splitTomlInline(value: string): string[] {
+  const out: string[] = []
+  let quote: string | null = null
+  let depth = 0
+  let start = 0
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i]
+    if ((ch === '"' || ch === "'") && value[i - 1] !== "\\") quote = quote === ch ? null : quote || ch
+    if (!quote && (ch === "[" || ch === "{")) depth += 1
+    if (!quote && (ch === "]" || ch === "}")) depth -= 1
+    if (!quote && depth === 0 && ch === ",") {
+      out.push(value.slice(start, i).trim())
+      start = i + 1
+    }
+  }
+  out.push(value.slice(start).trim())
+  return out.filter(Boolean)
+}
+
 function serversFromConfig(config: any, source: McpServerConfig["source"], sourcePath: string): McpServerConfig[] {
-  const servers = config?.mcpServers || config?.servers || config
-  if (!servers || typeof servers !== "object") return []
-  return Object.entries(servers).map(([name, raw]: [string, any]) => normalizeServer({
+  const servers = config?.mcpServers || config?.servers || config?.capabilities?.mcp?.servers || (isSingleServerConfig(config) ? { [config.name || "server"]: config } : config)
+  if (!servers || (typeof servers !== "object" && !Array.isArray(servers))) return []
+  const disabled = new Set(Array.isArray(config?.disabledMcpServers)
+    ? config.disabledMcpServers.map((item: any) => String(item).trim()).filter(Boolean)
+    : [])
+  const entries: Array<[string, any]> = Array.isArray(servers)
+    ? servers.map((raw: any, index: number) => [String(raw?.id || raw?.name || `server-${index + 1}`), raw])
+    : Object.entries(servers)
+  return entries.map(([name, raw]: [string, any]) => {
+    const spec = raw?.server && typeof raw.server === "object" ? raw.server : raw
+    const serverName = raw?.name || raw?.id || name
+    return normalizeServer({
     id: stableId(`${source}:${sourcePath}:${name}`),
-    name,
+    name: serverName,
     source,
-    enabled: raw?.enabled !== false && raw?.disabled !== true,
-    transport: raw?.transport || raw?.type || (raw?.url ? "http" : "stdio"),
-    command: raw?.command,
-    args: Array.isArray(raw?.args) ? raw.args : [],
-    env: raw?.env && typeof raw.env === "object" ? raw.env : undefined,
-    cwd: raw?.cwd,
-    url: raw?.url || raw?.endpoint,
+    sourcePath,
+    enabled: raw?.enabled !== false && raw?.disabled !== true && !disabled.has(String(serverName)),
+    transport: spec?.transport || spec?.type || (spec?.url ? "http" : "stdio"),
+    command: spec?.command,
+    args: Array.isArray(spec?.args) ? spec.args : [],
+    env: spec?.env && typeof spec.env === "object" ? spec.env : undefined,
+    headers: spec?.headers && typeof spec.headers === "object" ? spec.headers : undefined,
+    cwd: spec?.cwd,
+    url: spec?.url || spec?.endpoint,
+    timeoutMs: Number.isFinite(spec?.timeoutMs) ? spec.timeoutMs : undefined,
+    trustScope: typeof spec?.trustScope === "string" ? spec.trustScope : undefined,
+    trustedWorkspaceRoots: Array.isArray(spec?.trustedWorkspaceRoots) ? spec.trustedWorkspaceRoots : undefined,
     status: "unknown"
-  })).filter(Boolean) as McpServerConfig[]
+    })
+  }).filter(Boolean) as McpServerConfig[]
 }
 
 function normalizeServer(raw: any): McpServerConfig | null {
@@ -204,11 +367,20 @@ function normalizeServer(raw: any): McpServerConfig | null {
     command,
     args: Array.isArray(raw.args) ? raw.args.map(String) : [],
     env: raw.env && typeof raw.env === "object" ? Object.fromEntries(Object.entries(raw.env).map(([k, v]) => [k, String(v)])) : undefined,
+    headers: raw.headers && typeof raw.headers === "object" ? Object.fromEntries(Object.entries(raw.headers).map(([k, v]) => [k, String(v)])) : undefined,
     cwd: typeof raw.cwd === "string" ? raw.cwd : undefined,
     url,
+    timeoutMs: Number.isFinite(raw.timeoutMs) ? Math.max(250, Math.min(120_000, Math.round(raw.timeoutMs))) : undefined,
+    trustScope: typeof raw.trustScope === "string" ? raw.trustScope : undefined,
+    trustedWorkspaceRoots: Array.isArray(raw.trustedWorkspaceRoots) ? raw.trustedWorkspaceRoots.map(String) : undefined,
+    sourcePath: typeof raw.sourcePath === "string" ? raw.sourcePath : undefined,
     status: raw.status === "ok" || raw.status === "error" ? raw.status : "unknown",
     error: typeof raw.error === "string" ? raw.error : undefined
   }
+}
+
+function isSingleServerConfig(config: any): boolean {
+  return !!config && typeof config === "object" && (typeof config.command === "string" || typeof config.url === "string" || typeof config.endpoint === "string")
 }
 
 function normalizeTransport(value: any): McpServerConfig["transport"] {
@@ -219,7 +391,7 @@ function normalizeTransport(value: any): McpServerConfig["transport"] {
 }
 
 function normalizeSource(value: any): McpServerConfig["source"] {
-  if (value === "workspace" || value === "local" || value === "ecc" || value === "kun") return value
+  if (value === "workspace" || value === "local" || value === "ecc" || value === "kun" || value === "claude" || value === "codex" || value === "gemini" || value === "opencode" || value === "ccgui") return value
   return "user"
 }
 
@@ -235,7 +407,7 @@ function dedupeServers(servers: McpServerConfig[]): McpServerConfig[] {
 }
 
 function sourceRank(source: McpServerConfig["source"]): number {
-  return ({ workspace: 0, user: 1, local: 2, kun: 3, ecc: 4 })[source]
+  return ({ workspace: 0, user: 1, claude: 2, codex: 3, gemini: 4, opencode: 5, ccgui: 6, local: 7, kun: 8, ecc: 9 })[source]
 }
 
 function stableId(value: string): string {

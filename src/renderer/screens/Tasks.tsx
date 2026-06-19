@@ -25,6 +25,7 @@ const MODE_LABEL: Record<string, string> = {
   orchestrate: '编排',
   'lead-workers': '主控 + 工作者',
   'parallel-review': '并行评审',
+  'firefly-custom': '智能五角色',
   custom: '自定义调度'
 }
 

@@ -205,13 +205,13 @@ export const BUILTIN_SKILLS: SkillInput[] = [
     ].join('\n')
   },
   {
-    name: 'ECC Workflow',
-    description: 'Everything Claude Code workflow skill for planning, TDD, review, verification, research, security, and reflection.',
+    name: 'AgentHub Workflow',
+    description: 'AgentHub workflow skill for planning, TDD, review, verification, research, security, and reflection.',
     category: { id: 'planning', label: '规划 / Planning' },
     tags: ['builtin', 'ecc', 'planning', 'testing', 'review', 'verification'],
     source: 'ecc',
     instructions: [
-      'Use the Everything Claude Code (ECC) workflow style when it fits the task.',
+      'Use the AgentHub workflow style when it fits the task.',
       '',
       'Core modes:',
       '- /plan: restate the goal, constraints, risks, impact, and verification plan before implementation.',
@@ -226,7 +226,7 @@ export const BUILTIN_SKILLS: SkillInput[] = [
       '- Prefer local repository evidence over memory.',
       '- Keep changes scoped to the user request and existing project patterns.',
       '- Do not claim verification passed unless checks actually ran.',
-      '- When a slash command is present, treat it as the active ECC mode for that turn.'
+      '- When a slash command is present, treat it as the active workflow mode for that turn.'
     ].join('\n')
   }
 ]

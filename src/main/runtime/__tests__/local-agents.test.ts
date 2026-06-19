@@ -82,6 +82,50 @@ describe("local agent statuses", () => {
     expect(() => configureLocalAgent("unknown-agent", {})).toThrow(/Unsupported/)
   })
 
+  it("forces local CLI attribution when a configured agent replaces a stale API binding", async () => {
+    bindings.push({
+      agentId: "gemini",
+      providerId: "openai",
+      modelId: "gpt-4o",
+      protocol: "http",
+      binary: "",
+      args: "",
+      thinking: { mode: "auto", level: "medium", collapseInUI: true }
+    })
+    const { configureLocalAgent } = await import("../local-agents")
+
+    configureLocalAgent("gemini", { binary: "C:/bin/gemini.cmd", protocol: "stdio-plain" })
+
+    expect(bindings.find(b => b.agentId === "gemini")).toMatchObject({
+      providerId: "local-cli",
+      modelId: "local",
+      protocol: "stdio-plain",
+      binary: "C:/bin/gemini.cmd"
+    })
+  })
+
+  it("forces local ACP attribution when a configured agent replaces a stale API binding", async () => {
+    bindings.push({
+      agentId: "codex",
+      providerId: "anthropic",
+      modelId: "claude-sonnet-4-5",
+      protocol: "http",
+      binary: "",
+      args: "",
+      thinking: { mode: "auto", level: "medium", collapseInUI: true }
+    })
+    const { configureLocalAgent } = await import("../local-agents")
+
+    configureLocalAgent("codex", { binary: "C:/bin/codex.cmd", protocol: "acp" })
+
+    expect(bindings.find(b => b.agentId === "codex")).toMatchObject({
+      providerId: "local-cli",
+      modelId: "local",
+      protocol: "acp",
+      binary: "C:/bin/codex.cmd"
+    })
+  })
+
   it("serves cached statuses until explicitly refreshed", async () => {
     const mod = await import("../local-agents")
     const first = mod.refreshLocalAgentStatusCache()

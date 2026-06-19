@@ -77,17 +77,27 @@ const api = {
   },
   memory: {
     catalog: () => ipcRenderer.invoke('memory:catalog'),
+    getSettings: () => ipcRenderer.invoke('memory:getSettings'),
+    updateSettings: (patch: any) => ipcRenderer.invoke('memory:updateSettings', patch),
     list: (category?: string) => ipcRenderer.invoke('memory:list', category),
     search: (query: string, category?: string) => ipcRenderer.invoke('memory:search', query, category),
     addEntry: (entry: any) => ipcRenderer.invoke('memory:addEntry', entry),
+    importConversation: (source: string, content: string) => ipcRenderer.invoke('memory:importConversation', source, content),
+    listCandidates: () => ipcRenderer.invoke('memory:listCandidates'),
+    approveCandidate: (id: string) => ipcRenderer.invoke('memory:approveCandidate', id),
+    updateEntry: (id: string, patch: any) => ipcRenderer.invoke('memory:updateEntry', id, patch),
+    disableEntry: (id: string) => ipcRenderer.invoke('memory:disableEntry', id),
     delete: (id: string) => ipcRenderer.invoke('memory:delete', id),
     loadState: () => ipcRenderer.invoke('memory:loadState'),
     saveState: (state: any) => ipcRenderer.invoke('memory:saveState', state)
   },
   app: {
     openExternal: (url: string) => ipcRenderer.invoke('app:openExternal', url),
-    pickFolder: () => ipcRenderer.invoke('app:pickFolder'),
-    pickFiles: () => ipcRenderer.invoke('app:pickFiles'),
+    openPath: (input: { path: string; target?: 'antigravity' | 'explorer' | 'system'; line?: number; column?: number; workspaceRoot?: string | null }) => ipcRenderer.invoke('app:openPath', input),
+    resolvePath: (input: { path: string; workspaceRoot?: string | null }) => ipcRenderer.invoke('app:resolvePath', input),
+    readTextFile: (input: { path: string; workspaceRoot?: string | null }) => ipcRenderer.invoke('app:readTextFile', input),
+    pickFolder: (options?: { defaultPath?: string }) => ipcRenderer.invoke('app:pickFolder', options),
+    pickFiles: (options?: { defaultPath?: string }) => ipcRenderer.invoke('app:pickFiles', options),
     onDeepLink: (callback: (link: { action: string; params: Record<string, string> }) => void) => {
       const handler = (_event: any, link: any) => callback(link)
       ipcRenderer.on('app:deep-link', handler)
@@ -120,6 +130,7 @@ const api = {
       ipcRenderer.invoke('turns:create', input),
     cancel: (turnId: string) => ipcRenderer.invoke('turns:cancel', turnId),
     cancelAgent: (turnId: string, agentId: string) => ipcRenderer.invoke('turns:cancelAgent', turnId, agentId),
+    resolveGuard: (requestId: string, approved: boolean) => ipcRenderer.invoke('turns:resolveGuard', requestId, approved),
     retry: (turnId: string) => ipcRenderer.invoke('turns:retry', turnId)
   },
   runtime: {
@@ -153,6 +164,9 @@ const api = {
   schedules: {
     list: () => ipcRenderer.invoke('schedules:list'),
     runPreview: (preset: string) => ipcRenderer.invoke('schedules:runPreview', preset)
+  },
+  routes: {
+    explain: (turnId: string) => ipcRenderer.invoke('routes:explain', turnId)
   },
   commands: {
     list: () => ipcRenderer.invoke('commands:list'),
@@ -201,7 +215,7 @@ const api = {
     scanLocal: (workspaceId?: string | null) => ipcRenderer.invoke('mcp:scanLocal', workspaceId),
     upsert: (input: any) => ipcRenderer.invoke('mcp:upsert', input),
     remove: (id: string) => ipcRenderer.invoke('mcp:remove', id),
-    setEnabled: (id: string, enabled: boolean) => ipcRenderer.invoke('mcp:setEnabled', id, enabled),
+    setEnabled: (id: string, enabled: boolean, workspaceId?: string | null) => ipcRenderer.invoke('mcp:setEnabled', id, enabled, workspaceId),
     test: (id: string, workspaceId?: string | null) => ipcRenderer.invoke('mcp:test', id, workspaceId)
   },
   worktrees: {
@@ -230,7 +244,17 @@ const api = {
     capture: (attachment: any) => ipcRenderer.invoke('browser:capture', attachment)
   },
   usage: {
-    stats: (range?: 'all' | '90d' | '30d' | '7d', view?: 'overview' | 'models') => ipcRenderer.invoke('usage:stats', range, view)
+    stats: (range?: 'all' | '90d' | '30d' | '7d', view?: 'overview' | 'models' | 'requests' | 'providers' | 'pricing') => ipcRenderer.invoke('usage:stats', range, view),
+    records: (filter?: any, page?: number, pageSize?: number) => ipcRenderer.invoke('usage:records', filter, page, pageSize),
+    recordDetail: (id: string) => ipcRenderer.invoke('usage:recordDetail', id),
+    pricingList: () => ipcRenderer.invoke('usage:pricing:list'),
+    pricingUpsert: (rule: any) => ipcRenderer.invoke('usage:pricing:upsert', rule),
+    pricingDelete: (idOrModelId: string, providerId?: string) => ipcRenderer.invoke('usage:pricing:delete', idOrModelId, providerId)
+  },
+  goals: {
+    get: (threadId?: string | null) => ipcRenderer.invoke('goals:get', threadId),
+    set: (threadId: string, goal: string, loopLimit?: number) => ipcRenderer.invoke('goals:set', threadId, goal, loopLimit),
+    clear: (threadId: string) => ipcRenderer.invoke('goals:clear', threadId)
   },
   // --- AgentHub skills + native agentic (Claude-B 新增) ---
   skills: {

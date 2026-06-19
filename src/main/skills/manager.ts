@@ -17,6 +17,9 @@ import { SkillCategory, SkillDef, SkillInput, SkillInstalls, inferSkillCategory,
 import type { LocalSkillCandidate } from '../runtime/types'
 
 const STORAGE_KEY = 'skills.v1'
+const LOCAL_SKILL_SCAN_CACHE_MS = 5_000
+const LOCAL_SKILL_SCAN_MAX_DIRS = 1_200
+const LOCAL_SKILL_SCAN_MAX_FILES = 400
 
 interface PersistedShape {
   version: 1
@@ -25,6 +28,11 @@ interface PersistedShape {
 }
 
 type CategorizedLocalSkillCandidate = LocalSkillCandidate & { category: SkillCategory }
+
+interface SkillFileSearchState {
+  dirs: number
+  files: number
+}
 
 function emptyState(): PersistedShape {
   return { version: 1, skills: [], installs: {} }
@@ -55,6 +63,8 @@ function normalizeStoredSkill(raw: any): SkillDef {
 }
 
 export class SkillManager {
+  private localScanCache: { at: number; rootsKey: string; candidates: CategorizedLocalSkillCandidate[] } | null = null
+
   private read(): PersistedShape {
     const raw = store.get(STORAGE_KEY)
     if (!raw || typeof raw !== 'object') return emptyState()
@@ -162,8 +172,13 @@ export class SkillManager {
     return s.skills.filter(x => ids.has(x.id))
   }
 
-  scanLocal(): CategorizedLocalSkillCandidate[] {
+  scanLocal(options: { refresh?: boolean } = {}): CategorizedLocalSkillCandidate[] {
+    const now = Date.now()
     const roots = localSkillRoots()
+    const rootsKey = roots.map(root => `${root.agentSource}:${root.path}`).join('|')
+    if (!options.refresh && this.localScanCache?.rootsKey === rootsKey && now - this.localScanCache.at < LOCAL_SKILL_SCAN_CACHE_MS) {
+      return [...this.localScanCache.candidates]
+    }
     const out: CategorizedLocalSkillCandidate[] = []
     const seen = new Set<string>()
     for (const root of roots) {
@@ -176,11 +191,14 @@ export class SkillManager {
         if (parsed) out.push(parsed)
       }
     }
-    return out.sort((a, b) => a.agentSource.localeCompare(b.agentSource) || a.name.localeCompare(b.name))
+    const candidates = out.sort((a, b) => a.agentSource.localeCompare(b.agentSource) || a.name.localeCompare(b.name))
+    this.localScanCache = { at: now, rootsKey, candidates }
+    return [...candidates]
   }
 
   importLocal(sourcePath: string): SkillDef {
     const candidate = this.scanLocal().find(item => item.sourcePath === sourcePath)
+      || this.scanLocal({ refresh: true }).find(item => item.sourcePath === sourcePath)
     if (!candidate) throw new Error(`Local skill not found: ${sourcePath}`)
     const existing = this.list().find(skill => skill.source === candidate.sourcePath)
     if (existing) return existing
@@ -201,8 +219,7 @@ function localSkillRoots(): Array<{ path: string; agentSource: string }> {
     { path: join(home, '.codex', 'skills'), agentSource: 'codex' },
     { path: join(home, '.agents', 'skills'), agentSource: 'agents' },
     { path: join(home, '.claude', 'skills'), agentSource: 'claude' },
-    { path: join(home, '.opencode', 'skills'), agentSource: 'opencode' },
-    { path: join(home, '.codex', 'plugins', 'cache'), agentSource: 'codex-plugin' }
+    { path: join(home, '.opencode', 'skills'), agentSource: 'opencode' }
   ]
   const activeWorkspaceId = getWorkspaceManager().getActive()
   const workspace = activeWorkspaceId ? getWorkspaceManager().getById(activeWorkspaceId) : null
@@ -218,18 +235,32 @@ function localSkillRoots(): Array<{ path: string; agentSource: string }> {
 
 function findSkillFiles(root: string): string[] {
   const out: string[] = []
+  const state: SkillFileSearchState = { dirs: 0, files: 0 }
   const walk = (dir: string, depth: number) => {
     if (depth > 8) return
+    if (state.dirs >= LOCAL_SKILL_SCAN_MAX_DIRS || state.files >= LOCAL_SKILL_SCAN_MAX_FILES) return
+    state.dirs += 1
     let entries: any[] = []
     try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
     for (const entry of entries) {
+      if (state.dirs >= LOCAL_SKILL_SCAN_MAX_DIRS || state.files >= LOCAL_SKILL_SCAN_MAX_FILES) return
       const p = join(dir, entry.name)
-      if (entry.isFile() && ['skill.md', 'skill.json'].includes(entry.name.toLowerCase())) out.push(p)
-      else if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') walk(p, depth + 1)
+      if (entry.isFile() && ['skill.md', 'skill.json'].includes(entry.name.toLowerCase())) {
+        out.push(p)
+        state.files += 1
+      } else if (entry.isDirectory() && shouldDescendIntoSkillDirectory(entry.name)) {
+        walk(p, depth + 1)
+      }
     }
   }
   walk(root, 0)
   return out
+}
+
+function shouldDescendIntoSkillDirectory(name: string): boolean {
+  const lower = name.toLowerCase()
+  if (name.startsWith('.')) return false
+  return !['node_modules', 'dist', 'build', 'target', 'out', '.git', 'cache'].includes(lower)
 }
 
 function parseSkillMarkdown(sourcePath: string, agentSource: string): CategorizedLocalSkillCandidate | null {

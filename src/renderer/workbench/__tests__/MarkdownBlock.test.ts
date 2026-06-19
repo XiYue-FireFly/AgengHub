@@ -15,6 +15,23 @@ describe('renderMarkdown', () => {
     expect(renderMarkdown('<script>alert(1)</script>')).toContain('&lt;script&gt;')
   })
 
+  it('renders inline file references as clickable chips', () => {
+    const html = renderMarkdown('Open `Settings.tsx` or `src/main/runtime/mcp.ts:145`.')
+
+    expect(html).toContain('class="wb-file-ref-chip"')
+    expect(html).toContain('data-file-path="Settings.tsx"')
+    expect(html).toContain('data-file-path="src/main/runtime/mcp.ts"')
+    expect(html).toContain('data-line="145"')
+    expect(html).toContain('<span class="wb-file-ref-icon">TS</span>')
+  })
+
+  it('keeps ordinary inline code as code', () => {
+    const html = renderMarkdown('The account name is `pyh20`.')
+
+    expect(html).toContain('<code>pyh20</code>')
+    expect(html).not.toContain('wb-file-ref-chip')
+  })
+
   it('renders markdown tables and removes internal placeholders', () => {
     const html = renderMarkdown([
       '| 文件 | 行数 | 问题 |',

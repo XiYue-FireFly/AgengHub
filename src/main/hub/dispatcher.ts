@@ -98,6 +98,8 @@ export interface DispatchOptions {
   turnId?: string
   /** Stable conversation id for native local runtimes that support persistent sessions. */
   threadId?: string
+  /** Metadata copied onto all stream events for this dispatch task. */
+  streamMeta?: Record<string, any>
 }
 
 export type StreamEvent =
@@ -124,16 +126,21 @@ export class Dispatcher extends EventEmitter {
   private pendingApprovals: Map<string, { resolve: (v: boolean) => void; timer: ReturnType<typeof setTimeout> }> = new Map()
   private approvalSeq = 0
   private activeAgentStops = new Map<string, () => void>()
+  private streamMetaByTask = new Map<string, Record<string, any>>()
 
   constructor(
     private registry: AgentRegistry,
     private pipeline: EventPipeline,
-    private memoryProvider: () => RuntimeMemoryEntry[] = () => []
+    private memoryProvider: (taskText?: string) => RuntimeMemoryEntry[] = () => []
   ) {
     super()
   }
 
   emit(event: string | symbol, ...args: any[]): boolean {
+    if (event === "stream" && args[0]?.taskId) {
+      const meta = this.streamMetaByTask.get(args[0].taskId)
+      if (meta) args[0] = { ...args[0], ...meta }
+    }
     return super.emit(event, ...args)
   }
 
@@ -153,6 +160,9 @@ export class Dispatcher extends EventEmitter {
    * No demo / mock fallback: if no provider is bound the call fails immediately.
    */
   async dispatch(text: string, mode: DispatchMode = "auto", targetAgent?: string, opts: DispatchOptions = {}): Promise<DispatchTask> {
+    if (opts.modelSelection?.source === "provider") {
+      throw new Error("Provider model selections must run through provider direct dispatch, not local agent routing.")
+    }
     const taskId = "task-" + (++this.taskCounter)
     const effectiveMode: DispatchMode = targetAgent ? "auto" : mode
     const task: DispatchTask = {
@@ -170,6 +180,7 @@ export class Dispatcher extends EventEmitter {
     }
     if (opts.turnId) (task as any).__turnId = opts.turnId
     this.tasks.set(task.id, task)
+    if (opts.streamMeta) this.streamMetaByTask.set(task.id, opts.streamMeta)
     this.emit("task:created", task)
 
     task.status = "running"
@@ -199,6 +210,7 @@ export class Dispatcher extends EventEmitter {
       task.status = "failed"
       task.error = e.message
     }
+    this.streamMetaByTask.delete(task.id)
     return task
   }
 
@@ -222,6 +234,7 @@ export class Dispatcher extends EventEmitter {
     }
     if (opts.turnId) (task as any).__turnId = opts.turnId
     this.tasks.set(task.id, task)
+    if (opts.streamMeta) this.streamMetaByTask.set(task.id, opts.streamMeta)
     this.emit("task:created", task)
     task.status = "running"
 
@@ -234,6 +247,7 @@ export class Dispatcher extends EventEmitter {
       task.error = err
       task.errors.set(agentId, err)
       this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId, modelId, error: err })
+      this.streamMetaByTask.delete(task.id)
       return task
     }
     if (!model) {
@@ -242,6 +256,7 @@ export class Dispatcher extends EventEmitter {
       task.error = err
       task.errors.set(agentId, err)
       this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId, modelId, error: err })
+      this.streamMetaByTask.delete(task.id)
       return task
     }
 
@@ -313,6 +328,7 @@ export class Dispatcher extends EventEmitter {
       task.errors.set(agentId, err)
       this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId: provider.id, modelId: model.id, error: err, code: e?.code })
     }
+    this.streamMetaByTask.delete(task.id)
     return task
   }
 
@@ -577,13 +593,13 @@ export class Dispatcher extends EventEmitter {
 
   private systemPromptFor(agentId: string, overridePrompt?: string, taskText = "", workspaceId?: string | null): string {
     if (overridePrompt) return overridePrompt
-    const base = buildAgentRuntimeSystemPrompt(agentId, agentSystemPrompt(agentId), this.memoryContext(), taskText, this.skillsBlockFor(agentId))
+    const base = buildAgentRuntimeSystemPrompt(agentId, agentSystemPrompt(agentId), this.memoryContext(taskText), taskText, this.skillsBlockFor(agentId))
     const ws = this.workspaceContextFor(workspaceId)
     return ws ? base + "\n\n" + ws : base
   }
 
   private promptForAgent(agentId: string, text: string, workspaceId?: string | null): string {
-    const base = buildAgentTaskPrompt(agentId, text, this.memoryContext(), this.skillsBlockFor(agentId))
+    const base = buildAgentTaskPrompt(agentId, text, this.memoryContext(text), this.skillsBlockFor(agentId))
     const ws = this.workspaceContextFor(workspaceId)
     // 项目上下文置顶（CLAUDE.md/AGENTS.md 约定），其后才是 runtime 指令 + 用户任务
     return ws ? ws + "\n\n" + base : base
@@ -661,9 +677,9 @@ export class Dispatcher extends EventEmitter {
   }
   // --- /AgentHub native agentic ---
 
-  private memoryContext(): RuntimeMemoryEntry[] {
+  private memoryContext(taskText = ""): RuntimeMemoryEntry[] {
     try {
-      return this.memoryProvider() || []
+      return this.memoryProvider(taskText) || []
     } catch {
       return []
     }

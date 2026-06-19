@@ -55,17 +55,27 @@ interface ElectronAPI {
   }
   memory: {
     catalog: () => Promise<any>
-    list: (category?: 'conversation' | 'task' | 'skill' | 'file' | 'system') => Promise<any[]>
-    search: (query: string, category?: 'conversation' | 'task' | 'skill' | 'file' | 'system') => Promise<any[]>
+    getSettings: () => Promise<{ enabled: boolean }>
+    updateSettings: (patch: { enabled?: boolean }) => Promise<{ enabled: boolean }>
+    list: (category?: MemoryCategory) => Promise<any[]>
+    search: (query: string, category?: MemoryCategory) => Promise<any[]>
     addEntry: (entry: any) => Promise<any>
+    importConversation: (source: string, content: string) => Promise<MemoryEntry[]>
+    listCandidates: () => Promise<MemoryEntry[]>
+    approveCandidate: (id: string) => Promise<MemoryEntry | null>
+    updateEntry: (id: string, patch: Partial<MemoryEntry>) => Promise<MemoryEntry | null>
+    disableEntry: (id: string) => Promise<MemoryEntry | null>
     delete: (id: string) => Promise<boolean>
     loadState: () => Promise<{ messages?: any[]; tasks?: any[] }>
     saveState: (state: { messages: any[]; tasks: any[] }) => Promise<any>
   }
   app: {
     openExternal: (url: string) => Promise<void>
-    pickFolder: () => Promise<string | null>
-    pickFiles: () => Promise<WorkbenchAttachment[]>
+    openPath: (input: { path: string; target?: 'antigravity' | 'explorer' | 'system'; line?: number; column?: number; workspaceRoot?: string | null }) => Promise<{ ok: boolean; path: string; target: 'antigravity' | 'explorer' | 'system'; error?: string }>
+    resolvePath: (input: { path: string; workspaceRoot?: string | null }) => Promise<{ ok: boolean; path: string; error?: string }>
+    readTextFile: (input: { path: string; workspaceRoot?: string | null }) => Promise<{ ok: boolean; path: string; content?: string; error?: string }>
+    pickFolder: (options?: { defaultPath?: string }) => Promise<string | null>
+    pickFiles: (options?: { defaultPath?: string }) => Promise<WorkbenchAttachment[]>
     onDeepLink: (callback: (link: { action: string; params: Record<string, string> }) => void) => () => void
     onMenuCommand: (callback: (link: { action: string; params: Record<string, string> }) => void) => () => void
   }
@@ -88,6 +98,7 @@ interface ElectronAPI {
     create: (input: { threadId?: string | null; workspaceId?: string | null; prompt: string; mode?: DispatchPreset; targetAgent?: string | null; thinking?: any; modelSelection?: ModelSelection; attachments?: WorkbenchAttachment[]; customSchedule?: SchedulePreview }) => Promise<any>
     cancel: (turnId: string) => Promise<boolean>
     cancelAgent: (turnId: string, agentId: string) => Promise<boolean>
+    resolveGuard: (requestId: string, approved: boolean) => Promise<boolean>
     retry: (turnId: string) => Promise<any>
   }
   runtime: {
@@ -115,6 +126,9 @@ interface ElectronAPI {
   schedules: {
     list: () => Promise<SchedulePreview[]>
     runPreview: (preset: DispatchPreset) => Promise<SchedulePreview>
+  }
+  routes: {
+    explain: (turnId: string) => Promise<any[]>
   }
   commands: {
     list: () => Promise<WorkbenchCommand[]>
@@ -163,7 +177,7 @@ interface ElectronAPI {
     scanLocal: (workspaceId?: string | null) => Promise<McpServerConfig[]>
     upsert: (input: Partial<McpServerConfig> & { name: string }) => Promise<McpServerConfig>
     remove: (id: string) => Promise<boolean>
-    setEnabled: (id: string, enabled: boolean) => Promise<McpServerConfig | null>
+    setEnabled: (id: string, enabled: boolean, workspaceId?: string | null) => Promise<McpServerConfig | null>
     test: (id: string, workspaceId?: string | null) => Promise<McpServerConfig>
   }
   worktrees: {
@@ -193,6 +207,16 @@ interface ElectronAPI {
   }
   usage: {
     stats: (range?: UsageRange, view?: UsageView) => Promise<UsageStats>
+    records: (filter?: UsageRecordFilter, page?: number, pageSize?: number) => Promise<PaginatedUsageRecords>
+    recordDetail: (id: string) => Promise<UsageRequestRecord | null>
+    pricingList: () => Promise<UsagePricingRule[]>
+    pricingUpsert: (rule: Partial<UsagePricingRule> & { modelId: string }) => Promise<UsagePricingRule>
+    pricingDelete: (idOrModelId: string, providerId?: string) => Promise<boolean>
+  }
+  goals: {
+    get: (threadId?: string | null) => Promise<WorkbenchGoal | null>
+    set: (threadId: string, goal: string, loopLimit?: number) => Promise<WorkbenchGoal>
+    clear: (threadId: string) => Promise<WorkbenchGoal | null>
   }
   // --- AgentHub skills + native agentic (Claude-B 新增) ---
   skills: {
@@ -223,7 +247,24 @@ interface ElectronAPI {
 }
 
 type WorkbenchTurnStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
-type DispatchPreset = 'auto' | 'broadcast' | 'chain' | 'orchestrate' | 'lead-workers' | 'parallel-review' | 'custom'
+type DispatchPreset = 'auto' | 'broadcast' | 'chain' | 'orchestrate' | 'lead-workers' | 'parallel-review' | 'firefly-custom' | 'custom'
+type MemoryCategory = 'conversation' | 'task' | 'skill' | 'file' | 'system' | 'preference' | 'project' | 'style' | 'decision' | 'correction' | 'imported_conversation'
+type MemoryEntryStatus = 'candidate' | 'approved' | 'disabled'
+
+interface MemoryEntry {
+  id: string
+  category: MemoryCategory
+  title: string
+  summary: string
+  content?: string
+  source?: string
+  tags: string[]
+  status?: MemoryEntryStatus
+  confidence?: number
+  metadata?: Record<string, any>
+  createdAt: string
+  updatedAt: string
+}
 
 interface WorkbenchAttachment {
   id: string
@@ -318,7 +359,7 @@ interface AgentRunNode {
   id: string
   turnId: string
   agentId: string
-  role: 'lead' | 'worker' | 'reviewer' | 'synthesizer' | 'target'
+  role: 'lead' | 'worker' | 'reviewer' | 'synthesizer' | 'target' | 'router' | 'executor' | 'gatekeeper'
   status: WorkbenchTurnStatus
   parentRunId?: string
   startedAt: number
@@ -346,19 +387,34 @@ interface WorkbenchSnapshot {
 interface SchedulePreview {
   preset: DispatchPreset
   label: string
+  labelZh?: string
+  labelEn?: string
   description: string
-  steps: Array<{ id: string; label: string; agentId: string; role: string; mode: string; dependsOn?: string[] }>
+  descriptionZh?: string
+  descriptionEn?: string
+  steps: Array<{ id: string; label: string; labelZh?: string; labelEn?: string; agentId: string; role: string; mode: string; dependsOn?: string[] }>
 }
 
 interface WorkbenchCommand {
   id: string
   label: string
   description: string
+  descriptionZh?: string
+  descriptionEn?: string
   category: 'session' | 'agent' | 'schedule' | 'tool' | 'skill' | 'workspace' | 'ecc'
   insertText?: string
-  action: 'insert' | 'new-thread' | 'clear-thread' | 'show-context' | 'open-panel' | 'run-terminal' | 'run-git' | 'use-schedule' | 'use-skill' | 'use-agent'
+  action: 'insert' | 'new-thread' | 'clear-thread' | 'show-context' | 'open-panel' | 'run-terminal' | 'run-git' | 'use-schedule' | 'use-skill' | 'use-agent' | 'set-goal' | 'run-loop'
   source: 'builtin' | 'schedule' | 'skill' | 'local-agent' | 'ecc'
   payload?: Record<string, any>
+}
+
+interface WorkbenchGoal {
+  threadId: string
+  goal: string
+  createdAt: number
+  updatedAt: number
+  loopLimit: number
+  status: 'active' | 'cleared'
 }
 
 interface EccCommandStatus {
@@ -383,20 +439,26 @@ interface LocalSkillCandidate {
 interface McpServerConfig {
   id: string
   name: string
-  source: 'user' | 'workspace' | 'local' | 'ecc' | 'kun'
+  source: 'user' | 'workspace' | 'local' | 'ecc' | 'kun' | 'claude' | 'codex' | 'gemini' | 'opencode' | 'ccgui'
   enabled: boolean
   transport: 'stdio' | 'sse' | 'http'
   command?: string
   args?: string[]
   env?: Record<string, string>
+  headers?: Record<string, string>
   cwd?: string
   url?: string
+  timeoutMs?: number
+  trustScope?: string
+  trustedWorkspaceRoots?: string[]
+  sourcePath?: string
   status?: 'unknown' | 'ok' | 'error'
   error?: string
 }
 
 type UsageRange = 'all' | '90d' | '30d' | '7d'
-type UsageView = 'overview' | 'models'
+type UsageView = 'overview' | 'models' | 'requests' | 'providers' | 'pricing'
+type UsageSource = 'actual' | 'estimated' | 'none'
 
 interface UsageHeatmapDay {
   date: string
@@ -405,18 +467,117 @@ interface UsageHeatmapDay {
   actualTokens: number
   estimatedTokens: number
   hasEstimated: boolean
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  cacheSavingsTokens: number
+  costUsd: number | null
+  hasUnpriced: boolean
   level: 0 | 1 | 2 | 3 | 4
   selected?: boolean
 }
 
 interface UsageModelRow {
   modelId: string
+  providerId?: string
   agentId?: string
   turns: number
+  requests: number
   tokens: number
   actualTokens: number
   estimatedTokens: number
   hasEstimated: boolean
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  cacheSavingsTokens: number
+  costUsd: number | null
+  hasUnpriced: boolean
+}
+
+interface UsageProviderRow {
+  providerId: string
+  turns: number
+  requests: number
+  tokens: number
+  actualTokens: number
+  estimatedTokens: number
+  hasEstimated: boolean
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  cacheSavingsTokens: number
+  costUsd: number | null
+  hasUnpriced: boolean
+}
+
+interface UsageRequestRecord {
+  id: string
+  eventId: string
+  threadId: string
+  turnId: string
+  agentId?: string
+  providerId: string
+  modelId: string
+  requestModelId?: string
+  source: UsageSource
+  status: 'completed' | 'failed' | 'cancelled'
+  createdAt: number
+  latencyMs?: number
+  firstTokenMs?: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  billableInputTokens: number
+  totalTokens: number
+  actualTokens: number
+  estimatedTokens: number
+  hasEstimated: boolean
+  reasoningTokens?: number
+  costUsd: number | null
+  hasUnpriced: boolean
+  promptPreview?: string
+  responsePreview?: string
+  errorMessage?: string
+  rawUsage?: any
+}
+
+interface UsagePricingRule {
+  id: string
+  providerId?: string
+  modelId: string
+  displayName?: string
+  inputUsdPerMillion: number
+  outputUsdPerMillion: number
+  cacheReadUsdPerMillion?: number
+  cacheCreationUsdPerMillion?: number
+  createdAt: number
+  updatedAt: number
+}
+
+interface UsageRecordFilter {
+  range?: UsageRange
+  from?: number
+  to?: number
+  providerId?: string
+  modelId?: string
+  agentId?: string
+  source?: UsageSource | 'all'
+  status?: 'completed' | 'failed' | 'cancelled' | 'all'
+  query?: string
+  sortBy?: 'createdAt' | 'tokens' | 'cost' | 'latencyMs'
+  sortDir?: 'asc' | 'desc'
+}
+
+interface PaginatedUsageRecords {
+  records: UsageRequestRecord[]
+  total: number
+  page: number
+  pageSize: number
 }
 
 interface UsageStats {
@@ -428,15 +589,25 @@ interface UsageStats {
   actualTokens: number
   estimatedTokens: number
   hasEstimated: boolean
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  cacheSavingsTokens: number
+  billableInputTokens: number
   activeDays: number
   currentStreak: number
   longestStreak: number
   cost: number | null
+  costUsd: number | null
+  hasUnpriced: boolean
   cacheSavings: number | null
   contextSavings: number | null
   cacheRate: number | null
+  requests: number
   heatmap: UsageHeatmapDay[]
   models: UsageModelRow[]
+  providers: UsageProviderRow[]
 }
 
 interface TerminalRun {

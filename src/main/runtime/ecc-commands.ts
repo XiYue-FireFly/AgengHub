@@ -86,9 +86,9 @@ export function eccCommandStatus(): EccCommandStatus {
 export async function updateEccCommands(fetchImpl: typeof fetch = fetch): Promise<EccCommandStatus> {
   try {
     const res = await fetchImpl(ECC_QUICK_REF_URL)
-    if (!res.ok) throw new Error(`ECC update failed: HTTP ${res.status}`)
+    if (!res.ok) throw new Error(`Workflow command update failed: HTTP ${res.status}`)
     const parsed = parseEccQuickRef(await res.text())
-    if (parsed.length === 0) throw new Error("ECC update did not contain slash commands")
+    if (parsed.length === 0) throw new Error("Workflow command update did not contain slash commands")
     const hydrated = await Promise.all(parsed.map(command => hydrateEccCommand(command, fetchImpl)))
     const now = Date.now()
     writeState({ version: 1, commands: hydrated.map(command => ({ ...command, updatedAt: now })), updatedAt: now })
@@ -130,7 +130,7 @@ export function parseEccCommandMarkdown(markdown: string): { description?: strin
 
 export function planPrompt(): string {
   return [
-    "进入 ECC /plan 规划模式。",
+    "进入 /plan 规划模式。",
     "",
     "要求：",
     "1. 先重述需求、目标、约束和不确定点。",
@@ -169,12 +169,12 @@ function addParsedCommand(commands: Map<string, EccCommand>, label: string, desc
   commands.set(label, {
     id: `ecc:${label.slice(1)}`,
     label,
-    description: cleaned || `ECC 指令 ${label}`,
+    description: cleaned || `工作流指令 ${label}`,
     category: "ecc",
     insertText: `${label} `,
     action: "insert",
     source: "ecc",
-    payload: { prompt: cleaned || `执行 ECC 指令 ${label}。` },
+    payload: { prompt: cleaned || `执行工作流指令 ${label}。` },
     upstreamPath: `commands/${label.slice(1)}.md`
   })
 }
@@ -189,7 +189,7 @@ function normalizeCommands(commands: any[]): EccCommand[] {
     out.push({
       id: typeof command.id === "string" ? command.id : `ecc:${label.slice(1)}`,
       label,
-      description: typeof command.description === "string" ? command.description : `ECC 指令 ${label}`,
+      description: typeof command.description === "string" ? command.description : `工作流指令 ${label}`,
       category: "ecc",
       insertText: typeof command.insertText === "string" ? command.insertText : `${label} `,
       action: "insert",
@@ -223,7 +223,7 @@ function withEccAliases(commands: EccCommand[]): EccCommand[] {
       label: "/review",
       insertText: "/review ",
       upstreamPath: "commands/code-review.md",
-      description: "代码审查: 按 ECC 代码审查流程检查当前改动。"
+      description: "代码审查: 按代码审查流程检查当前改动。"
     }
   ]
 }

@@ -14,18 +14,48 @@ import { WriteWorkspace } from './WriteWorkspace'
 import { GitWorkbenchPanel } from './GitWorkbenchPanel'
 import { WorkspaceItem, AgentMap } from './types'
 import { localAgentLabel, localAgentOptions } from './localAgentOptions'
+import { customScheduleHasRunnableSteps, defaultCustomSchedule, defaultSmartFiveRoleSchedule, isStoredSchedule, sanitizeCustomSchedule } from './customSchedule'
+import { defaultDialogPath, readAppearanceLocal, rememberDialogPath } from '../appearance'
+import {
+  findKeyboardShortcutCommand,
+  keyboardEventToShortcut,
+  KEYBOARD_SHORTCUT_STORE_KEY,
+  KEYBOARD_SHORTCUTS_CHANGED,
+  KeyboardShortcutsConfigV1,
+  resolveKeyboardShortcutBindings,
+  shortcutDisplay
+} from '../keyboard-shortcuts'
 
 type ViewMode = 'chat' | 'write' | 'tasks' | 'settings'
-type RightPanel = 'runs' | 'git' | 'worktrees' | 'browser' | 'memory' | 'updates' | null
+type SettingsTabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts'
+type RightPanel = 'runs' | 'git' | 'worktrees' | 'browser' | null
 type ThinkingLevelChoice = 'low' | 'medium' | 'high' | 'xhigh'
 type WorkbenchThinking = { mode: 'off' | 'auto' | 'enabled'; level: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; collapseInUI?: boolean; budgetTokens?: number }
 
 const AGENT_SLOT_STORE_KEY = 'agenthub.workbench.agentSlots.v1'
 const INSPECTOR_WIDTH_STORE_KEY = 'agenthub.workbench.inspectorWidth.v1'
+const LAST_VIEW_STORE_KEY = 'agenthub.workbench.lastView.v1'
+const CUSTOM_SCHEDULE_STORE_KEY = 'agenthub.workbench.customSchedule.v1'
+const SMART_SCHEDULE_STORE_KEY = 'agenthub.workbench.smartFiveRoleSchedule.v1'
 const ANNOUNCEMENT_STORE_KEY = 'agenthub.workbench.announcement.v0.5.4'
 const DEFAULT_INSPECTOR_WIDTH = 460
 const MIN_INSPECTOR_WIDTH = 340
 const MAX_INSPECTOR_WIDTH = 760
+
+function mergeRuntimeEventLists(base: RuntimeEvent[], incoming: RuntimeEvent[]): RuntimeEvent[] {
+  if (incoming.length === 0) return base
+  const seen = new Set(base.map(event => event.id || `${event.threadId}:${event.seq}`))
+  const additions = incoming.filter(event => {
+    const key = event.id || `${event.threadId}:${event.seq}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+  if (additions.length === 0) return base
+  const last = base[base.length - 1]
+  const ordered = !last || additions.every(event => event.seq > last.seq)
+  return ordered ? [...base, ...additions] : [...base, ...additions].sort((a, b) => a.seq - b.seq)
+}
 
 interface WorkbenchLayoutProps {
   hubRunning: boolean
@@ -55,8 +85,8 @@ interface WorkbenchLayoutProps {
 }
 
 export function WorkbenchLayout(props: WorkbenchLayoutProps) {
-  const [view, setView] = useState<ViewMode>('chat')
-  const [settingsTab, setSettingsTab] = useState<SetupTab | 'appearance'>('providers')
+  const [view, setViewState] = useState<ViewMode>('chat')
+  const [settingsTab, setSettingsTab] = useState<SettingsTabKey>('providers')
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot>({ threads: [], turns: [], runs: [], activeThreadId: null })
   const [allThreads, setAllThreads] = useState<WorkbenchThread[]>([])
   const [events, setEvents] = useState<RuntimeEvent[]>([])
@@ -67,15 +97,10 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const [modelSelection, setModelSelection] = useState<ModelSelection | null>(null)
   const [thinking, setThinking] = useState<WorkbenchThinking>({ mode: 'auto', level: 'medium', collapseInUI: true })
   const [schedules, setSchedules] = useState<SchedulePreview[]>([])
-  const [customSchedule, setCustomSchedule] = useState<SchedulePreview>(() => ({
-    preset: 'custom',
-    label: tr('自定义调度', 'Custom schedule'),
-    description: tr('按你编辑的 Agent 节点和依赖关系执行。', 'Run with the agent nodes and dependencies you edit.'),
-    steps: [
-      { id: 'custom-1', label: tr('实现 / 分析', 'Implement / analyze'), agentId: 'codex', role: 'worker', mode: 'auto' },
-      { id: 'custom-2', label: tr('评审 / 汇总', 'Review / synthesize'), agentId: 'claude', role: 'reviewer', mode: 'auto', dependsOn: ['custom-1'] }
-    ]
-  }))
+  const [activeGoal, setActiveGoal] = useState<WorkbenchGoal | null>(null)
+  const [threadTodos, setThreadTodosState] = useState<ThreadTodo[]>([])
+  const [customSchedule, setCustomScheduleState] = useState<SchedulePreview>(() => defaultCustomSchedule())
+  const [smartSchedule, setSmartScheduleState] = useState<SchedulePreview>(() => defaultSmartFiveRoleSchedule())
   const [localAgents, setLocalAgents] = useState<LocalAgentStatus[]>([])
   const [sending, setSending] = useState(false)
   const [search, setSearch] = useState('')
@@ -93,13 +118,88 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const [announcementOpen, setAnnouncementOpen] = useState(() => {
     try { return localStorage.getItem(ANNOUNCEMENT_STORE_KEY) !== 'seen' } catch { return true }
   })
+  const [keyboardShortcuts, setKeyboardShortcuts] = useState<KeyboardShortcutsConfigV1>({ bindings: {} })
   const snapshotRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingRuntimeEvents = useRef<RuntimeEvent[]>([])
+  const seenImmediateStreamKeys = useRef<Set<string>>(new Set())
+  const loadingThreadIdRef = useRef<string | null>(null)
+  const runtimeEventFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const threadScrollRef = useRef<HTMLElement | null>(null)
   const shouldStickToBottom = useRef(true)
+  const startupViewApplied = useRef(false)
+  const smartScheduleStoreLoaded = useRef(false)
+
+  const setView = useCallback((next: ViewMode) => {
+    setViewState(next)
+    if (startupViewApplied.current) {
+      try { localStorage.setItem(LAST_VIEW_STORE_KEY, next) } catch { /* noop */ }
+    }
+  }, [])
+
+  const setCustomSchedule = useCallback((schedule: SchedulePreview) => {
+    const next = { ...schedule, preset: 'custom' as DispatchPreset }
+    setCustomScheduleState(next)
+    window.electronAPI.store.set(CUSTOM_SCHEDULE_STORE_KEY, next).catch(() => {})
+  }, [])
+
+  const setSmartSchedule = useCallback((schedule: SchedulePreview) => {
+    const next = { ...schedule, preset: 'firefly-custom' as DispatchPreset }
+    setSmartScheduleState(next)
+    window.electronAPI.store.set(SMART_SCHEDULE_STORE_KEY, next).catch(() => {})
+  }, [])
 
   const activeThreadId = snapshot.activeThreadId
 
+  const refreshThreadTodos = useCallback(async (threadId = activeThreadId) => {
+    if (!threadId) {
+      setThreadTodosState([])
+      return
+    }
+    const todos = await window.electronAPI.todos.list(threadId)
+    setThreadTodosState(todos)
+  }, [activeThreadId])
+
+  const appendRuntimeEvents = useCallback((nextEvents: RuntimeEvent[]) => {
+    if (nextEvents.length === 0) return
+    setEvents(prev => mergeRuntimeEventLists(prev, nextEvents))
+  }, [])
+
+  const flushRuntimeEvents = useCallback(() => {
+    if (runtimeEventFlushTimer.current) {
+      clearTimeout(runtimeEventFlushTimer.current)
+      runtimeEventFlushTimer.current = null
+    }
+    const next = pendingRuntimeEvents.current
+    pendingRuntimeEvents.current = []
+    appendRuntimeEvents(next)
+  }, [appendRuntimeEvents])
+
+  const clearRuntimeEventBuffer = useCallback(() => {
+    if (runtimeEventFlushTimer.current) {
+      clearTimeout(runtimeEventFlushTimer.current)
+      runtimeEventFlushTimer.current = null
+    }
+    pendingRuntimeEvents.current = []
+    seenImmediateStreamKeys.current.clear()
+  }, [])
+
+  const enqueueRuntimeEvent = useCallback((event: RuntimeEvent) => {
+    if (shouldFlushFirstStreamDelta(event, seenImmediateStreamKeys.current)) {
+      appendRuntimeEvents([event])
+      return
+    }
+    pendingRuntimeEvents.current.push(event)
+    if (runtimeEventFlushTimer.current) return
+    runtimeEventFlushTimer.current = setTimeout(() => {
+      runtimeEventFlushTimer.current = null
+      const next = pendingRuntimeEvents.current
+      pendingRuntimeEvents.current = []
+      appendRuntimeEvents(next)
+    }, 80)
+  }, [appendRuntimeEvents])
+
   const loadWorkbench = useCallback(async (nextWorkspaceId?: string | null) => {
+    clearRuntimeEventBuffer()
     const [wsList, activeWs, scheduleList, local] = await Promise.all([
       window.electronAPI.workspaces.list().catch(() => []),
       window.electronAPI.workspaces.getActive().catch(() => null),
@@ -121,15 +221,46 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     setLocalAgents(local)
 
     if (snap.activeThreadId) {
-      setEvents(await window.electronAPI.runtime.eventsSince(snap.activeThreadId, 0))
+      loadingThreadIdRef.current = snap.activeThreadId
+      const loadedEvents = await window.electronAPI.runtime.eventsSince(snap.activeThreadId, 0)
+      setEvents(prev => mergeRuntimeEventLists(
+        loadedEvents,
+        [
+          ...prev.filter(event => event.threadId === snap.activeThreadId),
+          ...pendingRuntimeEvents.current.filter(event => event.threadId === snap.activeThreadId)
+        ]
+      ))
+      setThreadTodosState(await window.electronAPI.todos.list(snap.activeThreadId).catch(() => []))
+      if (loadingThreadIdRef.current === snap.activeThreadId) loadingThreadIdRef.current = null
     } else {
       setEvents([])
+      setThreadTodosState([])
+      loadingThreadIdRef.current = null
     }
-  }, [workspaceId])
+  }, [workspaceId, clearRuntimeEventBuffer])
 
   useEffect(() => {
     loadWorkbench().catch(() => {})
   }, [])
+
+  useEffect(() => {
+    if (startupViewApplied.current) return
+    startupViewApplied.current = true
+    const target = readAppearanceLocal().startupOpenTarget
+    if (target === 'settings') {
+      setSettingsTab('appearance')
+      setView('settings')
+      return
+    }
+    if (target === 'last') {
+      let lastView: ViewMode = 'chat'
+      try {
+        const saved = localStorage.getItem(LAST_VIEW_STORE_KEY)
+        if (saved === 'chat' || saved === 'write' || saved === 'tasks' || saved === 'settings') lastView = saved
+      } catch { /* noop */ }
+      setView(lastView)
+    }
+  }, [setView])
 
   useEffect(() => {
     if (props.runtimeRefreshNonce === undefined) return
@@ -146,6 +277,15 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     window.electronAPI.store.get(AGENT_SLOT_STORE_KEY)
       .then(value => { if (Array.isArray(value)) setAgentSlots(value.filter(Boolean).slice(0, 3)) })
       .catch(() => {})
+    window.electronAPI.store.get(CUSTOM_SCHEDULE_STORE_KEY)
+      .then(value => { if (isStoredSchedule(value, 'custom')) setCustomScheduleState(value) })
+      .catch(() => {})
+    window.electronAPI.store.get(SMART_SCHEDULE_STORE_KEY)
+      .then(value => {
+        smartScheduleStoreLoaded.current = true
+        if (isStoredSchedule(value, 'firefly-custom')) setSmartScheduleState(value)
+      })
+      .catch(() => {})
     window.electronAPI.store.get(INSPECTOR_WIDTH_STORE_KEY)
       .then(value => {
         if (typeof value === 'number' && Number.isFinite(value)) {
@@ -157,13 +297,16 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   }, [])
 
   useEffect(() => {
-    return window.electronAPI.runtime.onEvent(event => {
-      if (event.threadId === activeThreadId) {
-        setEvents(prev => {
-          if (prev.some(e => e.id === event.id || e.seq === event.seq)) return prev
-          const last = prev[prev.length - 1]
-          return !last || event.seq > last.seq ? [...prev, event] : [...prev, event].sort((a, b) => a.seq - b.seq)
-        })
+    const unsubscribe = window.electronAPI.runtime.onEvent(event => {
+      if (event.threadId === activeThreadId || event.threadId === loadingThreadIdRef.current) {
+        if (isBufferedRuntimeEvent(event)) enqueueRuntimeEvent(event)
+        else {
+          flushRuntimeEvents()
+          appendRuntimeEvents([event])
+        }
+        if (event.kind === 'orchestrate' && event.payload?.kind === 'orchestrate:plan') {
+          void refreshThreadTodos(event.threadId)
+        }
       }
       const immediate = event.kind === 'turn:created' || event.kind === 'turn:status' || event.kind === 'agent:done' || event.kind === 'agent:error' || event.kind === 'run:created' || event.kind === 'run:status'
       if (snapshotRefreshTimer.current) clearTimeout(snapshotRefreshTimer.current)
@@ -173,7 +316,15 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         snapshotRefreshTimer.current = null
       }, immediate ? 0 : 400)
     })
-  }, [activeThreadId, workspaceId])
+    return () => {
+      unsubscribe()
+      clearRuntimeEventBuffer()
+    }
+  }, [activeThreadId, workspaceId, refreshThreadTodos, appendRuntimeEvents, enqueueRuntimeEvent, flushRuntimeEvents, clearRuntimeEventBuffer])
+
+  useEffect(() => {
+    refreshThreadTodos().catch(() => {})
+  }, [refreshThreadTodos])
 
   const activeThread = useMemo(
     () => snapshot.threads.find(t => t.id === snapshot.activeThreadId) ?? null,
@@ -197,16 +348,28 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
 
   useEffect(() => {
     if (targetAgent) {
-      const bound = selectionForAgentBinding(targetAgent, props.bindings, props.providers)
-      if (bound) setModelSelection(bound)
-      else if (modelSelection) setModelSelection(null)
+      if (modelSelection) setModelSelection(null)
       return
     }
-    if (modelSelection && isSelectableModel(modelSelection, props.providers, targetAgent)) return
-    setModelSelection(selectableModels[0] ? { providerId: selectableModels[0].providerId, modelId: selectableModels[0].modelId, source: 'provider' } : null)
-  }, [targetAgent, props.bindings, props.providers, selectableModelSignature])
+    if (modelSelection && isSelectableModel(modelSelection, props.providers)) return
+    if (modelSelection) setModelSelection(null)
+  }, [targetAgent, modelSelection, props.providers, selectableModelSignature])
 
-  const openSetup = (tab: SetupTab | 'appearance' = 'providers') => {
+  const selectTargetAgent = useCallback((agentId: string | null) => {
+    setTargetAgent(agentId)
+    if (agentId) setModelSelection(null)
+  }, [])
+
+  useEffect(() => {
+    if (!smartScheduleStoreLoaded.current) return
+    const usable = localAgentOptions(localAgents)
+    if (usable.length === 0 || customScheduleHasRunnableSteps(smartSchedule)) return
+    const next = defaultSmartFiveRoleSchedule(usable)
+    setSmartScheduleState(next)
+    window.electronAPI.store.set(SMART_SCHEDULE_STORE_KEY, next).catch(() => {})
+  }, [localAgents, smartSchedule])
+
+  const openSetup = (tab: SettingsTabKey = 'providers') => {
     setSettingsTab(tab)
     setView('settings')
   }
@@ -216,7 +379,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     setAnnouncementOpen(false)
   }
 
-  const openAnnouncementSetup = (tab: SetupTab | 'appearance') => {
+  const openAnnouncementSetup = (tab: SettingsTabKey) => {
     closeAnnouncement()
     openSetup(tab)
   }
@@ -229,6 +392,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   }
 
   const selectThread = async (threadId: string | null) => {
+    loadingThreadIdRef.current = threadId
     const thread = allThreads.find(t => t.id === threadId)
     const threadWorkspaceId = thread ? thread.workspaceId : workspaceId
     if (threadWorkspaceId !== workspaceId) {
@@ -241,12 +405,42 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       window.electronAPI.runtime.snapshot(threadWorkspaceId),
       window.electronAPI.runtime.snapshot(undefined)
     ])
+    const loadedEvents = selected ? await window.electronAPI.runtime.eventsSince(selected, 0) : []
+    const pendingForSelected = selected ? pendingRuntimeEvents.current.filter(event => event.threadId === selected) : []
+    clearRuntimeEventBuffer()
     setSnapshot(snap)
     setAllThreads(allSnap.threads)
-    setEvents(selected ? await window.electronAPI.runtime.eventsSince(selected, 0) : [])
+    setEvents(prev => selected ? mergeRuntimeEventLists(
+      loadedEvents,
+      [
+        ...prev.filter(event => event.threadId === selected),
+        ...pendingForSelected
+      ]
+    ) : [])
+    setThreadTodosState(selected ? await window.electronAPI.todos.list(selected).catch(() => []) : [])
+    setActiveGoal(selected ? await window.electronAPI.goals.get(selected).catch(() => null) : null)
+    if (loadingThreadIdRef.current === threadId) loadingThreadIdRef.current = null
     shouldStickToBottom.current = true
     setView('chat')
   }
+
+  const updateThreadTodoStatus = useCallback(async (todo: ThreadTodo, status: ThreadTodoStatus) => {
+    if (!activeThreadId) return
+    await window.electronAPI.todos.upsert({
+      threadId: activeThreadId,
+      id: todo.id,
+      content: todo.content,
+      status,
+      source: todo.source
+    })
+    await refreshThreadTodos(activeThreadId)
+  }, [activeThreadId, refreshThreadTodos])
+
+  const deleteThreadTodo = useCallback(async (todoId: string) => {
+    if (!activeThreadId) return
+    await window.electronAPI.todos.delete(activeThreadId, todoId)
+    await refreshThreadTodos(activeThreadId)
+  }, [activeThreadId, refreshThreadTodos])
 
   useEffect(() => {
     if (!shouldStickToBottom.current) return
@@ -254,6 +448,18 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     if (!el) return
     requestAnimationFrame(() => { el.scrollTop = el.scrollHeight })
   }, [activeThreadId, activeTurns.length, events.length])
+
+  useEffect(() => {
+    if (!activeThreadId) {
+      setActiveGoal(null)
+      return
+    }
+    let alive = true
+    window.electronAPI.goals.get(activeThreadId)
+      .then(goal => { if (alive) setActiveGoal(goal) })
+      .catch(() => { if (alive) setActiveGoal(null) })
+    return () => { alive = false }
+  }, [activeThreadId])
 
   const handleThreadScroll = useCallback(() => {
     const el = threadScrollRef.current
@@ -289,17 +495,73 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         const nextView = params.view as ViewMode
         if (['chat', 'write', 'tasks', 'settings'].includes(nextView)) setView(nextView)
       } else if (action === 'open-panel') {
-        const panel = params.panel as RightPanel
-        if (panel === 'runs' || panel === 'git' || panel === 'worktrees' || panel === 'browser' || panel === 'memory' || panel === 'updates') setRightPanel(panel)
+        const panel = params.panel
+        if (panel === 'runs' || panel === 'git' || panel === 'worktrees' || panel === 'browser') setRightPanel(panel)
       } else if (action === 'setup') {
-        openSetup(params.tab as SetupTab | 'appearance')
+        openSetup(params.tab as SettingsTabKey)
       }
     })
   }, [createThread, openCreateProject])
 
+  const shortcutBindings = useMemo(() => resolveKeyboardShortcutBindings(keyboardShortcuts), [keyboardShortcuts])
+
+  useEffect(() => {
+    let alive = true
+    const load = () => {
+      window.electronAPI.store.get(KEYBOARD_SHORTCUT_STORE_KEY)
+        .then(value => { if (alive) setKeyboardShortcuts(value || { bindings: {} }) })
+        .catch(() => { if (alive) setKeyboardShortcuts({ bindings: {} }) })
+    }
+    load()
+    const onChange = () => load()
+    window.addEventListener(KEYBOARD_SHORTCUTS_CHANGED, onChange)
+    return () => {
+      alive = false
+      window.removeEventListener(KEYBOARD_SHORTCUTS_CHANGED, onChange)
+    }
+  }, [])
+
+  const runShortcutCommand = useCallback((commandId: string) => {
+    if (commandId === 'new-chat') void createThread()
+    else if (commandId === 'choose-workspace') openCreateProject()
+    else if (commandId === 'view-chat') setView('chat')
+    else if (commandId === 'view-write') setView('write')
+    else if (commandId === 'view-tasks') setView('tasks')
+    else if (commandId === 'view-settings') setView('settings')
+    else if (commandId === 'panel-runs') setRightPanel('runs')
+    else if (commandId === 'panel-git') setRightPanel('git')
+    else if (commandId === 'panel-browser') setRightPanel('browser')
+    else if (commandId === 'settings-shortcuts') openSetup('shortcuts')
+    else if (commandId === 'settings-mcp') openSetup('mcp')
+  }, [createThread, openCreateProject, setView, openSetup])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return
+      const shortcut = keyboardEventToShortcut(event)
+      if (!shortcut) return
+      if (!event.ctrlKey && !event.metaKey && !event.altKey && shortcut !== 'Shift+Tab') return
+      const target = event.target as HTMLElement | null
+      const typingTarget = target && (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT' ||
+        target.isContentEditable
+      )
+      if (typingTarget && !event.ctrlKey && !event.metaKey && !event.altKey) return
+      const commandId = findKeyboardShortcutCommand(shortcutBindings, shortcut)
+      if (!commandId) return
+      event.preventDefault()
+      runShortcutCommand(commandId)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [shortcutBindings, runShortcutCommand])
+
   const pickProjectFolder = async () => {
-    const picked = await window.electronAPI.app.pickFolder()
+    const picked = await window.electronAPI.app.pickFolder({ defaultPath: defaultDialogPath('folder', activeWorkspace?.rootPath) })
     if (!picked) return
+    rememberDialogPath('folder', picked)
     const inferred = picked.split(/[\\/]/).filter(Boolean).at(-1) || tr('新工作目录', 'New folder')
     setProjectDraft(draft => ({ name: draft.name || inferred, rootPath: picked }))
   }
@@ -335,12 +597,29 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     await loadWorkbench(workspaceId)
   }
 
-  const sendPrompt = async (prompt: string, attachments: WorkbenchAttachment[] = [], overrides: { targetAgent?: string | null; mode?: DispatchPreset } = {}) => {
+  const sendPrompt = async (prompt: string, attachments: WorkbenchAttachment[] = [], overrides: { targetAgent?: string | null; mode?: DispatchPreset; customSchedule?: SchedulePreview; modelSelection?: ModelSelection | null } = {}) => {
     if (!prompt.trim() || sending) return
     const requestedTargetAgent = overrides.targetAgent !== undefined ? overrides.targetAgent : targetAgent
-    const selectedProviderDirect = !requestedTargetAgent && modelSelection?.source === 'provider'
+    const requestedModelSelection = requestedTargetAgent ? null : (overrides.modelSelection !== undefined ? overrides.modelSelection : modelSelection)
+    const selectedProviderDirect = !requestedTargetAgent && requestedModelSelection?.source === 'provider'
     const nextTargetAgent = selectedProviderDirect ? null : requestedTargetAgent
     const nextMode = selectedProviderDirect ? 'auto' : (overrides.mode || mode)
+    const rawCustomSchedule = selectedProviderDirect
+      ? undefined
+      : (overrides.customSchedule || (!nextTargetAgent && (nextMode === 'custom' ? customSchedule : nextMode === 'firefly-custom' ? smartSchedule : undefined)))
+    const usableLocalAgents = localAgentOptions(localAgents)
+    const safeCustomSchedule = rawCustomSchedule ? sanitizeCustomSchedule(rawCustomSchedule, usableLocalAgents) : undefined
+    const scheduleUnavailable = nextMode === 'custom'
+      ? safeCustomSchedule && !customScheduleHasRunnableSteps(safeCustomSchedule)
+      : nextMode === 'firefly-custom'
+      ? safeCustomSchedule
+        ? !customScheduleHasRunnableSteps(safeCustomSchedule)
+        : usableLocalAgents.length === 0
+      : false
+    if (scheduleUnavailable && !nextTargetAgent && !selectedProviderDirect) {
+      setSendError(tr('智能/自定义调度需要至少一个可用本地 Agent。请先在设置 > 路由里配置 CLI。', 'Smart and custom schedules need at least one usable local agent. Configure a CLI in Settings > Routing first.'))
+      return
+    }
     setSendError(null)
     setSending(true)
     try {
@@ -351,9 +630,9 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         mode: nextMode,
         targetAgent: nextTargetAgent,
         thinking,
-        modelSelection: modelSelection || undefined,
+        modelSelection: requestedModelSelection || undefined,
         attachments,
-        customSchedule: selectedProviderDirect ? undefined : (nextMode === 'custom' && !nextTargetAgent ? customSchedule : undefined)
+        customSchedule: safeCustomSchedule
       })
       const threadId = result?.thread?.id || activeThreadId
       if (threadId) await selectThread(threadId)
@@ -376,6 +655,10 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const cancelAgent = async (turnId: string, agentId: string) => {
     await window.electronAPI.turns.cancelAgent(turnId, agentId).catch(() => false)
     setSnapshot(await window.electronAPI.runtime.snapshot(workspaceId).catch(() => snapshot))
+  }
+
+  const resolveGuard = async (requestId: string, approved: boolean) => {
+    await window.electronAPI.turns.resolveGuard(requestId, approved).catch(() => false)
   }
 
   const retryTurn = async (turnId: string) => {
@@ -433,6 +716,68 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       await createThread()
       return true
     }
+    if (command.action === 'set-goal') {
+      if (!activeThreadId) {
+        setSendError(tr('请先创建或选择一个对话线程。', 'Create or select a thread first.'))
+        return true
+      }
+      if (!args) {
+        const currentGoal = await window.electronAPI.goals.get(activeThreadId).catch(() => null)
+        setActiveGoal(currentGoal)
+        setSendError(currentGoal
+          ? tr(`当前目标：${currentGoal.goal}`, `Current goal: ${currentGoal.goal}`)
+          : tr('当前线程还没有目标。请使用 /goal 写下目标。', 'No goal is set for this thread. Use /goal to set one.'))
+        return true
+      }
+      if (/^(clear|off|remove|unset)$/i.test(args.trim())) {
+        const cleared = await window.electronAPI.goals.clear(activeThreadId).catch(() => null)
+        setActiveGoal(null)
+        setSendError(cleared ? tr('当前线程目标已清除。', 'Current thread goal cleared.') : tr('当前线程还没有目标。', 'No goal is set for this thread.'))
+        return true
+      }
+      const existingGoal = await window.electronAPI.goals.get(activeThreadId).catch(() => null)
+      const match = args.match(/^(.*?)(?:\s+(?:--?(?:n|times|limit|max)|循环|轮数)\s*[=:]?\s*(\d{1,2}))?$/i)
+      const goalText = (match?.[1] || args).trim()
+      const loopLimit = match?.[2] ? Number(match[2]) : (existingGoal?.loopLimit || undefined)
+      if (!goalText) {
+        setSendError(tr('请在 /goal 后写下目标，或输入 clear 清除目标。', 'Write a goal after /goal, or use clear to remove it.'))
+        return true
+      }
+      const nextGoal = await window.electronAPI.goals.set(activeThreadId, goalText, loopLimit).catch((error: any) => {
+        setSendError(error?.message || tr('设置目标失败。', 'Failed to set goal.'))
+        return null
+      })
+      if (!nextGoal) return true
+      setActiveGoal(nextGoal)
+      setSendError(tr(`已设置目标：${nextGoal.goal}`, `Goal set: ${nextGoal.goal}`))
+      return true
+    }
+    if (command.action === 'run-loop') {
+      if (!activeThreadId) {
+        setSendError(tr('请先创建或选择一个对话线程。', 'Create or select a thread first.'))
+        return true
+      }
+      const currentGoal = activeGoal || await window.electronAPI.goals.get(activeThreadId).catch(() => null)
+      const loopLimit = parseLoopLimit(args, currentGoal?.loopLimit || 5)
+      const extra = stripLoopFlags(args).trim()
+      const goalText = currentGoal?.goal || extra
+      if (!goalText) {
+        setSendError(tr('请先用 /goal 设置目标，再运行 /loop。', 'Set a goal with /goal before running /loop.'))
+        return true
+      }
+      const nextPrompt = [
+        '[AgentHub Loop]',
+        `Goal: ${goalText}`,
+        `Loop limit: ${loopLimit}`,
+        'Task: run a bounded goal pass using the smart five-role schedule. Plan compact iterations inside this run, report progress, and stop when the goal is satisfied, when blocked, or when the loop limit is reached.',
+        'Constraints: preserve user intent, avoid destructive actions without confirmation, and summarize each iteration briefly.',
+        extra && currentGoal?.goal ? `\nExtra instructions:\n${extra}` : ''
+      ].filter(Boolean).join('\n\n')
+      setMode('firefly-custom')
+      setTargetAgent(null)
+      await sendPrompt(nextPrompt, [], { targetAgent: null, mode: 'firefly-custom', modelSelection: null, customSchedule: smartSchedule })
+      return true
+    }
     if (command.source === 'ecc') {
       const instruction = command.payload?.prompt || command.description || command.label
       if (command.label.toLowerCase() === '/plan') {
@@ -451,7 +796,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         return true
       }
       const nextPrompt = [
-        `[ECC 指令: ${command.label}]`,
+        `[${tr('工作流指令', 'Workflow command')}: ${command.label}]`,
         instruction,
         args ? `\n用户内容:\n${args}` : ''
       ].filter(Boolean).join('\n\n')
@@ -474,13 +819,14 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       return true
     }
     if (command.action === 'open-panel') {
-      const panel = command.payload?.panel as RightPanel
-      if (panel) setRightPanel(panel)
+      const panel = command.payload?.panel
+      if (panel === 'runs' || panel === 'git' || panel === 'worktrees' || panel === 'browser') setRightPanel(panel)
       if (panel === 'browser' && args) setPendingBrowserUrl(args)
       return true
     }
     if (command.action === 'use-schedule' && command.payload?.preset) {
       setTargetAgent(null)
+      setModelSelection(null)
       setMode(command.payload.preset as DispatchPreset)
       return true
     }
@@ -490,7 +836,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         setSendError(tr('这个本地 Agent 当前不可用，请先在设置里配置。', 'This local agent is not available. Configure it in Settings first.'))
         return true
       }
-      setTargetAgent(agentId)
+      selectTargetAgent(agentId)
       if (args) await sendPrompt(args, [], { targetAgent: agentId, mode: 'auto' })
       return true
     }
@@ -563,7 +909,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       return true
     }
     return false
-  }, [workspaceId, createThread, sendPrompt, openSetup, usableAgentIds.join('|'), selectableModels, thinking])
+  }, [workspaceId, activeThreadId, activeGoal, createThread, sendPrompt, openSetup, usableAgentIds.join('|'), selectableModels, thinking])
 
   return (
     <div className="wb-root">
@@ -577,6 +923,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         openCreateProject={openCreateProject}
         openSetup={openSetup}
         setRightPanel={setRightPanel}
+        shortcuts={shortcutBindings}
       />
       <div className={'wb-shell' + (rightPanel === 'git' ? ' has-bottom-dock' : '')}>
         <SessionSidebar
@@ -604,7 +951,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
               workspace={activeWorkspace}
               hasWorkspace={!!workspaceId}
               targetAgent={targetAgent}
-              setTargetAgent={setTargetAgent}
+              setTargetAgent={selectTargetAgent}
               agents={props.agents}
               localAgents={localAgents}
               sending={sending}
@@ -626,12 +973,34 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
                   workspaceName={workspaceName}
                   workspaceTitle={activeWorkspace?.rootPath || tr('添加工作目录', 'Add working folder')}
                   openWorkspace={workspaceId ? () => selectWorkspace(workspaceId) : openCreateProject}
+                  workspaceRoot={activeWorkspace?.rootPath ?? null}
                   activePanel={rightPanel}
                   setPanel={setRightPanel}
                   workspaceId={workspaceId}
                   readyLocalAgents={readyLocalAgents}
+                  todos={threadTodos}
+                  activeThreadId={activeThreadId}
+                  openTasks={() => setView('tasks')}
+                  updateTodoStatus={updateThreadTodoStatus}
+                  deleteTodo={deleteThreadTodo}
                 />
               </div>
+
+              {activeGoal && (
+                <div className="wb-goal-strip">
+                  <div>
+                    <strong>{tr('当前目标', 'Current goal')}</strong>
+                    <span>{activeGoal.goal}</span>
+                    <small>{tr(`Loop 上限 ${activeGoal.loopLimit} 轮`, `Loop limit ${activeGoal.loopLimit}`)}</small>
+                  </div>
+                  <button className="ah-btn sm" onClick={() => runSlashCommand({ text: `/loop --limit ${activeGoal.loopLimit}` })}>
+                    {tr('启动 Loop', 'Run loop')}
+                  </button>
+                  <button className="ah-btn sm" onClick={() => runSlashCommand({ text: '/goal clear' })}>
+                    {tr('清除', 'Clear')}
+                  </button>
+                </div>
+              )}
 
               <ThreadView
                 thread={activeThread}
@@ -639,10 +1008,12 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
                 events={events}
                 onRetry={retryTurn}
                 onCancelAgent={cancelAgent}
+                onResolveGuard={resolveGuard}
                 openSetup={openSetup}
                 onCreateProject={openCreateProject}
                 onCreateThread={createThread}
                 hasWorkspace={!!workspaceId}
+                workspaceRoot={activeWorkspace?.rootPath ?? null}
                 scrollRef={threadScrollRef}
                 onScroll={handleThreadScroll}
               />
@@ -668,7 +1039,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
                 onCreateProject={openCreateProject}
                 localAgents={localAgents}
                 targetAgent={targetAgent}
-                setTargetAgent={setTargetAgent}
+                setTargetAgent={selectTargetAgent}
                 agents={props.agents}
                 onRunCommand={runSlashCommand}
                 onOpenProviderSettings={() => openSetup('providers')}
@@ -720,7 +1091,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
                 initialTab={settingsTab}
                 workspaceId={workspaceId}
                 connectionSummary={connectionSummary}
-                goChat={(agentId) => { setTargetAgent(agentId); setView('chat') }}
+                goChat={(agentId) => { selectTargetAgent(agentId); setView('chat') }}
                 openSetup={openSetup}
               />
             </div>
@@ -728,54 +1099,62 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         </main>
 
         {rightPanel && rightPanel !== 'git' && (
-          <WorkbenchInspector
-            width={inspectorWidth}
-            viewportWidth={viewportWidth}
-            setWidth={previewInspectorWidth}
-            commitWidth={setInspectorWidthPersisted}
-            activePanel={rightPanel}
-            setPanel={setRightPanel}
-            workspaceId={workspaceId}
-            onClose={() => setRightPanel(null)}
-          >
-            {rightPanel === 'runs' ? (
-              <RunTimeline
-                events={events}
-                turns={activeTurns}
-                localAgents={localAgents}
-                setLocalAgents={setLocalAgents}
-                schedules={schedules}
-                mode={mode}
-                setMode={setMode}
-                customSchedule={customSchedule}
-                setCustomSchedule={setCustomSchedule}
-                openSetup={openSetup}
-                onClose={() => setRightPanel(null)}
-                terminalRuns={terminalRuns}
-                setTerminalRuns={setTerminalRuns}
-              />
-            ) : (
-              <WorkbenchToolPanel
-                panel={rightPanel}
-                workspaceId={workspaceId}
-                onClose={() => setRightPanel(null)}
-                browserUrl={pendingBrowserUrl}
-                onBrowserUrlConsumed={() => setPendingBrowserUrl(null)}
-                onAttachBrowserCapture={attachment => setPendingComposerAttachments([attachment])}
-              />
-            )}
-          </WorkbenchInspector>
+          <>
+            <button className="wb-panel-scrim" type="button" aria-label={tr('关闭侧边栏', 'Close side panel')} onClick={() => setRightPanel(null)} />
+            <WorkbenchInspector
+              width={inspectorWidth}
+              viewportWidth={viewportWidth}
+              setWidth={previewInspectorWidth}
+              commitWidth={setInspectorWidthPersisted}
+              activePanel={rightPanel}
+              setPanel={setRightPanel}
+              workspaceId={workspaceId}
+              onClose={() => setRightPanel(null)}
+            >
+              {rightPanel === 'runs' ? (
+                <RunTimeline
+                  events={events}
+                  turns={activeTurns}
+                  localAgents={localAgents}
+                  setLocalAgents={setLocalAgents}
+                  schedules={schedules}
+                  mode={mode}
+                  setMode={setMode}
+                  customSchedule={customSchedule}
+                  setCustomSchedule={setCustomSchedule}
+                  smartSchedule={smartSchedule}
+                  setSmartSchedule={setSmartSchedule}
+                  openSetup={openSetup}
+                  onClose={() => setRightPanel(null)}
+                  terminalRuns={terminalRuns}
+                  setTerminalRuns={setTerminalRuns}
+                />
+              ) : (
+                <WorkbenchToolPanel
+                  panel={rightPanel}
+                  workspaceId={workspaceId}
+                  onClose={() => setRightPanel(null)}
+                  browserUrl={pendingBrowserUrl}
+                  onBrowserUrlConsumed={() => setPendingBrowserUrl(null)}
+                  onAttachBrowserCapture={attachment => setPendingComposerAttachments([attachment])}
+                />
+              )}
+            </WorkbenchInspector>
+          </>
         )}
 
         {rightPanel === 'git' && (
-          <WorkbenchBottomDock
-            workspaceId={workspaceId}
-            activePanel={rightPanel}
-            setPanel={setRightPanel}
-            onClose={() => setRightPanel(null)}
-          >
-            <GitWorkbenchPanel workspaceId={workspaceId} onClose={() => setRightPanel(null)} />
-          </WorkbenchBottomDock>
+          <>
+            <button className="wb-panel-scrim bottom" type="button" aria-label={tr('关闭底部面板', 'Close bottom panel')} onClick={() => setRightPanel(null)} />
+            <WorkbenchBottomDock
+              workspaceId={workspaceId}
+              activePanel={rightPanel}
+              setPanel={setRightPanel}
+              onClose={() => setRightPanel(null)}
+            >
+              <GitWorkbenchPanel workspaceId={workspaceId} onClose={() => setRightPanel(null)} />
+            </WorkbenchBottomDock>
+          </>
         )}
       </div>
 
@@ -823,8 +1202,8 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
             </div>
             <p className="wb-announcement-intro">
               {tr(
-                '本版本把 AgentHub 工作台、Agent 切换、API 厂商直连、Git、Skills、MCP 和统计页面整合到一个桌面流程中。为了避免任务发错 Agent，请按下面顺序完成首次配置。',
-                'This release combines the workbench, agent switching, provider direct runs, Git, Skills, MCP, and usage stats into one desktop workflow. Complete the setup below before sending tasks.'
+                '本版本把 AgentHub 工作台、Agent 切换、API 厂商直连、Git、Skills 和 MCP 整合到一个桌面流程中。为了避免任务发错 Agent，请按下面顺序完成首次配置。',
+                'This release combines the workbench, agent switching, provider direct runs, Git, Skills, and MCP into one desktop workflow. Complete the setup below before sending tasks.'
               )}
             </p>
             <div className="wb-announcement-steps">
@@ -842,7 +1221,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
               </article>
               <article>
                 <strong>{tr('4. 绑定工作目录并使用工具区', '4. Bind a folder and use tools')}</strong>
-                <p>{tr('需要读取项目、查看 Git 或执行终端命令时，请先添加工作目录。Git、MCP、运行记录、使用统计和外观设置都在工作台工具区或设置页中。', 'Add a working folder before reading project files, using Git, or running terminal commands. Git, MCP, run history, usage stats, and appearance settings live in the tool area or Settings.')}</p>
+                <p>{tr('需要读取项目、查看 Git 或执行终端命令时，请先添加工作目录。Git、MCP、运行记录和外观设置都在工作台工具区或设置页中。', 'Add a working folder before reading project files, using Git, or running terminal commands. Git, MCP, run history, and appearance settings live in the tool area or Settings.')}</p>
               </article>
             </div>
             <div className="wb-announcement-actions">
@@ -868,7 +1247,8 @@ function NativeTitlebar({
   createThread,
   openCreateProject,
   openSetup,
-  setRightPanel
+  setRightPanel,
+  shortcuts
 }: {
   hubRunning: boolean
   search: string
@@ -877,8 +1257,9 @@ function NativeTitlebar({
   setView: (view: ViewMode) => void
   createThread: () => Promise<void>
   openCreateProject: () => void
-  openSetup: (tab?: SetupTab | 'appearance') => void
+  openSetup: (tab?: SettingsTabKey) => void
   setRightPanel: (panel: RightPanel) => void
+  shortcuts: ReturnType<typeof resolveKeyboardShortcutBindings>
 }) {
   const win = window.electronAPI?.win
   const [openMenu, setOpenMenu] = useState<'file' | 'view' | 'help' | null>(null)
@@ -908,10 +1289,10 @@ function NativeTitlebar({
         openMenu={openMenu}
         setOpenMenu={setOpenMenu}
         items={[
-          { label: tr('新建对话', 'New chat'), shortcut: 'Ctrl+N', action: run(createThread) },
-          { label: tr('添加工作目录', 'Add working folder'), action: run(openCreateProject) },
-          { label: tr('打开 Git 面板', 'Open Git panel'), action: run(() => setRightPanel('git')) },
-          { label: tr('打开浏览器', 'Open browser'), action: run(() => setRightPanel('browser')) }
+          { label: tr('新建对话', 'New chat'), shortcut: shortcutDisplay(shortcuts['new-chat']), action: run(createThread) },
+          { label: tr('添加工作目录', 'Add working folder'), shortcut: shortcutDisplay(shortcuts['choose-workspace']), action: run(openCreateProject) },
+          { label: tr('打开 Git 面板', 'Open Git panel'), shortcut: shortcutDisplay(shortcuts['panel-git']), action: run(() => setRightPanel('git')) },
+          { label: tr('打开浏览器', 'Open browser'), shortcut: shortcutDisplay(shortcuts['panel-browser']), action: run(() => setRightPanel('browser')) }
         ]}
       />
       <TitlebarMenu
@@ -920,13 +1301,12 @@ function NativeTitlebar({
         openMenu={openMenu}
         setOpenMenu={setOpenMenu}
         items={[
-          { label: tr('对话', 'Chat'), checked: view === 'chat', action: run(() => setView('chat')) },
-          { label: tr('写作', 'Write'), checked: view === 'write', action: run(() => setView('write')) },
-          { label: tr('任务历史', 'Tasks'), checked: view === 'tasks', action: run(() => setView('tasks')) },
-          { label: tr('设置', 'Settings'), checked: view === 'settings', action: run(() => setView('settings')) },
-          { label: tr('运行面板', 'Runs panel'), action: run(() => setRightPanel('runs')) },
-          { label: tr('工作树面板', 'Worktrees panel'), action: run(() => setRightPanel('worktrees')) },
-          { label: tr('长期记忆', 'Memory'), action: run(() => setRightPanel('memory')) }
+          { label: tr('对话', 'Chat'), shortcut: shortcutDisplay(shortcuts['view-chat']), checked: view === 'chat', action: run(() => setView('chat')) },
+          { label: tr('写作', 'Write'), shortcut: shortcutDisplay(shortcuts['view-write']), checked: view === 'write', action: run(() => setView('write')) },
+          { label: tr('任务历史', 'Tasks'), shortcut: shortcutDisplay(shortcuts['view-tasks']), checked: view === 'tasks', action: run(() => setView('tasks')) },
+          { label: tr('设置', 'Settings'), shortcut: shortcutDisplay(shortcuts['view-settings']), checked: view === 'settings', action: run(() => setView('settings')) },
+          { label: tr('运行面板', 'Runs panel'), shortcut: shortcutDisplay(shortcuts['panel-runs']), action: run(() => setRightPanel('runs')) },
+          { label: tr('工作树面板', 'Worktrees panel'), action: run(() => setRightPanel('worktrees')) }
         ]}
       />
       <TitlebarMenu
@@ -935,11 +1315,9 @@ function NativeTitlebar({
         openMenu={openMenu}
         setOpenMenu={setOpenMenu}
         items={[
-          { label: tr('版本与更新', 'Version and updates'), action: run(() => openSetup('updates')) },
-          { label: tr('MCP 配置', 'MCP settings'), action: run(() => openSetup('mcp')) },
-          { label: tr('使用统计', 'Usage stats'), action: run(() => openSetup('usage')) },
-          { label: tr('打开项目主页', 'Open homepage'), action: run(() => window.electronAPI.app.openExternal('https://agenthub.dev')) },
-          { label: tr('打开下载页', 'Open download page'), action: run(() => window.electronAPI.updates.openDownload()) }
+          { label: tr('快捷键设置', 'Keyboard shortcuts'), shortcut: shortcutDisplay(shortcuts['settings-shortcuts']), action: run(() => openSetup('shortcuts')) },
+          { label: tr('MCP 配置', 'MCP settings'), shortcut: shortcutDisplay(shortcuts['settings-mcp']), action: run(() => openSetup('mcp')) },
+          { label: tr('打开项目主页', 'Open homepage'), action: run(() => window.electronAPI.app.openExternal('https://agenthub.dev')) }
         ]}
       />
       <div className="wb-title-spacer"></div>
@@ -1027,20 +1405,46 @@ function WorkbenchChatTopBar({
   workspaceName,
   workspaceTitle,
   openWorkspace,
+  workspaceRoot,
   activePanel,
   setPanel,
   workspaceId,
-  readyLocalAgents
+  readyLocalAgents,
+  openTasks,
+  todos,
+  activeThreadId,
+  updateTodoStatus,
+  deleteTodo
 }: {
   title: string
   workspaceName: string
   workspaceTitle: string
   openWorkspace: () => void
+  workspaceRoot: string | null
   activePanel: RightPanel
   setPanel: (panel: RightPanel) => void
   workspaceId: string | null
   readyLocalAgents: number
+  openTasks: () => void
+  todos: ThreadTodo[]
+  activeThreadId: string | null
+  updateTodoStatus: (todo: ThreadTodo, status: ThreadTodoStatus) => void
+  deleteTodo: (todoId: string) => void
 }) {
+  const [todoOpen, setTodoOpen] = useState(false)
+  const todoRef = useRef<HTMLDivElement | null>(null)
+  const openTodos = todos.filter(todo => todo.status !== 'completed')
+  const completedTodos = todos.filter(todo => todo.status === 'completed')
+
+  useEffect(() => {
+    if (!todoOpen) return
+    const onPointerDown = (event: PointerEvent) => {
+      if (!todoRef.current?.contains(event.target as Node)) setTodoOpen(false)
+    }
+    window.addEventListener('pointerdown', onPointerDown)
+    return () => window.removeEventListener('pointerdown', onPointerDown)
+  }, [todoOpen])
+
   return (
     <>
       <div className="wb-minimal-head-left">
@@ -1052,6 +1456,16 @@ function WorkbenchChatTopBar({
         <span className="wb-minimal-title">{title}</span>
       </div>
       <div className="wb-minimal-head-actions">
+        <button
+          className="wb-minimal-tool-button"
+          type="button"
+          disabled={!workspaceRoot}
+          onClick={() => workspaceRoot && window.electronAPI.app.openPath({ path: workspaceRoot, target: readAppearanceLocal().defaultOpenTarget })}
+          title={workspaceRoot ? tr('打开编辑器（默认打开目标）', 'Open editor (default open target)') : tr('选择工作目录后可用', 'Choose a working folder first')}
+        >
+          <Icon d={IC.folder} size={15} />
+          <span>{tr('打开编辑器', 'Open editor')}</span>
+        </button>
         <ToolPanelBar activePanel={activePanel} setPanel={setPanel} workspaceId={workspaceId} iconOnly />
         <button
           className={'wb-minimal-tool-button' + (activePanel === 'runs' ? ' active' : '')}
@@ -1061,8 +1475,94 @@ function WorkbenchChatTopBar({
           <Icon d={IC.tasks} size={15} />
           {readyLocalAgents > 0 && <small>{readyLocalAgents}</small>}
         </button>
+        <div className="wb-top-todo" ref={todoRef}>
+          <button
+            className={'wb-minimal-tool-button' + (todoOpen ? ' active' : '')}
+            onClick={() => setTodoOpen(open => !open)}
+            title={tr('Todo / Agent 分步任务', 'Todo / agent plan tasks')}
+          >
+            <Icon d={IC.tasks} size={15} />
+            <span>Todo</span>
+            {openTodos.length > 0 && <small>{Math.min(99, openTodos.length)}</small>}
+          </button>
+          {todoOpen && (
+            <div className="wb-top-todo-popover">
+              <div className="wb-top-todo-head">
+                <div>
+                  <strong>Todo</strong>
+                  <span>{activeThreadId ? tr('当前会话的 Agent 分步任务', 'Agent plan tasks for this thread') : tr('还没有打开会话', 'No active thread')}</span>
+                </div>
+                <button className="ah-btn sm" type="button" onClick={openTasks}>{tr('完整任务页', 'Task page')}</button>
+              </div>
+              <div className="wb-top-todo-list">
+                {todos.length === 0 && (
+                  <div className="wb-top-todo-empty">
+                    {tr('Agent 生成计划后，分步任务会显示在这里。', 'Agent-generated plan steps will appear here.')}
+                  </div>
+                )}
+                {openTodos.map(todo => (
+                  <TodoPopoverRow
+                    key={todo.id}
+                    todo={todo}
+                    onStatus={updateTodoStatus}
+                    onDelete={deleteTodo}
+                  />
+                ))}
+                {completedTodos.length > 0 && (
+                  <details className="wb-top-todo-done">
+                    <summary>{tr(`已完成 ${completedTodos.length} 项`, `${completedTodos.length} completed`)}</summary>
+                    {completedTodos.slice(0, 8).map(todo => (
+                      <TodoPopoverRow
+                        key={todo.id}
+                        todo={todo}
+                        onStatus={updateTodoStatus}
+                        onDelete={deleteTodo}
+                      />
+                    ))}
+                  </details>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </>
+  )
+}
+
+function TodoPopoverRow({
+  todo,
+  onStatus,
+  onDelete
+}: {
+  todo: ThreadTodo
+  onStatus: (todo: ThreadTodo, status: ThreadTodoStatus) => void
+  onDelete: (todoId: string) => void
+}) {
+  const nextStatus: ThreadTodoStatus = todo.status === 'completed' ? 'pending' : 'completed'
+  return (
+    <div className={'wb-top-todo-row status-' + todo.status}>
+      <button
+        className="wb-top-todo-check"
+        type="button"
+        onClick={() => onStatus(todo, nextStatus)}
+        title={todo.status === 'completed' ? tr('恢复待办', 'Mark pending') : tr('标记完成', 'Mark done')}
+      >
+        {todo.status === 'completed' && <Icon d={IC.check} size={12} />}
+      </button>
+      <button
+        className="wb-top-todo-content"
+        type="button"
+        onClick={() => onStatus(todo, todo.status === 'in_progress' ? 'pending' : 'in_progress')}
+        title={todo.content}
+      >
+        <span>{todo.content}</span>
+        <small>{todo.status === 'in_progress' ? tr('进行中', 'In progress') : todo.status === 'completed' ? tr('已完成', 'Done') : tr('待处理', 'Pending')}</small>
+      </button>
+      <button className="wb-top-todo-delete" type="button" onClick={() => onDelete(todo.id)} title={tr('删除', 'Delete')}>
+        <Icon d={IC.x} size={12} />
+      </button>
+    </div>
   )
 }
 
@@ -1173,21 +1673,17 @@ function WorkbenchBottomDock({
 function inspectorItems(workspaceId: string | null): Array<{ id: Exclude<RightPanel, null>; label: string; icon: React.ReactNode; disabled: boolean }> {
   return [
     { id: 'runs', label: tr('运行', 'Runs'), icon: IC.tasks, disabled: false },
-    { id: 'git', label: 'Git', icon: IC.file, disabled: !workspaceId },
+    { id: 'git', label: 'Git', icon: IC.git, disabled: !workspaceId },
     { id: 'worktrees', label: tr('工作树', 'Worktrees'), icon: IC.folder, disabled: !workspaceId },
-    { id: 'browser', label: tr('浏览器', 'Browser'), icon: IC.search, disabled: false },
-    { id: 'memory', label: tr('记忆', 'Memory'), icon: IC.brain, disabled: false },
-    { id: 'updates', label: tr('更新', 'Updates'), icon: IC.refresh, disabled: false }
+    { id: 'browser', label: tr('浏览器', 'Browser'), icon: IC.search, disabled: false }
   ]
 }
 
 function ToolPanelBar({ activePanel, setPanel, workspaceId, iconOnly = false }: { activePanel: RightPanel; setPanel: (panel: RightPanel) => void; workspaceId: string | null; iconOnly?: boolean }) {
   const items: Array<{ id: Exclude<RightPanel, null | 'runs'>; label: string; icon: React.ReactNode; requiresWorkspace?: boolean }> = [
-    { id: 'git', label: 'Git', icon: IC.file, requiresWorkspace: true },
+    { id: 'git', label: 'Git', icon: IC.git, requiresWorkspace: true },
     { id: 'worktrees', label: tr('工作树', 'Worktrees'), icon: IC.folder, requiresWorkspace: true },
-    { id: 'browser', label: tr('浏览器', 'Browser'), icon: IC.search },
-    { id: 'memory', label: tr('记忆', 'Memory'), icon: IC.brain },
-    { id: 'updates', label: tr('更新', 'Updates'), icon: IC.refresh }
+    { id: 'browser', label: tr('浏览器', 'Browser'), icon: IC.search }
   ]
   return (
     <div className={'wb-tool-panel-bar' + (iconOnly ? ' icon-only' : '')}>
@@ -1307,7 +1803,7 @@ function GitBranchControl({ workspaceId, onOpenGit, compact = false }: { workspa
     return (
       <div className={'wb-git-branch-control empty' + (compact ? ' compact' : '')} title={error || label}>
         <button type="button" className="wb-git-branch-summary" onClick={onOpenGit}>
-          <Icon d={IC.file} size={13} />
+          <Icon d={IC.git} size={13} />
           <span>{label}</span>
           <small>Git</small>
         </button>
@@ -1355,7 +1851,7 @@ function GitBranchControl({ workspaceId, onOpenGit, compact = false }: { workspa
   return (
     <div className={'wb-git-branch-control' + (compact ? ' compact' : '')} title={error || `${status.branch} · ${syncLabel}`} ref={popoverRef}>
       <button type="button" className="wb-git-branch-summary" onClick={() => setOpen(value => !value)}>
-        <Icon d={IC.file} size={13} />
+        <Icon d={IC.git} size={13} />
         <span>{status.branch || 'HEAD'}</span>
         <small>{dirty ? `${status.files.length} ${tr('变更', 'changes')}` : syncLabel}</small>
       </button>
@@ -1440,8 +1936,7 @@ function WorkbenchToolPanel({
   if (panel === 'git') return <GitWorkbenchPanel workspaceId={workspaceId} onClose={onClose} />
   if (panel === 'worktrees') return <WorktreePanel workspaceId={workspaceId} onClose={onClose} />
   if (panel === 'browser') return <BrowserPanelV2 workspaceId={workspaceId} onClose={onClose} initialUrl={browserUrl} onInitialUrlConsumed={onBrowserUrlConsumed} onAttach={onAttachBrowserCapture} />
-  if (panel === 'memory') return <MemoryPanel onClose={onClose} />
-  return <UpdatesPanel onClose={onClose} />
+  return null
 }
 function WorktreePanel({ workspaceId, onClose }: { workspaceId: string | null; onClose: () => void }) {
   const [items, setItems] = useState<WorktreeItem[]>([])
@@ -1669,88 +2164,6 @@ function BrowserPanelV2({
   )
 }
 
-function MemoryPanel({ onClose }: { onClose: () => void }) {
-  const [query, setQuery] = useState('')
-  const [entries, setEntries] = useState<any[]>([])
-  const [loading, setLoading] = useState(false)
-
-  const refresh = useCallback(async () => {
-    setLoading(true)
-    try {
-      const next = query.trim()
-        ? await window.electronAPI.memory.search(query.trim())
-        : await window.electronAPI.memory.list()
-      setEntries(next)
-    } finally {
-      setLoading(false)
-    }
-  }, [query])
-
-  useEffect(() => {
-    refresh().catch(() => {})
-  }, [])
-
-  return (
-    <div className="wb-tool-panel">
-      <PanelTitle title={tr('长期记忆', 'Long-term memory')} subtitle={`${entries.length} ${tr('条', 'entries')}`} onClose={onClose} onRefresh={refresh} loading={loading} />
-      <div className="wb-tool-inline-form">
-        <input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') refresh().catch(() => {}) }} placeholder={tr('搜索记忆', 'Search memory')} />
-        <button onClick={refresh}>{tr('搜索', 'Search')}</button>
-      </div>
-      {entries.length === 0 && <div className="wb-muted-box">{tr('暂无记忆。', 'No memory entries yet.')}</div>}
-      {entries.slice(0, 20).map(entry => (
-        <div key={entry.id} className="wb-tool-row">
-          <strong>{entry.title || entry.category || entry.id}</strong>
-          <small>{String(entry.content || entry.text || '').slice(0, 140)}</small>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function UpdatesPanel({ onClose }: { onClose: () => void }) {
-  const [status, setStatus] = useState<UpdateStatus | null>(null)
-  const [loading, setLoading] = useState(false)
-
-  const refresh = useCallback(async () => {
-    setLoading(true)
-    try {
-      setStatus(await window.electronAPI.updates.status())
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  const check = async () => {
-    setLoading(true)
-    try {
-      setStatus(await window.electronAPI.updates.check(status?.channel || 'stable'))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  useEffect(() => {
-    refresh().catch(() => {})
-  }, [refresh])
-
-  return (
-    <div className="wb-tool-panel">
-      <PanelTitle title={tr('版本与更新', 'Version and updates')} subtitle={status?.version || 'AgentHub'} onClose={onClose} onRefresh={refresh} loading={loading} />
-      <div className="wb-tool-summary-grid">
-        <div><strong>{status?.version || '-'}</strong><span>{tr('当前版本', 'current')}</span></div>
-        <div><strong>{status?.latestVersion || '-'}</strong><span>{tr('最新版本', 'latest')}</span></div>
-        <div><strong>{status?.channel || 'stable'}</strong><span>{tr('渠道', 'channel')}</span></div>
-      </div>
-      {status?.error && <div className="wb-send-error">{status.error}</div>}
-      <div className="wb-tool-actions">
-        <button onClick={check} disabled={loading}>{tr('检查更新', 'Check updates')}</button>
-        <button onClick={() => window.electronAPI.updates.openDownload()}>{tr('打开下载页', 'Open download')}</button>
-      </div>
-    </div>
-  )
-}
-
 function PanelTitle({ title, subtitle, onClose, onRefresh, loading }: { title: string; subtitle?: string; onClose: () => void; onRefresh?: () => void | Promise<void>; loading?: boolean }) {
   return (
     <div className="wb-timeline-head">
@@ -1779,6 +2192,33 @@ function parseSlashInput(value: string): { label: string; args: string } | null 
   const rawLabel = match[1].toLowerCase()
   const label = rawLabel.startsWith('@') ? `/agent:${rawLabel.slice(1) === 'minimax-code' ? 'opencode' : rawLabel.slice(1)}` : rawLabel
   return { label, args: (match[2] || '').trim() }
+}
+
+function isBufferedRuntimeEvent(event: RuntimeEvent): boolean {
+  return event.kind === 'agent:delta' || event.kind === 'agent:activity'
+}
+
+function shouldFlushFirstStreamDelta(event: RuntimeEvent, seenKeys: Set<string>): boolean {
+  if (event.kind !== 'agent:delta' || event.payload?.channel === 'thinking') return false
+  const key = [
+    event.threadId,
+    event.turnId,
+    event.agentId || event.payload?.agentId || 'agent',
+    event.payload?.channel || 'content'
+  ].join(':')
+  if (seenKeys.has(key)) return false
+  seenKeys.add(key)
+  return true
+}
+
+function parseLoopLimit(value: string, fallback = 5): number {
+  const match = value.match(/(?:--?(?:n|times|limit|max)|循环|轮数)\s*[=:]?\s*(\d{1,2})/i)
+  const n = Math.floor(Number(match?.[1] || fallback) || fallback)
+  return Math.max(1, Math.min(20, n))
+}
+
+function stripLoopFlags(value: string): string {
+  return value.replace(/(?:--?(?:n|times|limit|max)|循环|轮数)\s*[=:]?\s*\d{1,2}/gi, '').trim()
 }
 
 function browserCaptureToAttachment(capture: BrowserContextAttachment): WorkbenchAttachment {
@@ -1840,7 +2280,7 @@ function selectableModelOptions(providers: ProviderDef[]): Array<{ providerId: s
   return options
 }
 
-function isSelectableModel(selection: ModelSelection | null, providers: ProviderDef[], targetAgent?: string | null): boolean {
+function isSelectableModel(selection: ModelSelection | null, providers: ProviderDef[]): boolean {
   if (!selection) return false
   return providers.some(provider =>
     provider.id === selection.providerId &&
@@ -1848,13 +2288,6 @@ function isSelectableModel(selection: ModelSelection | null, providers: Provider
     !!provider.apiKey &&
     provider.models?.some(model => model.id === selection.modelId)
   )
-}
-
-function selectionForAgentBinding(agentId: string, bindings: BindingDef[], providers: ProviderDef[]): ModelSelection | null {
-  const binding = bindings.find(item => item.agentId === agentId)
-  if (!binding || binding.protocol === 'stdio-plain' || binding.protocol === 'acp') return null
-  const selection: ModelSelection = { providerId: binding.providerId, modelId: binding.modelId, source: 'provider' }
-  return isSelectableModel(selection, providers) ? selection : null
 }
 
 function resolveModelCommand(
@@ -1922,8 +2355,9 @@ function modeLabel(mode: DispatchPreset): string {
     orchestrate: tr('编排', 'Orchestrate'),
     'lead-workers': tr('主控 + 工作者', 'Lead + workers'),
     'parallel-review': tr('并行评审', 'Parallel review'),
+    'firefly-custom': tr('智能五角色', 'Smart five-role'),
     custom: tr('自定义调度', 'Custom schedule')
-  })[mode]
+  } as Partial<Record<DispatchPreset, string>>)[mode] || mode
 }
 
 function agentShortName(agentId: string): string {

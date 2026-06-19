@@ -62,8 +62,22 @@ function labelFor(name: string, args: any): string {
 }
 
 function summarizeArgs(name: string, args: any): string {
-  if (name === 'fs_write') return (args.path ?? '') + ' (' + (typeof args.content === 'string' ? args.content.length : 0) + ' chars)'
-  if (name === 'exec') return args.command ?? ''
+  if (name === 'fs_write') {
+    const content = typeof args.content === 'string' ? args.content : ''
+    const preview = content.length > 1200 ? content.slice(0, 1200) + '\n... (truncated)' : content
+    return [
+      `Action: write file`,
+      `Path: ${args.path ?? ''}`,
+      `Content length: ${content.length} chars`,
+      preview ? `Preview:\n${preview}` : ''
+    ].filter(Boolean).join('\n')
+  }
+  if (name === 'exec') return [
+    `Action: run command`,
+    `Command: ${args.command ?? ''}`
+  ].join('\n')
+  if (name === 'fs_read') return `Action: read file\nPath: ${args.path ?? ''}`
+  if (name === 'fs_list') return `Action: list directory\nPath: ${args.path ?? '.'}`
   return args.path ?? ''
 }
 

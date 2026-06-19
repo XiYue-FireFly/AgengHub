@@ -7,10 +7,9 @@ AgentHub 是一个面向本地 AI 工作流的桌面工作台。它把本地 Age
 - **简洁工作台 UI**：顶部轻量工具栏、中心对话区、底部 Composer 和可拉伸 Inspector，适合长时间桌面使用。
 - **本地 Agent 切换**：检测并配置 Codex、Claude、Gemini、OpenCode、CodeBuddy、Antigravity、Mimocode、ZCode、Reasonix 等本地 Agent；只展示真实可用的 Agent。
 - **API 厂商直连**：支持 OpenAI、Anthropic、Gemini、DeepSeek、OpenRouter、MiniMax、Hunyuan 以及自定义 OpenAI 兼容端点。选择厂商模型后直接走 API，不再误入本地 Agent 编排。
-- **ECC 指令与 Skills**：内置 `/plan`、`/tdd`、`/code-review`、`/verify`、`/research`、`/security-review` 等 ECC 指令，并提供可安装到 Agent 的 ECC Workflow Skill。
+- **工作流指令与 Skills**：内置 `/plan`、`/tdd`、`/code-review`、`/verify`、`/research`、`/security-review` 等工作流指令，并提供可安装到 Agent 的 AgentHub Workflow Skill。
 - **Git 工作台**：提供分支、变更文件、diff、暂存、提交、历史、fetch、pull、push、sync 等本地 Git 工作流。
 - **MCP 管理**：读取工作区和用户级 MCP 配置，支持启用、测试、编辑和删除 MCP Server。
-- **使用统计**：基于真实运行事件统计会话、消息、Token、模型分布、活跃天数和热力图；本地 CLI 缺失 usage 时会标注估算。
 - **外观设置**：支持浅色、深色、系统主题、强调色、字体、字号、动效、对比度和 diff 标记样式。
 - **写作台与上下文容量**：提供写作工作区、快速动作、Agent 辅助输入和上下文容量估算。
 - **Windows 安装包**：提供 NSIS 安装器，支持桌面快捷方式、开始菜单快捷方式和 `agenthub://` 协议。
@@ -37,18 +36,17 @@ AgentHub 是一个面向本地 AI 工作流的桌面工作台。它把本地 Age
 |---|---|
 | 新建对话 | 左侧会话栏 |
 | 切换 Agent / API 厂商 | Composer 右侧选择器 |
-| 运行 ECC 指令 | 输入 `/` 打开指令面板 |
+| 运行工作流指令 | 输入 `/` 打开指令面板 |
 | Git 工作台 | 顶部 Git 图标或 Composer Git 胶囊 |
 | MCP 管理 | 设置 -> MCP |
-| 使用统计 | 设置 -> 使用统计 |
 | 外观设置 | 设置 -> 外观 |
 | Skills 管理 | Skills 页面 |
 
 ## 本地开发
 
 ```bash
-git clone https://github.com/XiYue-FireFly/AgengHub.git
-cd AgengHub
+git clone https://github.com/XiYue-FireFly/AgengHub.git AgentHub
+cd AgentHub
 npm install
 npm run dev
 ```

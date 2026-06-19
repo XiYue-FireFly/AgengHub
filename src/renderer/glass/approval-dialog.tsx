@@ -32,6 +32,7 @@ export function ApprovalDialog({ items, onDecide }: {
   const meta = AGENT_META[it.agentId]
   const toolZh = it.tool === 'write' ? '写文件' : '执行命令'
   const toolEn = it.tool === 'write' ? 'write a file' : 'run a command'
+  const summary = approvalSummary(it)
   const decide = (approved: boolean) => { onDecide(it, approved, remember); setRemember(false) }
 
   return (
@@ -65,14 +66,25 @@ export function ApprovalDialog({ items, onDecide }: {
           </div>
         </div>
 
-        {it.label && <div style={{ fontWeight: 600, fontSize: 13 }}>{it.label}</div>}
-        {it.detail && (
-          <pre className="mono" style={{
-            margin: 0, maxHeight: 180, overflow: 'auto', fontSize: 11.5, lineHeight: 1.5,
-            padding: '10px 12px', background: 'rgba(0,0,0,0.25)', borderRadius: 8,
-            whiteSpace: 'pre-wrap', wordBreak: 'break-word'
-          }}>{it.detail}</pre>
-        )}
+        <div className="approval-request-card">
+          <div className="approval-request-row">
+            <span>{tr('请求内容', 'Request')}</span>
+            <strong>{it.label || summary.action}</strong>
+          </div>
+          <div className="approval-request-row">
+            <span>{tr('工具', 'Tool')}</span>
+            <strong>{it.toolName}</strong>
+          </div>
+          {summary.target && (
+            <div className="approval-request-row">
+              <span>{tr('目标', 'Target')}</span>
+              <strong className="mono">{summary.target}</strong>
+            </div>
+          )}
+          {summary.preview && (
+            <pre className="mono approval-request-preview">{summary.preview}</pre>
+          )}
+        </div>
 
         <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer', color: 'var(--tx-2)' }}>
           <input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />
@@ -87,4 +99,22 @@ export function ApprovalDialog({ items, onDecide }: {
       </div>
     </div>
   )
+}
+
+function approvalSummary(item: ApprovalItem): { action: string; target: string; preview: string } {
+  const detail = String(item.detail || '').trim()
+  const lines = detail.split(/\r?\n/).map(line => line.trimEnd()).filter(Boolean)
+  const action = findDetailValue(lines, 'Action') || (item.tool === 'write' ? 'write file' : 'run command')
+  const target = findDetailValue(lines, 'Path') || findDetailValue(lines, 'Command') || ''
+  const previewIndex = lines.findIndex(line => line.toLowerCase() === 'preview:')
+  const preview = previewIndex >= 0
+    ? lines.slice(previewIndex + 1).join('\n')
+    : detail && detail !== target ? detail : ''
+  return { action, target, preview }
+}
+
+function findDetailValue(lines: string[], key: string): string {
+  const prefix = `${key}:`
+  const row = lines.find(line => line.toLowerCase().startsWith(prefix.toLowerCase()))
+  return row ? row.slice(prefix.length).trim() : ''
 }

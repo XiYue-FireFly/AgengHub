@@ -29,7 +29,8 @@ vi.mock('../../hub/workspace', () => ({
 vi.mock('../../runtime/ecc-commands', () => ({ listEccCommands: () => [] }))
 vi.mock('../../runtime/local-agents', () => ({
   detectLocalAgentStatuses: () => [],
-  getCachedLocalAgentStatuses: () => []
+  getCachedLocalAgentStatuses: () => [],
+  isUsableLocalAgentStatus: () => false
 }))
 vi.mock('../../runtime/schedules', () => ({ listSchedules: () => [] }))
 
@@ -57,23 +58,26 @@ describe('SkillManager', () => {
     expect(store['skills.v1'].skills[0].category).toMatchObject({ id: 'coding' })
   })
 
-  it('ECC workflow builtin can be added, installed, and injected', async () => {
+  it('AgentHub workflow builtin can be added, installed, and injected', async () => {
     const { getSkillManager } = await import('../manager')
     const { buildSkillBlock } = await import('../inject')
     const m = getSkillManager()
     const template = BUILTIN_SKILLS.find(skill => skill.source === 'ecc')
     expect(template).toMatchObject({
-      name: 'ECC Workflow',
+      name: 'AgentHub Workflow',
       category: { id: 'planning' },
       tags: expect.arrayContaining(['builtin', 'ecc', 'planning', 'testing', 'review', 'verification'])
     })
+    expect(template?.instructions).toContain('/plan')
+    expect(template?.instructions).toContain('/tdd')
+    expect(template?.instructions).toContain('/verify')
     const s = m.add(template!)
     expect(s.category).toMatchObject({ id: 'planning' })
     expect(s.source).toBe('ecc')
 
     m.install('codex', s.id)
     expect(m.installedFor('codex').map(skill => skill.id)).toEqual([s.id])
-    expect(buildSkillBlock(m.installedFor('codex'))).toContain('ECC Workflow')
+    expect(buildSkillBlock(m.installedFor('codex'))).toContain('AgentHub Workflow')
   })
 
   it('legacy skills without category remain readable', async () => {
@@ -159,6 +163,67 @@ describe('SkillManager', () => {
     expect(imported.category.id).toBe('writing')
     expect(store['skills.v1'].skills.find((skill: any) => skill.id === imported.id)?.category).toMatchObject({ id: 'writing' })
     expect(imported.tags).toContain('docs')
+  })
+
+  it('scanLocal caches short-lived results but refreshLocal semantics can rescan', async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'agenthub-skill-cache-'))
+    workspaceRoot = tempRoot
+    const skillDir = join(tempRoot, '.agenthub', 'skills', 'first')
+    mkdirSync(skillDir, { recursive: true })
+    const firstPath = join(skillDir, 'SKILL.md')
+    writeFileSync(firstPath, [
+      '---',
+      'name: First',
+      '---',
+      '',
+      'First instructions.'
+    ].join('\n'), 'utf-8')
+
+    const { getSkillManager } = await import('../manager')
+    const m = getSkillManager()
+    expect(m.scanLocal().map(item => item.name)).toContain('First')
+
+    const secondDir = join(tempRoot, '.agenthub', 'skills', 'second')
+    mkdirSync(secondDir, { recursive: true })
+    writeFileSync(join(secondDir, 'SKILL.md'), [
+      '---',
+      'name: Second',
+      '---',
+      '',
+      'Second instructions.'
+    ].join('\n'), 'utf-8')
+
+    expect(m.scanLocal().map(item => item.name)).not.toContain('Second')
+    expect(m.scanLocal({ refresh: true }).map(item => item.name)).toContain('Second')
+  })
+
+  it('scanLocal skips heavy cache directories while scanning workspace skills', async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'agenthub-skill-skip-'))
+    workspaceRoot = tempRoot
+    const validDir = join(tempRoot, '.agenthub', 'skills', 'valid')
+    const cacheDir = join(tempRoot, '.agenthub', 'skills', 'cache', 'ignored')
+    mkdirSync(validDir, { recursive: true })
+    mkdirSync(cacheDir, { recursive: true })
+    writeFileSync(join(validDir, 'SKILL.md'), [
+      '---',
+      'name: Valid',
+      '---',
+      '',
+      'Valid instructions.'
+    ].join('\n'), 'utf-8')
+    writeFileSync(join(cacheDir, 'SKILL.md'), [
+      '---',
+      'name: Ignored Cache Skill',
+      '---',
+      '',
+      'This should not block or appear.'
+    ].join('\n'), 'utf-8')
+
+    const { getSkillManager } = await import('../manager')
+    const names = getSkillManager().scanLocal({ refresh: true }).map(item => item.name)
+
+    expect(names).toContain('Valid')
+    expect(names).not.toContain('Ignored Cache Skill')
   })
 
   it('workbench skill commands expose category metadata', async () => {

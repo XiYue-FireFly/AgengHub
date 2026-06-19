@@ -1,16 +1,17 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
+import { shouldRunComposerCommand } from "../ComposerBar"
 
 describe("workbench slash command behavior", () => {
   it("keeps model and reasoning commands wired into the runtime", () => {
     const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
     const commands = readFileSync(join(process.cwd(), "src/main/runtime/commands.ts"), "utf8")
 
-    expect(commands).toContain('payload: { template: "context" }')
-    expect(commands).toContain('payload: { template: "review" }')
-    expect(commands).toContain('payload: { template: "model" }')
-    expect(commands).toContain('payload: { template: "reasoning" }')
+    expect(commands).toContain('{ template: "context" }')
+    expect(commands).toContain('{ template: "review" }')
+    expect(commands).toContain('{ template: "model" }')
+    expect(commands).toContain('{ template: "reasoning" }')
     expect(layout).toContain("resolveModelCommand(args, selectableModels)")
     expect(layout).toContain("reasoningFromCommand(args, thinking)")
     expect(layout).toContain("请以代码审查方式回答")
@@ -27,15 +28,54 @@ describe("workbench slash command behavior", () => {
     expect(composer).toContain("未识别的指令")
   })
 
-  it("prioritizes ECC commands in the slash palette", () => {
+  it("does not route @path file references through the command handler", () => {
+    const commands = [{ label: "/agent:codex" }] as any[]
+
+    expect(shouldRunComposerCommand("/plan fix this", commands)).toBe(true)
+    expect(shouldRunComposerCommand("@codex fix this", commands)).toBe(true)
+    expect(shouldRunComposerCommand("@C:\\Users\\me\\file.ts explain this", commands)).toBe(false)
+    expect(shouldRunComposerCommand("@/workspace/file.ts explain this", commands)).toBe(false)
+    expect(shouldRunComposerCommand('@"C:\\Users\\me\\file with spaces.ts" explain this', commands)).toBe(false)
+    expect(shouldRunComposerCommand("file:///C:/Users/me/file.ts explain this", commands)).toBe(false)
+  })
+
+  it("does not submit while IME composition is confirming text", () => {
+    const composer = readFileSync(join(process.cwd(), "src/renderer/workbench/ComposerBar.tsx"), "utf8")
+
+    expect(composer).toContain("composingRef")
+    expect(composer).toContain("compositionEndedAtRef")
+    expect(composer).toContain("native.isComposing")
+    expect(composer).toContain("native.keyCode === 229")
+    expect(composer).toContain("Date.now() - compositionEndedAtRef.current < 40")
+    expect(composer).toContain("onCompositionStart")
+    expect(composer).toContain("onCompositionEnd")
+    expect(composer).toContain("e.key === 'Enter' && !e.shiftKey && isImeConfirming(e)")
+  })
+
+  it("prioritizes workflow commands in the slash palette", () => {
     const composer = readFileSync(join(process.cwd(), "src/renderer/workbench/ComposerBar.tsx"), "utf8")
 
     expect(composer).toContain("rankCommandsForPalette")
     expect(composer).toContain("command.source === 'ecc' ? 0")
     expect(composer).toContain("slice(0, 12)")
     expect(composer).toContain("['/plan', 0]")
-    expect(composer).toContain("['/tdd', 1]")
-    expect(composer).toContain("['/code-review', 2]")
+    expect(composer).toContain("['/goal', 1]")
+    expect(composer).toContain("['/loop', 2]")
+    expect(composer).toContain("['/tdd', 3]")
+    expect(composer).toContain("['/code-review', 4]")
+  })
+
+  it("renders localized slash command descriptions", () => {
+    const composer = readFileSync(join(process.cwd(), "src/renderer/workbench/ComposerBar.tsx"), "utf8")
+    const commands = readFileSync(join(process.cwd(), "src/main/runtime/commands.ts"), "utf8")
+
+    expect(composer).toContain("commandDescription(command)")
+    expect(composer).toContain("command.descriptionZh")
+    expect(composer).toContain("command.descriptionEn")
+    expect(commands).toContain("descriptionZh")
+    expect(commands).toContain("descriptionEn")
+    expect(commands).toContain("使用智能五角色调度启动有边界的目标循环。")
+    expect(commands).not.toContain("FireFly")
   })
 
   it("keeps configured API provider models in the composer picker", () => {
@@ -56,6 +96,18 @@ describe("workbench slash command behavior", () => {
     expect(composer).not.toContain("source: 'provider-group'")
     expect(composer).not.toContain("setActiveProviderId(model.providerId)")
     expect(composer).not.toContain("!activeProviderId && modelSelection?.providerId")
+  })
+
+  it("clicking a provider row reveals models without auto-selecting the first model", () => {
+    const composer = readFileSync(join(process.cwd(), "src/renderer/workbench/ComposerBar.tsx"), "utf8")
+    const selectProviderChoice = composer.slice(
+      composer.indexOf("const selectProviderChoice"),
+      composer.indexOf("const selectProviderModel")
+    )
+
+    expect(selectProviderChoice).toContain("setActiveProviderId(providerId)")
+    expect(selectProviderChoice).toContain("setModelSelection(null)")
+    expect(selectProviderChoice).not.toContain("firstModel")
   })
 
   it("keeps local CLI model choices disabled in the composer picker", () => {
@@ -80,8 +132,16 @@ describe("workbench slash command behavior", () => {
     expect(main).toContain("isProviderDirectSelection")
     expect(main).toContain("dispatcher.dispatchProviderDirect")
     expect(main).toContain("retryProviderDirect")
+    expect(main).toContain("const directTarget = payload.targetAgent?.trim()")
+    expect(main).toContain('ipcMain.handle("hub:dispatch"')
+    expect(main).toContain("return dispatcher.dispatchProviderDirect(payload.text, payload.modelSelection")
+    expect(main).toContain("await dispatcher!.dispatchProviderDirect(message.payload.text, modelSelection")
+    expect(main).toContain("const providerDirect = !directTarget && isProviderDirectSelection(payload.modelSelection)")
+    expect(main).toContain("const turnModelSelection = providerDirect ? payload.modelSelection : directTarget ? undefined : payload.modelSelection")
+    expect(main).not.toContain("isProviderDirectSelection(payload.modelSelection, directTarget)")
     expect(dispatcher).toContain("dispatchProviderDirect")
     expect(dispatcher).toContain("providerDirectAgentId")
+    expect(dispatcher).toContain("Provider model selections must run through provider direct dispatch")
     const directBody = dispatcher.slice(
       dispatcher.indexOf("async dispatchProviderDirect"),
       dispatcher.indexOf("private resolveTargets")
@@ -93,10 +153,16 @@ describe("workbench slash command behavior", () => {
     expect(directBody).not.toContain("runAgenticHttpBranch")
   })
 
-  it("uses 258k as the composer context capacity fallback", () => {
+  it("keeps the 258k context fallback without rendering a composer context chip", () => {
     const composer = readFileSync(join(process.cwd(), "src/renderer/workbench/ComposerBar.tsx"), "utf8")
+    const capacity = readFileSync(join(process.cwd(), "src/renderer/workbench/contextCapacity.ts"), "utf8")
 
-    expect(composer).toContain("return 258_000")
+    expect(composer).toContain("from './contextCapacity'")
+    expect(composer).toContain("contextWindow: model.contextWindow || 258_000")
+    expect(composer).not.toContain("buildContextCapacity")
+    expect(composer).not.toContain("wb-context-capacity-host")
+    expect(composer).not.toContain("wb-context-capacity-trigger")
+    expect(capacity).toContain("return 258_000")
     expect(composer).not.toContain("return 128_000")
   })
 

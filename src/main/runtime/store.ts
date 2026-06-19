@@ -76,6 +76,13 @@ export class WorkbenchRuntimeStore extends EventEmitter {
     }, delayMs)
   }
 
+  dispose(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer)
+      this.saveTimer = null
+    }
+  }
+
   snapshot(workspaceId?: string | null): WorkbenchSnapshot {
     const state = this.load()
     const threads = workspaceId === undefined
@@ -281,7 +288,7 @@ export class WorkbenchRuntimeStore extends EventEmitter {
       : stream.kind === "done" ? "agent:done"
       : stream.kind === "error" ? "agent:error"
       : "agent:activity"
-    if (stream.kind === "start" && stream.agentId) this.createRun({ turnId, agentId: stream.agentId, role: "target" })
+    if (stream.kind === "start" && stream.agentId) this.createRun({ turnId, agentId: stream.agentId, role: stream.scheduleRole || "target" })
     if (stream.kind === "done" && stream.agentId) this.setRunStatus(turnId, stream.agentId, "completed", { durationMs: stream.durationMs })
     if (stream.kind === "error" && stream.agentId) this.setRunStatus(turnId, stream.agentId, stream.code === "AGENT_CANCELLED" ? "cancelled" : "failed", { error: stream.error, code: stream.code })
     const persistNow = kind !== "agent:delta"
@@ -302,7 +309,7 @@ export class WorkbenchRuntimeStore extends EventEmitter {
     state.nextSeqByThread[threadId] = seq + 1
     const event: RuntimeEvent = { id: id("event"), threadId, turnId, seq, kind, agentId, payload, createdAt: Date.now() }
     state.events.push(event)
-    if (state.events.length > 5000) state.events = state.events.slice(-5000)
+    state.events = pruneRuntimeEvents(state.events)
     this.emit("event", event)
     if (persist) this.save()
     else this.scheduleSave()
@@ -327,4 +334,41 @@ let instance: WorkbenchRuntimeStore | null = null
 export function getWorkbenchRuntimeStore(): WorkbenchRuntimeStore {
   if (!instance) instance = new WorkbenchRuntimeStore()
   return instance
+}
+
+const MAX_RUNTIME_EVENTS = 5000
+const PROTECTED_EVENT_KINDS = new Set<RuntimeEvent["kind"]>([
+  "agent:done",
+  "agent:error",
+  "turn:created",
+  "turn:status",
+  "run:created",
+  "run:status",
+  "route:decision",
+  "guard:verdict",
+  "memory:candidate"
+])
+
+function pruneRuntimeEvents(events: RuntimeEvent[]): RuntimeEvent[] {
+  if (events.length <= MAX_RUNTIME_EVENTS) return events
+  const overflow = events.length - MAX_RUNTIME_EVENTS
+  let removed = 0
+  const withoutOldDeltas = events.filter(event => {
+    if (removed >= overflow) return true
+    if (event.kind !== "agent:delta") return true
+    removed += 1
+    return false
+  })
+  if (withoutOldDeltas.length <= MAX_RUNTIME_EVENTS) return withoutOldDeltas
+  const secondOverflow = withoutOldDeltas.length - MAX_RUNTIME_EVENTS
+  removed = 0
+  const withoutOldNonCritical = withoutOldDeltas.filter(event => {
+    if (removed >= secondOverflow) return true
+    if (PROTECTED_EVENT_KINDS.has(event.kind)) return true
+    removed += 1
+    return false
+  })
+  return withoutOldNonCritical.length <= MAX_RUNTIME_EVENTS
+    ? withoutOldNonCritical
+    : withoutOldNonCritical.slice(-MAX_RUNTIME_EVENTS)
 }

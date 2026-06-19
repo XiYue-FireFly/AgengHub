@@ -1,7 +1,7 @@
 import { AGENT_IDS, AGENT_META, AgentUIStatus, BindingDef, ProviderDef } from './meta'
 
 export type ConnectionState = 'usable' | 'busy' | 'error' | 'needs-provider' | 'needs-install' | 'off'
-export type SetupTab = 'providers' | 'local-agents' | 'routing' | 'approvals' | 'workspaces' | 'skills' | 'mcp' | 'usage' | 'updates'
+export type SetupTab = 'providers' | 'local-agents' | 'routing' | 'approvals' | 'workspaces' | 'skills' | 'mcp' | 'usage' | 'memory' | 'updates'
 
 export interface ConnectionAction {
   labelZh: string

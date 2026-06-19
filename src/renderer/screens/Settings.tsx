@@ -1,25 +1,44 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { Icon, IC, AgentMark, Seg, Switch } from '../glass/ui'
 import { AGENT_META, AGENT_IDS, BindingDef, DEFAULT_STDIO_ARGS, ProviderDef } from '../glass/meta'
-import { getLang, setLang, Lang } from '../glass/i18n'
+import { agentDesc, getLang, setLang, Lang, tr } from '../glass/i18n'
 import { ConnectionSummary, SetupTab } from '../glass/connection-status'
 import { SkillsTab } from './Skills'
 import {
   AppearancePreferences,
   DEFAULT_APPEARANCE,
+  DefaultDialogLocation,
   DiffMarkerStyle,
   AgentEnvironment,
   DefaultOpenTarget,
+  StartupOpenTarget,
   TerminalShell,
   applyAppearance,
+  defaultDialogPath,
   normalizeAppearance,
   readAppearanceLocal,
+  rememberDialogPath,
   saveAppearance
 } from '../appearance'
+import {
+  findKeyboardShortcutConflict,
+  KEYBOARD_SHORTCUT_COMMANDS,
+  KEYBOARD_SHORTCUT_STORE_KEY,
+  KEYBOARD_SHORTCUTS_CHANGED,
+  KeyboardShortcutCommandId,
+  KeyboardShortcutsConfigV1,
+  keyboardEventToShortcut,
+  normalizeKeyboardShortcuts,
+  resolveKeyboardShortcutBindings,
+  shortcutDisplay
+} from '../keyboard-shortcuts'
 
 export type MotionLevel = 'off' | 'subtle' | 'rich'
 
-type TabKey = SetupTab | 'appearance' | 'updates'
+type TabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts'
+const MEMORY_CATEGORIES: MemoryCategory[] = ['preference', 'project', 'style', 'decision', 'correction', 'imported_conversation', 'conversation', 'task', 'skill', 'file', 'system']
+const MEMORY_SCOPES = ['all', 'user', 'workspace', 'project'] as const
+type MemoryScopeFilter = typeof MEMORY_SCOPES[number]
 
 interface SettingsScreenProps {
   providers: ProviderDef[]
@@ -49,36 +68,67 @@ interface BinaryCandidate {
 
 type ApprovalPolicy = 'allow' | 'ask' | 'deny'
 
-const NAV_ITEMS: Array<{ value: TabKey; label: string; description: string; icon: React.ReactNode }> = [
-  { value: 'appearance', label: '外观', description: '主题、字体、动效和界面显示偏好。', icon: IC.gear },
-  { value: 'providers', label: '供应商', description: '管理 API 供应商、Key 和模型列表。', icon: IC.pulse },
-  { value: 'local-agents', label: '本地 Agent', description: '检测并配置本机可用的 Agent 入口。', icon: IC.terminal },
-  { value: 'routing', label: '路由', description: '设置 Agent 使用的模型、CLI 或 ACP 绑定。', icon: IC.broadcast },
-  { value: 'approvals', label: '权限', description: '控制命令、文件和工具调用的审批策略。', icon: IC.check },
-  { value: 'workspaces', label: '工作目录', description: '管理绑定到会话的本地目录。', icon: IC.folder },
-  { value: 'skills', label: '技能', description: '导入和管理本地 Agent 技能。', icon: IC.bolt },
-  { value: 'mcp', label: 'MCP', description: '管理本地和工作目录 MCP 服务。', icon: IC.link },
-  { value: 'usage', label: '使用统计', description: '查看会话、消息和 Token 使用情况。', icon: IC.pulse },
-  { value: 'updates', label: '版本与更新', description: '检查当前版本、渠道和下载入口。', icon: IC.refresh }
+const NAV_ITEMS: Array<{ value: TabKey; label: string; labelEn: string; description: string; descriptionEn: string; icon: React.ReactNode }> = [
+  { value: 'appearance', label: '外观', labelEn: 'Appearance', description: '主题、字体、动效和界面显示偏好。', descriptionEn: 'Theme, fonts, motion, and display preferences.', icon: IC.gear },
+  { value: 'providers', label: '供应商', labelEn: 'Providers', description: '管理 API 供应商、Key 和模型列表。', descriptionEn: 'Manage API providers, keys, and model lists.', icon: IC.pulse },
+  { value: 'local-agents', label: '本地 Agent', labelEn: 'Local Agents', description: '检测并配置本机可用的 Agent 入口。', descriptionEn: 'Detect and configure local Agent entries.', icon: IC.terminal },
+  { value: 'routing', label: '路由', labelEn: 'Routing', description: '设置 Agent 使用的模型、CLI 或 ACP 绑定。', descriptionEn: 'Configure model, CLI, or ACP bindings for Agents.', icon: IC.broadcast },
+  { value: 'approvals', label: '权限', labelEn: 'Approvals', description: '控制命令、文件和工具调用的审批策略。', descriptionEn: 'Control approval policies for commands, files, and tools.', icon: IC.check },
+  { value: 'workspaces', label: '工作目录', labelEn: 'Workspaces', description: '管理绑定到会话的本地目录。', descriptionEn: 'Manage local folders bound to sessions.', icon: IC.folder },
+  { value: 'skills', label: '技能', labelEn: 'Skills', description: '导入和管理本地 Agent 技能。', descriptionEn: 'Import and manage local Agent skills.', icon: IC.bolt },
+  { value: 'mcp', label: 'MCP', labelEn: 'MCP', description: '管理本地和工作目录 MCP 服务。', descriptionEn: 'Manage local and workspace MCP services.', icon: IC.link },
+  { value: 'updates', label: '版本与更新', labelEn: 'Version & Updates', description: '检查当前版本、渠道和下载入口。', descriptionEn: 'Check version, channel, and download entry.', icon: IC.refresh }
 ]
+
+const memoryNavInsertIndex = NAV_ITEMS.findIndex(item => item.value === 'updates')
+NAV_ITEMS.splice(memoryNavInsertIndex >= 0 ? memoryNavInsertIndex : NAV_ITEMS.length, 0, {
+  value: 'memory',
+  label: '长期记忆',
+  labelEn: 'Long-Term Memory',
+  description: '管理偏好、项目背景、纠正点和导入对话样本。',
+  descriptionEn: 'Manage preferences, project context, corrections, and imported conversation samples.',
+  icon: IC.brain
+})
+
+const shortcutsNavInsertIndex = NAV_ITEMS.findIndex(item => item.value === 'updates')
+NAV_ITEMS.splice(shortcutsNavInsertIndex >= 0 ? shortcutsNavInsertIndex : NAV_ITEMS.length, 0, {
+  value: 'shortcuts',
+  label: '\u5feb\u6377\u952e',
+  labelEn: 'Shortcuts',
+  description: '\u7ba1\u7406\u5de5\u4f5c\u53f0\u5feb\u6377\u952e\u548c\u51b2\u7a81\u3002',
+  descriptionEn: 'Manage workbench shortcuts and conflicts.',
+  icon: IC.terminal
+})
+
+const VISIBLE_NAV_ITEMS = NAV_ITEMS.filter(item => item.value !== 'usage')
+
+function settingsNavLabel(item: typeof NAV_ITEMS[number]): string {
+  return getLang() === 'en' ? item.labelEn : item.label
+}
+
+function settingsNavDescription(item: typeof NAV_ITEMS[number]): string {
+  return getLang() === 'en' ? item.descriptionEn : item.description
+}
 
 export function SettingsScreen(props: SettingsScreenProps) {
   const [tab, setTab] = useState<TabKey>(props.initialTab || 'appearance')
   useEffect(() => setTab(props.initialTab || 'appearance'), [props.initialTab])
 
-  const active = NAV_ITEMS.find(item => item.value === tab) ?? NAV_ITEMS[0]
+  const visibleTab = tab === 'usage' ? 'appearance' : tab
+  const active = VISIBLE_NAV_ITEMS.find(item => item.value === visibleTab) ?? VISIBLE_NAV_ITEMS[0]
+  const showSetupNext = visibleTab === 'providers' || visibleTab === 'local-agents' || visibleTab === 'routing' || visibleTab === 'workspaces'
 
   return (
-    <div className="wb-settings wb-settings-shell" data-screen-label="设置">
+    <div className="wb-settings wb-settings-shell" data-screen-label={tr('设置', 'Settings')}>
       <aside className="wb-settings-nav">
         <div className="wb-settings-nav-title">
-          <strong>设置</strong>
+          <strong>{tr('设置', 'Settings')}</strong>
           <span>AgentHub</span>
         </div>
-        {NAV_ITEMS.map(item => (
-          <button key={item.value} className={tab === item.value ? 'active' : ''} onClick={() => setTab(item.value)}>
+        {VISIBLE_NAV_ITEMS.map(item => (
+          <button key={item.value} className={visibleTab === item.value ? 'active' : ''} onClick={() => setTab(item.value)}>
             <Icon d={item.icon} size={15} />
-            <span>{item.label}</span>
+            <span>{settingsNavLabel(item)}</span>
           </button>
         ))}
       </aside>
@@ -86,15 +136,15 @@ export function SettingsScreen(props: SettingsScreenProps) {
       <section className="wb-settings-content">
         <div className="wb-settings-page-head">
           <div>
-            <h2>{active.label}</h2>
-            <p>{active.description}</p>
+            <h2>{settingsNavLabel(active)}</h2>
+            <p>{settingsNavDescription(active)}</p>
           </div>
         </div>
 
-        <SetupNextStep summary={props.connectionSummary} onTab={setTab} goChat={props.goChat} />
+        {showSetupNext && <SetupNextStep summary={props.connectionSummary} onTab={setTab} goChat={props.goChat} />}
 
-        {tab === 'appearance' && <AppearanceTab motion={props.motion} setMotion={props.setMotion} />}
-        {tab === 'providers' && (
+        {visibleTab === 'appearance' && <AppearanceTab motion={props.motion} setMotion={props.setMotion} />}
+        {visibleTab === 'providers' && (
           <ProvidersTab
             providers={props.providers}
             onSetEnabled={props.onSetEnabled}
@@ -104,8 +154,8 @@ export function SettingsScreen(props: SettingsScreenProps) {
             onDelete={props.onDeleteProvider}
           />
         )}
-        {tab === 'local-agents' && <LocalAgentsTab />}
-        {tab === 'routing' && (
+        {visibleTab === 'local-agents' && <LocalAgentsTab />}
+        {visibleTab === 'routing' && (
           <RoutingTab
             providers={props.providers}
             bindings={props.bindings}
@@ -115,12 +165,13 @@ export function SettingsScreen(props: SettingsScreenProps) {
             onTab={setTab}
           />
         )}
-        {tab === 'approvals' && <ApprovalsTab />}
-        {tab === 'workspaces' && <WorkspacesTab />}
-        {tab === 'skills' && <SkillsTab />}
-        {tab === 'mcp' && <McpSettingsTab workspaceId={props.workspaceId ?? null} />}
-        {tab === 'usage' && <UsageStatsTabV2 />}
-        {tab === 'updates' && <UpdatesSettingsTab />}
+        {visibleTab === 'approvals' && <ApprovalsTab />}
+        {visibleTab === 'workspaces' && <WorkspacesTab />}
+        {visibleTab === 'skills' && <SkillsTab />}
+        {visibleTab === 'mcp' && <McpSettingsTab workspaceId={props.workspaceId ?? null} />}
+        {visibleTab === 'shortcuts' && <ShortcutsSettingsTab />}
+        {visibleTab === 'memory' && <MemorySettingsTab />}
+        {visibleTab === 'updates' && <UpdatesSettingsTab />}
       </section>
     </div>
   )
@@ -136,19 +187,19 @@ function SetupNextStep({ summary, onTab, goChat }: {
   return (
     <div className="glass wb-setup-next">
       <div>
-        <strong>{summary.counts.usable > 0 ? '已有可用 Agent' : '还需要完成连接'}</strong>
+        <strong>{summary.counts.usable > 0 ? tr('已有可用 Agent', 'Agent ready') : tr('还需要完成连接', 'Connection needed')}</strong>
         <span>
-          {summary.counts.usable} 可用 / {summary.counts.busy} 运行中 / {summary.counts.needsProvider} 缺少 Key / {summary.counts.needsInstall} 待配置本地入口
+          {summary.counts.usable} {tr('可用', 'ready')} / {summary.counts.busy} {tr('运行中', 'running')} / {summary.counts.needsProvider} {tr('缺少 Key', 'missing keys')} / {summary.counts.needsInstall} {tr('待配置本地入口', 'local entries pending')}
         </span>
       </div>
       <div className="wb-setup-actions">
         {next?.action && (
           <button className="ah-btn sm" onClick={() => onTab(next.action!.tab)}>
-            {next.action.labelZh || '继续配置'}
+            {getLang() === 'en' ? next.action.labelEn || 'Continue setup' : next.action.labelZh || '继续配置'}
           </button>
         )}
         <button className="ah-btn sm primary" onClick={() => goChat(readyAgent)}>
-          去对话
+          {tr('去对话', 'Open chat')}
         </button>
       </div>
     </div>
@@ -176,10 +227,10 @@ function ProvidersTab({ providers, onSetEnabled, onSetKey, onReload, onUpsert, o
       const result = await window.electronAPI.providers.health(providerId)
       setMessage(current => ({
         ...current,
-        [providerId]: result?.reachable ? `可用，${result.latencyMs ?? '-'}ms` : (result?.error || '不可用')
+        [providerId]: result?.reachable ? `${tr('可用', 'Reachable')}, ${result.latencyMs ?? '-'}ms` : (result?.error || tr('不可用', 'Unavailable'))
       }))
     } catch (error: any) {
-      setMessage(current => ({ ...current, [providerId]: error?.message || '健康检查失败' }))
+      setMessage(current => ({ ...current, [providerId]: error?.message || tr('健康检查失败', 'Health check failed') }))
     } finally {
       setChecking(current => ({ ...current, [providerId]: false }))
     }
@@ -189,10 +240,10 @@ function ProvidersTab({ providers, onSetEnabled, onSetKey, onReload, onUpsert, o
     setChecking(current => ({ ...current, [providerId]: true }))
     try {
       const result = await window.electronAPI.providers.fetchModels(providerId)
-      setMessage(current => ({ ...current, [providerId]: result.ok ? `已更新 ${result.count ?? 0} 个模型` : (result.error || '获取模型失败') }))
+      setMessage(current => ({ ...current, [providerId]: result.ok ? tr(`已更新 ${result.count ?? 0} 个模型`, `Updated ${result.count ?? 0} models`) : (result.error || tr('获取模型失败', 'Failed to fetch models')) }))
       if (result.ok) onReload()
     } catch (error: any) {
-      setMessage(current => ({ ...current, [providerId]: error?.message || '获取模型失败' }))
+      setMessage(current => ({ ...current, [providerId]: error?.message || tr('获取模型失败', 'Failed to fetch models') }))
     } finally {
       setChecking(current => ({ ...current, [providerId]: false }))
     }
@@ -224,13 +275,13 @@ function ProvidersTab({ providers, onSetEnabled, onSetKey, onReload, onUpsert, o
             <div className="wb-card-head">
               <div>
                 <strong>{provider.name}</strong>
-                <span>{provider.builtIn ? '内置' : '自定义'}</span>
+                <span>{provider.builtIn ? tr('内置', 'Built-in') : tr('自定义', 'Custom')}</span>
               </div>
               <Switch on={provider.enabled} onChange={value => onSetEnabled(provider.id, value)} />
             </div>
 
             <label className="wb-field">
-              <span>接口地址</span>
+              <span>{tr('接口地址', 'Base URL')}</span>
               <input
                 className="ah-input mono"
                 value={urls[provider.id] ?? provider.baseUrl}
@@ -248,7 +299,7 @@ function ProvidersTab({ providers, onSetEnabled, onSetKey, onReload, onUpsert, o
               <input
                 className="ah-input mono"
                 value={keys[provider.id] ?? provider.apiKey ?? ''}
-                placeholder="粘贴 API Key"
+                placeholder={tr('粘贴 API Key', 'Paste API key')}
                 onChange={event => setKeys(current => ({ ...current, [provider.id]: event.target.value }))}
                 onBlur={() => onSetKey(provider.id, keys[provider.id] ?? provider.apiKey ?? '')}
                 onKeyDown={event => { if (event.key === 'Enter') onSetKey(provider.id, keys[provider.id] ?? provider.apiKey ?? '') }}
@@ -258,24 +309,24 @@ function ProvidersTab({ providers, onSetEnabled, onSetKey, onReload, onUpsert, o
             <div className="wb-chip-row">
               {provider.models.slice(0, 8).map(model => <span key={model.id} className="ah-chip">{model.label}</span>)}
               {provider.models.length > 8 && <span className="ah-chip">+{provider.models.length - 8}</span>}
-              {provider.models.length === 0 && <span className="ah-hint">暂无模型列表</span>}
+              {provider.models.length === 0 && <span className="ah-hint">{tr('暂无模型列表', 'No model list yet')}</span>}
             </div>
             <div className="ah-hint">
-              已有模型 {provider.models.length} 个
-              {provider.modelFetch?.lastSuccessCount != null ? ` · 上次成功 ${provider.modelFetch.lastSuccessCount} 个` : ''}
-              {provider.modelFetch?.status === 'error' ? ` · 获取失败：${provider.modelFetch.error || '未知错误'}，已保留现有模型` : ''}
+              {tr(`已有模型 ${provider.models.length} 个`, `${provider.models.length} models saved`)}
+              {provider.modelFetch?.lastSuccessCount != null ? tr(` · 上次成功 ${provider.modelFetch.lastSuccessCount} 个`, ` · last success ${provider.modelFetch.lastSuccessCount}`) : ''}
+              {provider.modelFetch?.status === 'error' ? tr(` · 获取失败：${provider.modelFetch.error || '未知错误'}，已保留现有模型`, ` · fetch failed: ${provider.modelFetch.error || 'unknown error'}; existing models kept`) : ''}
             </div>
 
             <div className="wb-card-actions">
               <button className="ah-btn sm" disabled={!!checking[provider.id]} onClick={() => healthCheck(provider.id)}>
-                <Icon d={IC.pulse} size={13} /> 健康检查
+                <Icon d={IC.pulse} size={13} /> {tr('健康检查', 'Health check')}
               </button>
               <button className="ah-btn sm" disabled={!!checking[provider.id] || !(keys[provider.id] ?? provider.apiKey)} onClick={() => fetchModels(provider.id)}>
-                <Icon d={IC.refresh} size={13} /> 获取模型
+                <Icon d={IC.refresh} size={13} /> {tr('获取模型', 'Fetch models')}
               </button>
               {!provider.builtIn && (
-                <button className="ah-btn sm danger" onClick={() => window.confirm(`删除供应商「${provider.name}」？`) && onDelete(provider.id)}>
-                  删除
+                <button className="ah-btn sm danger" onClick={() => window.confirm(tr(`删除供应商「${provider.name}」？`, `Delete provider "${provider.name}"?`)) && onDelete(provider.id)}>
+                  {tr('删除', 'Delete')}
                 </button>
               )}
             </div>
@@ -286,26 +337,26 @@ function ProvidersTab({ providers, onSetEnabled, onSetKey, onReload, onUpsert, o
 
       {adding ? (
         <div className="glass wb-provider-card">
-          <div className="wb-card-head"><strong>添加供应商</strong></div>
+          <div className="wb-card-head"><strong>{tr('添加供应商', 'Add provider')}</strong></div>
           <div className="wb-form-grid">
-            <input className="ah-input" placeholder="供应商名称" value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} />
+            <input className="ah-input" placeholder={tr('供应商名称', 'Provider name')} value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} />
             <select className="ah-select" value={draft.kind} onChange={event => setDraft({ ...draft, kind: event.target.value })}>
-              <option value="openai-compatible">OpenAI 兼容</option>
+              <option value="openai-compatible">{tr('OpenAI 兼容', 'OpenAI compatible')}</option>
               <option value="anthropic">Anthropic</option>
               <option value="gemini">Gemini</option>
             </select>
-            <input className="ah-input mono" placeholder="接口地址" value={draft.baseUrl} onChange={event => setDraft({ ...draft, baseUrl: event.target.value })} />
+            <input className="ah-input mono" placeholder={tr('接口地址', 'Base URL')} value={draft.baseUrl} onChange={event => setDraft({ ...draft, baseUrl: event.target.value })} />
             <input className="ah-input mono" placeholder="API Key" value={draft.apiKey} onChange={event => setDraft({ ...draft, apiKey: event.target.value })} />
           </div>
           <div className="wb-card-actions">
-            <button className="ah-btn sm" onClick={() => setAdding(false)}>取消</button>
-            <button className="ah-btn sm primary" onClick={saveCustomProvider}>保存</button>
+            <button className="ah-btn sm" onClick={() => setAdding(false)}>{tr('取消', 'Cancel')}</button>
+            <button className="ah-btn sm primary" onClick={saveCustomProvider}>{tr('保存', 'Save')}</button>
           </div>
         </div>
       ) : (
         <button className="glass wb-add-card" onClick={() => setAdding(true)}>
           <Icon d={IC.plus} size={16} />
-          添加自定义供应商
+          {tr('添加自定义供应商', 'Add custom provider')}
         </button>
       )}
     </div>
@@ -336,7 +387,7 @@ function LocalAgentsTab() {
       setArgDrafts(Object.fromEntries(next.map(agent => [agent.agentId, agent.args || ''])))
       setProtocolDrafts(Object.fromEntries(next.map(agent => [agent.agentId, agent.protocol === 'acp' ? 'acp' : 'stdio-plain'])))
     } catch (err: any) {
-      setError(err?.message || '检测本地 Agent 失败')
+      setError(err?.message || tr('检测本地 Agent 失败', 'Failed to detect local agents'))
     } finally {
       setBusy(false)
     }
@@ -357,7 +408,7 @@ function LocalAgentsTab() {
       setArgDrafts(Object.fromEntries(next.map(item => [item.agentId, item.args || ''])))
       setProtocolDrafts(Object.fromEntries(next.map(item => [item.agentId, item.protocol === 'acp' ? 'acp' : 'stdio-plain'])))
     } catch (err: any) {
-      setError(err?.message || '配置本地 Agent 失败')
+      setError(err?.message || tr('配置本地 Agent 失败', 'Failed to configure local agent'))
     } finally {
       setSaving(current => ({ ...current, [agent.agentId]: false }))
     }
@@ -370,19 +421,19 @@ function LocalAgentsTab() {
     <div className="wb-settings-stack">
       <div className="glass wb-inline-panel">
         <div>
-          <strong>本地引擎</strong>
-          <span>只把检测到或已配置路径的 Agent 标记为可用。</span>
+          <strong>{tr('本地引擎', 'Local engines')}</strong>
+          <span>{tr('只把检测到或已配置路径的 Agent 标记为可用。', 'Only detected or path-configured agents are marked usable.')}</span>
         </div>
         <button className="ah-btn sm primary" onClick={refresh} disabled={busy}>
-          <Icon d={IC.refresh} size={13} /> {busy ? '检测中' : '重新检测'}
+          <Icon d={IC.refresh} size={13} /> {busy ? tr('检测中', 'Detecting') : tr('重新检测', 'Detect again')}
         </button>
       </div>
       {localModels.length > 0 && (
         <div className="glass wb-provider-card wb-local-model-card">
           <div className="wb-card-head">
             <div>
-              <strong>本地模型配置</strong>
-              <span>读取 Codex/Gemini 本机配置，仅用于识别认证与模型状态，不会写入配置文件。</span>
+              <strong>{tr('本地模型配置', 'Local model config')}</strong>
+              <span>{tr('读取 Codex/Gemini 本机配置，仅用于识别认证与模型状态，不会写入配置文件。', 'Read local Codex/Gemini config for auth and model status only; no files are written.')}</span>
             </div>
           </div>
           <div className="wb-local-model-grid">
@@ -390,7 +441,7 @@ function LocalAgentsTab() {
               <div key={config.agentId} className="wb-local-model-item">
                 <strong>{config.agentId === 'codex' ? 'Codex' : 'Gemini'}</strong>
                 <span>{localModelStatusLabel(config)} · {config.authMode || 'unknown'}</span>
-                <small>{config.modelId || config.models?.[0]?.id || '未读取到模型'}</small>
+                <small>{config.modelId || config.models?.[0]?.id || tr('未读取到模型', 'No model found')}</small>
                 <code>{config.configPath}</code>
                 {config.error && <em>{config.error}</em>}
               </div>
@@ -399,7 +450,7 @@ function LocalAgentsTab() {
         </div>
       )}
       {error && <div className="glass wb-error-text">{error}</div>}
-      {usable.length === 0 && !busy && <EmptyState icon={IC.terminal} title="没有可用本地 Agent" detail="安装或登录 Codex、Claude、OpenCode 后重新检测。" />}
+      {usable.length === 0 && !busy && <EmptyState icon={IC.terminal} title={tr('没有可用本地 Agent', 'No usable local agents')} detail={tr('安装或登录 Codex、Claude、OpenCode 后重新检测。', 'Install or sign in to Codex, Claude, or OpenCode, then detect again.')} />}
       {usable.map(agent => (
         <LocalAgentRow key={agent.agentId} agent={agent} draft={drafts[agent.agentId] || ''} busy={!!saving[agent.agentId]}
           setDraft={value => setDrafts(current => ({ ...current, [agent.agentId]: value }))}
@@ -414,8 +465,8 @@ function LocalAgentsTab() {
         <div className="glass wb-provider-card">
           <div className="wb-card-head">
             <div>
-              <strong>手动配置</strong>
-              <span>未检测到的 Agent 只有在填写可执行文件路径后才会出现在工作台。</span>
+              <strong>{tr('手动配置', 'Manual configuration')}</strong>
+              <span>{tr('未检测到的 Agent 只有在填写可执行文件路径后才会出现在工作台。', 'Undetected agents appear in the workbench only after an executable path is set.')}</span>
             </div>
           </div>
           <div className="wb-settings-stack tight">
@@ -450,34 +501,33 @@ function LocalAgentRow({ agent, draft, argsDraft, protocolDraft, busy, setDraft,
 }) {
   const needsPromptArg = !!agent.manualOnly && !!agent.requiresPromptArg && protocolDraft !== 'acp'
   const canSave = !!draft.trim() && !busy && (!needsPromptArg || /\{prompt\}/i.test(argsDraft))
-  const statusLabel = agent.configured ? '可使用' : agent.installed ? '已检测' : needsPromptArg ? '需要参数' : agent.candidateKind === 'desktop' ? '桌面候选' : '候选'
   return (
     <div className={compact ? 'wb-local-agent compact' : 'glass wb-local-agent'}>
       <div className="wb-local-agent-head">
         {AGENT_META[agent.agentId] ? <AgentMark id={agent.agentId} size={32} radius={9} /> : <span className="wb-agent-fallback">{agent.label.slice(0, 1)}</span>}
         <div>
-          <strong>{agent.label}</strong>
-          <span>{[agent.version, agent.protocol, agent.loginState !== 'unknown' ? agent.loginState : ''].filter(Boolean).join(' · ') || '等待检测'}</span>
+          <strong>{localAgentDisplayLabel(agent)}</strong>
+          <span>{[agent.version, agent.protocol, agent.loginState !== 'unknown' ? agent.loginState : ''].filter(Boolean).join(' · ') || tr('等待检测', 'Waiting for detection')}</span>
         </div>
         <span className={agent.configured || agent.installed ? 'ah-chip mint' : 'ah-chip'}>{localAgentStatusLabel(agent, needsPromptArg)}</span>
       </div>
       <div className="wb-form-grid two">
         <select className="ah-select" value={draft} onChange={event => setDraft(event.target.value)}>
-          <option value="">{agent.binary || '选择可执行文件路径'}</option>
+          <option value="">{agent.binary || tr('选择可执行文件路径', 'Choose executable path')}</option>
           {draft && !agent.candidates.some(candidate => candidate.path === draft) && <option value={draft}>{draft}</option>}
           {agent.candidates.map(candidate => <option key={candidate.path} value={candidate.path}>{candidate.label} · {candidate.path}</option>)}
         </select>
-        <input className="ah-input mono" placeholder="粘贴可执行文件路径" value={draft} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') onSave() }} />
+        <input className="ah-input mono" placeholder={tr('粘贴可执行文件路径', 'Paste executable path')} value={draft} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') onSave() }} />
       </div>
       {agent.manualOnly && (
         <div className="wb-form-grid two">
           <select className="ah-select" value={protocolDraft} onChange={event => setProtocolDraft(event.target.value as 'stdio-plain' | 'acp')}>
-            <option value="stdio-plain">本地 CLI</option>
+            <option value="stdio-plain">{tr('本地 CLI', 'Local CLI')}</option>
             <option value="acp">ACP</option>
           </select>
           <input
             className="ah-input mono"
-            placeholder={agent.requiresPromptArg ? '非交互参数，需包含 {prompt}' : '参数可选；留空时通过 stdin 发送 prompt'}
+            placeholder={agent.requiresPromptArg ? tr('非交互参数，需包含 {prompt}', 'Non-interactive args; must include {prompt}') : tr('参数可选；留空时通过 stdin 发送 prompt', 'Args optional; blank sends prompt through stdin')}
             value={argsDraft}
             onChange={event => setArgsDraft(event.target.value)}
             onKeyDown={event => { if (event.key === 'Enter') onSave() }}
@@ -486,26 +536,46 @@ function LocalAgentRow({ agent, draft, argsDraft, protocolDraft, busy, setDraft,
       )}
       {agent.note && <div className="ah-hint">{agent.note}</div>}
       <div className="wb-card-actions">
-        <button className="ah-btn sm primary" disabled={!canSave} onClick={onSave}>{busy ? '保存中' : '使用此路径'}</button>
+        <button className="ah-btn sm primary" disabled={!canSave} onClick={onSave}>{busy ? tr('保存中', 'Saving') : tr('使用此路径', 'Use this path')}</button>
       </div>
     </div>
   )
 }
 
 function localModelStatusLabel(config: LocalModelConfig): string {
-  if (config.status === 'ok') return '已读取'
-  if (config.status === 'partial') return '部分配置'
-  if (config.status === 'missing') return '未找到配置'
-  return '读取失败'
+  if (config.status === 'ok') return tr('已读取', 'Loaded')
+  if (config.status === 'partial') return tr('部分配置', 'Partial')
+  if (config.status === 'missing') return tr('未找到配置', 'Config missing')
+  return tr('读取失败', 'Read failed')
 }
 
 function localAgentStatusLabel(agent: LocalAgentStatus, needsPromptArg: boolean): string {
-  if (agent.configured) return '可使用'
-  if (agent.installed) return '已检测'
-  if (needsPromptArg) return '需要参数'
-  if (agent.candidateKind === 'desktop') return '桌面候选'
-  if (agent.candidateKind === 'cli') return '检测到 CLI，待配置'
-  return '候选'
+  if (agent.configured) return tr('可使用', 'Usable')
+  if (agent.installed) return tr('已检测', 'Detected')
+  if (needsPromptArg) return tr('需要参数', 'Args required')
+  if (agent.candidateKind === 'desktop') return tr('桌面候选', 'Desktop candidate')
+  if (agent.candidateKind === 'cli') return tr('检测到 CLI，待配置', 'CLI detected, configure to use')
+  return tr('候选', 'Candidate')
+}
+
+function localAgentDisplayLabel(agent: LocalAgentStatus): string {
+  if (getLang() === 'zh') return agent.label
+  return agent.label.replace(/\s*\/\s*反重力/g, '')
+}
+
+function stdioArgsHint(agentId: string): string {
+  if (getLang() === 'zh') return DEFAULT_STDIO_ARGS[agentId] || tr('留空使用默认参数', 'Leave blank to use defaults')
+  const englishHints: Record<string, string> = {
+    hermes: 'No args; prompt is sent through stdin',
+    marvis: 'No official CLI yet; HTTP binding is recommended',
+    gemini: 'Candidate only; confirm CLI args manually',
+    codebuddy: 'Candidate only; confirm CLI args manually',
+    antigravity: 'Candidate only; confirm CLI args manually',
+    mimocode: 'Candidate only; confirm CLI args manually',
+    zcode: 'Candidate only; confirm CLI args manually',
+    reasonix: 'Candidate only; confirm CLI args manually'
+  }
+  return englishHints[agentId] || DEFAULT_STDIO_ARGS[agentId] || 'Leave blank to use defaults'
 }
 
 function RoutingTab({ providers, bindings, fallbackChain, onSetBinding, onSetFallback, onTab }: {
@@ -528,10 +598,10 @@ function RoutingTab({ providers, bindings, fallbackChain, onSetBinding, onSetFal
     <div className="wb-settings-stack">
       <div className="glass wb-inline-panel">
         <div>
-          <strong>Agent 路由</strong>
-          <span>指定单个 Agent 时只走该 Agent 绑定；调度模式只在未指定 Agent 时展开。</span>
+          <strong>{tr('Agent 路由', 'Agent routing')}</strong>
+          <span>{tr('指定单个 Agent 时只走该 Agent 绑定；调度模式只在未指定 Agent 时展开。', 'A chosen Agent uses only its binding; schedule modes expand only when no Agent is pinned.')}</span>
         </div>
-        <button className="ah-btn sm" onClick={() => onTab('local-agents')}>管理本地 Agent</button>
+        <button className="ah-btn sm" onClick={() => onTab('local-agents')}>{tr('管理本地 Agent', 'Manage local agents')}</button>
       </div>
       {settingsBindingRows(bindings).map(binding => (
         <BindingRow key={binding.agentId} binding={binding} providers={providers} configuredProviders={configuredProviders}
@@ -540,8 +610,8 @@ function RoutingTab({ providers, bindings, fallbackChain, onSetBinding, onSetFal
       <div className="glass wb-provider-card">
         <div className="wb-card-head">
           <div>
-            <strong>故障转移</strong>
-            <span>主供应商失败且还没有输出内容时，按顺序尝试备用供应商。</span>
+            <strong>{tr('故障转移', 'Failover')}</strong>
+            <span>{tr('主供应商失败且还没有输出内容时，按顺序尝试备用供应商。', 'When the primary provider fails before output starts, fallback providers are tried in order.')}</span>
           </div>
         </div>
         <div className="wb-chip-row">
@@ -553,7 +623,7 @@ function RoutingTab({ providers, bindings, fallbackChain, onSetBinding, onSetFal
               </button>
             )
           })}
-          {providers.filter(provider => provider.enabled && provider.apiKey).length === 0 && <span className="ah-hint">先配置可用供应商。</span>}
+          {providers.filter(provider => provider.enabled && provider.apiKey).length === 0 && <span className="ah-hint">{tr('先配置可用供应商。', 'Configure an available provider first.')}</span>}
         </div>
       </div>
     </div>
@@ -580,26 +650,26 @@ function BindingRow({ binding, providers, configuredProviders, candidates, onCha
         {meta ? <AgentMark id={binding.agentId} size={34} radius={9} /> : <span className="wb-agent-fallback">{binding.agentId.slice(0, 1)}</span>}
         <div>
           <strong>{meta?.name || binding.agentId}</strong>
-          <span>{meta?.desc || '自定义 Agent'}</span>
+          <span>{meta ? agentDesc(binding.agentId, meta.desc) : tr('自定义 Agent', 'Custom Agent')}</span>
         </div>
       </div>
       <div className="wb-form-grid three">
         <label className="wb-field">
-          <span>后端</span>
+          <span>{tr('后端', 'Backend')}</span>
           <select className="ah-select" value={protocol} onChange={event => patch({ protocol: event.target.value as BindingDef['protocol'] })}>
-            <option value="http">HTTP 模型</option>
-            <option value="stdio-plain">本地 CLI</option>
+            <option value="http">{tr('HTTP 模型', 'HTTP model')}</option>
+            <option value="stdio-plain">{tr('本地 CLI', 'Local CLI')}</option>
             <option value="acp">ACP</option>
           </select>
         </label>
         {protocol === 'http' ? (
           <label className="wb-field wide">
-            <span>模型</span>
+            <span>{tr('模型', 'Model')}</span>
             <select className="ah-select" value={modelValue} onChange={event => {
               const [providerId, ...modelParts] = event.target.value.split('/')
               patch({ providerId, modelId: modelParts.join('/') })
             }}>
-              {!modelValue && <option value="">选择模型</option>}
+              {!modelValue && <option value="">{tr('选择模型', 'Choose model')}</option>}
               {configuredProviders.map(item => (
                 <optgroup key={item.id} label={item.name}>
                   {item.models.map(model => <option key={`${item.id}/${model.id}`} value={`${item.id}/${model.id}`}>{model.label}</option>)}
@@ -610,20 +680,20 @@ function BindingRow({ binding, providers, configuredProviders, candidates, onCha
         ) : (
           <>
             <label className="wb-field">
-              <span>可执行文件</span>
+              <span>{tr('可执行文件', 'Executable')}</span>
               <select className="ah-select" value={binding.binary || ''} onChange={event => patch({ binary: event.target.value })}>
-                <option value="">自动检测</option>
+                <option value="">{tr('自动检测', 'Auto detect')}</option>
                 {candidates.map(candidate => <option key={candidate.path} value={candidate.path}>{candidate.label} · {candidate.path}</option>)}
               </select>
             </label>
             <label className="wb-field wide">
-              <span>参数</span>
-              <input className="ah-input mono" value={binding.args || ''} placeholder={DEFAULT_STDIO_ARGS[binding.agentId] || '留空使用默认参数'} onChange={event => patch({ args: event.target.value })} />
+              <span>{tr('参数', 'Args')}</span>
+              <input className="ah-input mono" value={binding.args || ''} placeholder={stdioArgsHint(binding.agentId)} onChange={event => patch({ args: event.target.value })} />
             </label>
           </>
         )}
         <label className="wb-field">
-          <span>温度</span>
+          <span>{tr('温度', 'Temperature')}</span>
           <input className="ah-input" type="number" min={0} max={2} step={0.1} value={binding.temperature ?? 0.3} onChange={event => patch({ temperature: Number(event.target.value) })} />
         </label>
       </div>
@@ -671,7 +741,7 @@ function ApprovalsTab() {
       setCaps(nextCaps)
       setError(null)
     } catch (err: any) {
-      setError(err?.message || '加载权限策略失败')
+      setError(err?.message || tr('加载权限策略失败', 'Failed to load approval policies'))
     }
   }, [])
 
@@ -687,34 +757,34 @@ function ApprovalsTab() {
     await load()
   }
 
-  if (!config) return <EmptyState icon={IC.check} title="正在加载权限策略" detail={error || '请稍候。'} />
+  if (!config) return <EmptyState icon={IC.check} title={tr('正在加载权限策略', 'Loading approval policies')} detail={error || tr('请稍候。', 'Please wait.')} />
 
   return (
     <div className="wb-settings-stack">
       <div className="glass wb-provider-card">
         <div className="wb-card-head">
           <div>
-            <strong>默认策略</strong>
-            <span>读取文件不会拦截；写入和执行可按需确认。</span>
+            <strong>{tr('默认策略', 'Default policy')}</strong>
+            <span>{tr('读取文件不会拦截；写入和执行可按需确认。', 'File reads are not blocked; writes and commands can require confirmation.')}</span>
           </div>
         </div>
         <div className="wb-form-grid two">
-          <PolicySelect label="写文件" value={config.default.write} onChange={value => setDefault('write', value)} />
-          <PolicySelect label="执行命令" value={config.default.exec} onChange={value => setDefault('exec', value)} />
+          <PolicySelect label={tr('写文件', 'Write files')} value={config.default.write} onChange={value => setDefault('write', value)} />
+          <PolicySelect label={tr('执行命令', 'Run commands')} value={config.default.exec} onChange={value => setDefault('exec', value)} />
         </div>
       </div>
       <div className="glass wb-table-card">
-        <div className="wb-table-row head"><span>Agent</span><span>写文件</span><span>执行命令</span></div>
+        <div className="wb-table-row head"><span>Agent</span><span>{tr('写文件', 'Write files')}</span><span>{tr('执行命令', 'Run commands')}</span></div>
         {caps.map(agent => {
           const override = config.overrides[agent.agentId] || {}
           return (
             <div key={agent.agentId} className="wb-table-row">
               <span>{AGENT_META[agent.agentId]?.name || agent.name || agent.agentId}</span>
               <select value={override.write || 'default'} onChange={event => setOverride(agent.agentId, 'write', event.target.value)}>
-                <option value="default">默认</option><option value="allow">允许</option><option value="ask">询问</option><option value="deny">拒绝</option>
+                <option value="default">{tr('默认', 'Default')}</option><option value="allow">{tr('允许', 'Allow')}</option><option value="ask">{tr('询问', 'Ask')}</option><option value="deny">{tr('拒绝', 'Deny')}</option>
               </select>
               <select value={override.exec || 'default'} onChange={event => setOverride(agent.agentId, 'exec', event.target.value)}>
-                <option value="default">默认</option><option value="allow">允许</option><option value="ask">询问</option><option value="deny">拒绝</option>
+                <option value="default">{tr('默认', 'Default')}</option><option value="allow">{tr('允许', 'Allow')}</option><option value="ask">{tr('询问', 'Ask')}</option><option value="deny">{tr('拒绝', 'Deny')}</option>
               </select>
             </div>
           )
@@ -730,9 +800,9 @@ function PolicySelect({ label, value, onChange }: { label: string; value: Approv
     <label className="wb-field">
       <span>{label}</span>
       <select className="ah-select" value={value} onChange={event => onChange(event.target.value as ApprovalPolicy)}>
-        <option value="allow">允许</option>
-        <option value="ask">询问</option>
-        <option value="deny">拒绝</option>
+        <option value="allow">{tr('允许', 'Allow')}</option>
+        <option value="ask">{tr('询问', 'Ask')}</option>
+        <option value="deny">{tr('拒绝', 'Deny')}</option>
       </select>
     </label>
   )
@@ -753,7 +823,7 @@ function WorkspacesTab() {
     setActiveId(active)
   }, [])
 
-  useEffect(() => { refresh().catch((err: any) => setError(err?.message || '加载工作目录失败')) }, [refresh])
+  useEffect(() => { refresh().catch((err: any) => setError(err?.message || tr('加载工作目录失败', 'Failed to load workspaces'))) }, [refresh])
 
   const save = async () => {
     if (!editing?.name.trim() || !editing.rootPath.trim()) return
@@ -763,58 +833,61 @@ function WorkspacesTab() {
       setEditing(null)
       await refresh()
     } catch (err: any) {
-      setError(err?.message || '保存工作目录失败')
+      setError(err?.message || tr('保存工作目录失败', 'Failed to save workspace'))
     }
   }
 
   const pickFolder = async () => {
-    const path = await window.electronAPI.app.pickFolder()
-    if (path) setEditing(current => ({ id: current?.id, name: current?.name || path.split(/[\\/]/).filter(Boolean).pop() || '工作目录', rootPath: path }))
+    const path = await window.electronAPI.app.pickFolder({ defaultPath: defaultDialogPath('folder', editing?.rootPath) })
+    if (path) {
+      rememberDialogPath('folder', path)
+      setEditing(current => ({ id: current?.id, name: current?.name || path.split(/[\\/]/).filter(Boolean).pop() || tr('工作目录', 'Workspace'), rootPath: path }))
+    }
   }
 
   return (
     <div className="wb-settings-stack">
       <div className="glass wb-inline-panel">
         <div>
-          <strong>工作目录是可选上下文</strong>
-          <span>普通对话和写作不需要目录；终端、Git、工作树和项目文件操作才需要。</span>
+          <strong>{tr('工作目录是可选上下文', 'Workspaces are optional context')}</strong>
+          <span>{tr('普通对话和写作不需要目录；终端、Git、工作树和项目文件操作才需要。', 'Chat and writing can work without a folder; terminal, Git, worktrees, and project file actions need one.')}</span>
         </div>
         <button className="ah-btn sm primary" onClick={() => setEditing({ name: '', rootPath: '' })}>
-          <Icon d={IC.plus} size={13} /> 添加工作目录
+          <Icon d={IC.plus} size={13} /> {tr('添加工作目录', 'Add workspace')}
         </button>
       </div>
       {editing && (
         <div className="glass wb-provider-card">
-          <div className="wb-card-head"><strong>{editing.id ? '编辑工作目录' : '添加工作目录'}</strong></div>
+          <div className="wb-card-head"><strong>{editing.id ? tr('编辑工作目录', 'Edit workspace') : tr('添加工作目录', 'Add workspace')}</strong></div>
           <div className="wb-form-grid two">
-            <input className="ah-input" placeholder="给这个目录起个名字" value={editing.name} onChange={event => setEditing({ ...editing, name: event.target.value })} />
+            <input className="ah-input" placeholder={tr('给这个目录起个名字', 'Name this folder')} value={editing.name} onChange={event => setEditing({ ...editing, name: event.target.value })} />
             <div className="wb-folder-picker">
-              <input className="ah-input mono" placeholder="选择本地目录" value={editing.rootPath} onChange={event => setEditing({ ...editing, rootPath: event.target.value })} />
-              <button className="ah-btn sm" onClick={pickFolder}>选择</button>
+              <input className="ah-input mono" placeholder={tr('选择本地目录', 'Choose local folder')} value={editing.rootPath} onChange={event => setEditing({ ...editing, rootPath: event.target.value })} />
+              <button className="ah-btn sm" onClick={pickFolder}>{tr('选择', 'Choose')}</button>
             </div>
           </div>
           <div className="wb-card-actions">
-            <button className="ah-btn sm" onClick={() => setEditing(null)}>取消</button>
-            <button className="ah-btn sm primary" onClick={save}>保存</button>
+            <button className="ah-btn sm" onClick={() => setEditing(null)}>{tr('取消', 'Cancel')}</button>
+            <button className="ah-btn sm primary" onClick={save}>{tr('保存', 'Save')}</button>
           </div>
         </div>
       )}
-      {items.length === 0 && <EmptyState icon={IC.folder} title="还没有工作目录" detail="可以直接新建对话；需要本地文件能力时再添加目录。" />}
+      {items.length === 0 && <EmptyState icon={IC.folder} title={tr('还没有工作目录', 'No workspaces yet')} detail={tr('可以直接新建对话；需要本地文件能力时再添加目录。', 'You can start a chat now; add a folder when local file features are needed.')} />}
       {items.map(item => (
         <div key={item.id} className="glass wb-workspace-row">
           <div>
             <strong>{item.name}</strong>
-            {activeId === item.id && <span className="ah-chip mint">当前</span>}
+            {activeId === item.id && <span className="ah-chip mint">{tr('当前', 'Active')}</span>}
             <p>{item.rootPath}</p>
           </div>
           <div className="wb-card-actions">
-            {activeId !== item.id && <button className="ah-btn sm" onClick={async () => { await window.electronAPI.workspaces.setActive(item.id); await refresh() }}>设为当前</button>}
-            <button className="ah-btn sm" onClick={() => setEditing({ id: item.id, name: item.name, rootPath: item.rootPath })}>编辑</button>
+            {activeId !== item.id && <button className="ah-btn sm" onClick={async () => { await window.electronAPI.workspaces.setActive(item.id); await refresh() }}>{tr('设为当前', 'Set active')}</button>}
+            <button className="ah-btn sm" onClick={() => setEditing({ id: item.id, name: item.name, rootPath: item.rootPath })}>{tr('编辑', 'Edit')}</button>
             <button className="ah-btn sm danger" onClick={async () => {
-              if (!window.confirm(`移除工作目录「${item.name}」？磁盘文件不会被删除。`)) return
+              if (!window.confirm(tr(`移除工作目录「${item.name}」？磁盘文件不会被删除。`, `Remove workspace "${item.name}"? Files on disk will not be deleted.`))) return
               await window.electronAPI.workspaces.remove(item.id)
               await refresh()
-            }}>移除</button>
+            }}>{tr('移除', 'Remove')}</button>
           </div>
         </div>
       ))}
@@ -823,10 +896,142 @@ function WorkspacesTab() {
   )
 }
 
+function ShortcutsSettingsTab() {
+  const [settings, setSettings] = useState<KeyboardShortcutsConfigV1>({ bindings: {} })
+  const [search, setSearch] = useState('')
+  const [recording, setRecording] = useState<KeyboardShortcutCommandId | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
+
+  const bindings = useMemo(() => resolveKeyboardShortcutBindings(settings), [settings])
+  const filteredCommands = useMemo(() => {
+    const needle = search.trim().toLowerCase()
+    if (!needle) return KEYBOARD_SHORTCUT_COMMANDS
+    return KEYBOARD_SHORTCUT_COMMANDS.filter(command => [
+      command.labelZh,
+      command.labelEn,
+      command.descriptionZh,
+      command.descriptionEn,
+      command.id,
+      ...(bindings[command.id] || [])
+    ].join(' ').toLowerCase().includes(needle))
+  }, [search, bindings])
+
+  useEffect(() => {
+    let alive = true
+    window.electronAPI.store.get(KEYBOARD_SHORTCUT_STORE_KEY)
+      .then(value => { if (alive) setSettings(normalizeKeyboardShortcuts(value || { bindings: {} })) })
+      .catch(() => { if (alive) setSettings({ bindings: {} }) })
+    return () => { alive = false }
+  }, [])
+
+  const persist = useCallback(async (next: KeyboardShortcutsConfigV1) => {
+    const normalized = normalizeKeyboardShortcuts(next)
+    setSettings(normalized)
+    await window.electronAPI.store.set(KEYBOARD_SHORTCUT_STORE_KEY, normalized)
+    window.dispatchEvent(new CustomEvent(KEYBOARD_SHORTCUTS_CHANGED))
+  }, [])
+
+  const setCommandShortcut = async (commandId: KeyboardShortcutCommandId, shortcut: string) => {
+    const next = normalizeKeyboardShortcuts({
+      bindings: {
+        ...settings.bindings,
+        [commandId]: [shortcut]
+      }
+    })
+    await persist(next)
+    const conflict = findKeyboardShortcutConflict(resolveKeyboardShortcutBindings(next), commandId, shortcut)
+    if (conflict) {
+      const other = KEYBOARD_SHORTCUT_COMMANDS.find(command => command.id === conflict)
+      setMessage(`${shortcut} ${tr('\u5df2\u4e0e', 'also matches')} ${shortcutCommandLabel(other)} ${tr('\u51b2\u7a81\u3002', 'conflicts.')}`)
+    } else {
+      setMessage(tr('\u5feb\u6377\u952e\u5df2\u4fdd\u5b58\u3002', 'Shortcut saved.'))
+    }
+  }
+
+  const resetCommand = async (commandId: KeyboardShortcutCommandId) => {
+    const nextBindings = { ...settings.bindings }
+    delete nextBindings[commandId]
+    await persist({ bindings: nextBindings })
+    setMessage(tr('\u5df2\u6062\u590d\u9ed8\u8ba4\u5feb\u6377\u952e\u3002', 'Default shortcut restored.'))
+  }
+
+  const onRecorderKeyDown = async (event: React.KeyboardEvent, commandId: KeyboardShortcutCommandId) => {
+    event.preventDefault()
+    event.stopPropagation()
+    if (event.key === 'Escape') {
+      setRecording(null)
+      setMessage(null)
+      return
+    }
+    if (event.key === 'Backspace' || event.key === 'Delete') {
+      await persist({ bindings: { ...settings.bindings, [commandId]: [] } })
+      setRecording(null)
+      setMessage(tr('\u5df2\u6e05\u9664\u8be5\u547d\u4ee4\u5feb\u6377\u952e\u3002', 'Shortcut cleared for this command.'))
+      return
+    }
+    const shortcut = keyboardEventToShortcut(event)
+    if (!shortcut) return
+    if (!event.ctrlKey && !event.metaKey && !event.altKey && shortcut !== 'Shift+Tab') {
+      setMessage(tr('\u8bf7\u4f7f\u7528 Ctrl\u3001Alt\u3001Meta \u7ec4\u5408\u952e\uff0c\u6216 Shift+Tab\u3002', 'Use Ctrl, Alt, Meta, or Shift+Tab.'))
+      return
+    }
+    await setCommandShortcut(commandId, shortcut)
+    setRecording(null)
+  }
+
+  return (
+    <div className="wb-settings-stack wb-shortcuts">
+      <section className="glass wb-shortcuts-card">
+        <div className="wb-card-head">
+          <div>
+            <strong>{tr('\u5feb\u6377\u952e', 'Keyboard shortcuts')}</strong>
+            <span>{tr('\u5f55\u5236\u3001\u91cd\u7f6e\u6216\u641c\u7d22 AgentHub \u5de5\u4f5c\u53f0\u64cd\u4f5c\u3002', 'Record, reset, or search AgentHub workbench actions.')}</span>
+          </div>
+          <input className="ah-input" value={search} onChange={event => setSearch(event.target.value)} placeholder={tr('\u641c\u7d22\u547d\u4ee4\u6216\u5feb\u6377\u952e', 'Search commands or shortcuts')} />
+        </div>
+
+        <div className="wb-shortcuts-list">
+          {filteredCommands.map(command => {
+            const activeShortcut = shortcutDisplay(bindings[command.id])
+            const conflict = activeShortcut ? findKeyboardShortcutConflict(bindings, command.id, activeShortcut) : null
+            const isRecording = recording === command.id
+            return (
+              <div key={command.id} className={'wb-shortcut-row' + (conflict ? ' conflict' : '')}>
+                <div>
+                  <strong>{shortcutCommandLabel(command)}</strong>
+                  <span>{getLang() === 'en' ? command.descriptionEn : command.descriptionZh}</span>
+                </div>
+                <button
+                  className={'wb-shortcut-key' + (isRecording ? ' recording' : '')}
+                  onClick={() => { setRecording(command.id); setMessage(tr('\u8bf7\u6309\u4e0b\u65b0\u7684\u5feb\u6377\u952e\uff1bEsc \u53d6\u6d88\uff0cBackspace \u6e05\u9664\u3002', 'Press a new shortcut. Esc cancels, Backspace clears.')) }}
+                  onKeyDown={event => onRecorderKeyDown(event, command.id)}
+                  autoFocus={isRecording}
+                >
+                  {isRecording ? tr('\u6b63\u5728\u5f55\u5236...', 'Recording...') : activeShortcut || tr('\u672a\u8bbe\u7f6e', 'Unset')}
+                </button>
+                <button className="ah-btn sm" onClick={() => resetCommand(command.id)}>{tr('\u9ed8\u8ba4', 'Default')}</button>
+                {conflict && <small>{tr('\u51b2\u7a81\uff1a', 'Conflict: ')}{shortcutCommandLabel(KEYBOARD_SHORTCUT_COMMANDS.find(item => item.id === conflict))}</small>}
+              </div>
+            )
+          })}
+          {filteredCommands.length === 0 && <div className="wb-memory-kun-empty"><Icon d={IC.terminal} size={24} /><span>{tr('\u6ca1\u6709\u5339\u914d\u7684\u5feb\u6377\u952e\u3002', 'No matching shortcuts.')}</span></div>}
+        </div>
+      </section>
+      {message && <div className="glass wb-shortcut-message">{message}</div>}
+    </div>
+  )
+}
+
+function shortcutCommandLabel(command?: { labelZh: string; labelEn: string }): string {
+  if (!command) return ''
+  return getLang() === 'en' ? command.labelEn : command.labelZh
+}
+
 function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) {
   const [servers, setServers] = useState<McpServerConfig[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [adding, setAdding] = useState(false)
   const [draft, setDraft] = useState({ name: '', transport: 'stdio' as McpServerConfig['transport'], command: '', args: '', url: '' })
 
   const refresh = useCallback(async () => {
@@ -835,7 +1040,7 @@ function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) {
       setServers(await window.electronAPI.mcp.list(workspaceId))
       setError(null)
     } catch (err: any) {
-      setError(err?.message || '加载 MCP 失败')
+      setError(err?.message || tr('加载 MCP 失败', 'Failed to load MCP servers'))
     } finally {
       setLoading(false)
     }
@@ -854,71 +1059,109 @@ function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) {
       enabled: true
     })
     setDraft({ name: '', transport: 'stdio', command: '', args: '', url: '' })
+    setAdding(false)
     await refresh()
   }
 
   const scan = async () => {
     setLoading(true)
     try {
-      setServers(await window.electronAPI.mcp.scanLocal(workspaceId))
+      await window.electronAPI.mcp.scanLocal(workspaceId)
+      setServers(await window.electronAPI.mcp.list(workspaceId))
+      setError(null)
     } catch (err: any) {
-      setError(err?.message || '扫描 MCP 失败')
+      setError(err?.message || tr('扫描 MCP 失败', 'Failed to scan MCP servers'))
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <div className="wb-settings-stack">
-      <div className="glass wb-inline-panel">
-        <div>
-          <strong>MCP 服务</strong>
-          <span>读取全局、工作目录和 Kun/ECC 风格配置，启用后同步给支持 ACP 的 Agent。</span>
-        </div>
-        <div className="wb-card-actions">
-          <button className="ah-btn sm" onClick={scan} disabled={loading}>扫描本地</button>
-          <button className="ah-btn sm" onClick={refresh} disabled={loading}>刷新</button>
-        </div>
-      </div>
-
-      <div className="glass wb-mcp-editor">
-        <input className="ah-input" placeholder="服务名称" value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} />
-        <select className="ah-select" value={draft.transport} onChange={event => setDraft({ ...draft, transport: event.target.value as McpServerConfig['transport'] })}>
-          <option value="stdio">stdio</option>
-          <option value="sse">sse</option>
-          <option value="http">http</option>
-        </select>
-        {draft.transport === 'stdio' ? (
-          <>
-            <input className="ah-input mono" placeholder="启动命令" value={draft.command} onChange={event => setDraft({ ...draft, command: event.target.value })} />
-            <input className="ah-input mono" placeholder="参数" value={draft.args} onChange={event => setDraft({ ...draft, args: event.target.value })} />
-          </>
-        ) : (
-          <input className="ah-input mono wide" placeholder="服务 URL" value={draft.url} onChange={event => setDraft({ ...draft, url: event.target.value })} />
-        )}
-        <button className="ah-btn sm primary" onClick={add}>添加</button>
-      </div>
-
-      <div className="glass wb-table-card wb-mcp-table">
-        <div className="wb-table-row head"><span>名称</span><span>来源</span><span>命令 / URL</span><span>状态</span><span>启用</span><span>操作</span></div>
-        {servers.map(server => (
-          <div key={server.id} className="wb-table-row">
-            <span>{server.name}</span>
-            <span>{server.source}</span>
-            <span className="mono">{server.transport === 'stdio' ? [server.command, ...(server.args || [])].filter(Boolean).join(' ') : server.url}</span>
-            <span>{server.status || 'unknown'}</span>
-            <Switch on={server.enabled} onChange={async value => { await window.electronAPI.mcp.setEnabled(server.id, value); await refresh() }} />
-            <span className="wb-card-actions">
-              <button className="ah-btn sm" onClick={async () => { await window.electronAPI.mcp.test(server.id, workspaceId); await refresh() }}>测试</button>
-              {server.source === 'user' && <button className="ah-btn sm danger" onClick={async () => { if (!window.confirm(`删除 MCP 服务「${server.name}」？`)) return; await window.electronAPI.mcp.remove(server.id); await refresh() }}>删除</button>}
-            </span>
+    <div className="wb-settings-stack wb-mcp-clean">
+      <section className="glass wb-mcp-clean-card">
+        <div className="wb-mcp-clean-head">
+          <div>
+            <strong>{tr('MCP 服务', 'MCP services')}</strong>
+            <span>{tr('管理本地、工作目录和插件目录中的 MCP 服务，启用后同步给支持工具调用的 Agent。', 'Manage MCP services from local, workspace, and plugin folders; enabled services sync to capable agents.')}</span>
           </div>
-        ))}
-        {servers.length === 0 && <div className="wb-empty-row">暂无 MCP 服务。</div>}
-      </div>
+          <div className="wb-card-actions">
+            <button className="ah-btn sm" onClick={scan} disabled={loading}><Icon d={IC.search} size={13} />{tr('扫描本地', 'Scan local')}</button>
+            <button className="ah-btn sm" onClick={refresh} disabled={loading}><Icon d={IC.refresh} size={13} />{tr('刷新', 'Refresh')}</button>
+            <button className="ah-btn sm primary" onClick={() => setAdding(open => !open)}><Icon d={IC.plus} size={13} />{adding ? tr('收起', 'Collapse') : tr('添加服务', 'Add service')}</button>
+          </div>
+        </div>
+
+        <div className="wb-mcp-clean-stats">
+          <div><span>{tr('总数', 'Total')}</span><strong>{servers.length}</strong></div>
+          <div><span>{tr('已启用', 'Enabled')}</span><strong>{servers.filter(server => server.enabled).length}</strong></div>
+          <div><span>{tr('工作目录', 'Workspace')}</span><strong>{workspaceId ? tr('已选择', 'Selected') : tr('未选择', 'None')}</strong></div>
+        </div>
+
+        {adding && (
+          <div className="wb-mcp-editor wb-mcp-clean-editor">
+            <input className="ah-input" placeholder={tr('服务名称', 'Service name')} value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} />
+            <select className="ah-select" value={draft.transport} onChange={event => setDraft({ ...draft, transport: event.target.value as McpServerConfig['transport'] })}>
+              <option value="stdio">stdio</option>
+              <option value="sse">sse</option>
+              <option value="http">http</option>
+            </select>
+            {draft.transport === 'stdio' ? (
+              <>
+                <input className="ah-input mono" placeholder={tr('启动命令', 'Launch command')} value={draft.command} onChange={event => setDraft({ ...draft, command: event.target.value })} />
+                <input className="ah-input mono" placeholder={tr('参数', 'Args')} value={draft.args} onChange={event => setDraft({ ...draft, args: event.target.value })} />
+              </>
+            ) : (
+              <input className="ah-input mono wide" placeholder={tr('服务 URL', 'Service URL')} value={draft.url} onChange={event => setDraft({ ...draft, url: event.target.value })} />
+            )}
+            <button className="ah-btn sm primary" onClick={add}>{tr('添加', 'Add')}</button>
+          </div>
+        )}
+
+        <div className="wb-mcp-clean-list">
+          {servers.map(server => (
+            <div key={server.id} className={'wb-mcp-clean-row' + (server.enabled ? ' enabled' : '')}>
+              <span className="wb-mcp-clean-mark"><Icon d={IC.link} size={15} /></span>
+              <div>
+                <strong>{server.name}</strong>
+                <small className="mono">{server.transport === 'stdio' ? [server.command, ...(server.args || [])].filter(Boolean).join(' ') : server.url}</small>
+              </div>
+              <span className="ah-chip">{mcpSourceLabel(server.source)}</span>
+              <span className={'wb-mcp-clean-status ' + (server.status || 'unknown')} title={server.error || ''}>{mcpStatusLabel(server.status || 'unknown')}</span>
+              <Switch on={server.enabled} onChange={async value => { await window.electronAPI.mcp.setEnabled(server.id, value, workspaceId); await refresh() }} />
+              <span className="wb-card-actions">
+                <button className="ah-btn sm" onClick={async () => { await window.electronAPI.mcp.test(server.id, workspaceId); await refresh() }}>{tr('测试', 'Test')}</button>
+                {server.source === 'user' && <button className="ah-btn sm danger" onClick={async () => { if (!window.confirm(tr(`删除 MCP 服务「${server.name}」？`, `Delete MCP service "${server.name}"?`))) return; await window.electronAPI.mcp.remove(server.id); await refresh() }}>{tr('删除', 'Delete')}</button>}
+              </span>
+              {server.error && <small className="wb-mcp-clean-error">{server.error}</small>}
+            </div>
+          ))}
+          {servers.length === 0 && <div className="wb-memory-kun-empty"><Icon d={IC.link} size={24} /><span>{tr('暂无 MCP 服务。', 'No MCP services yet.')}</span></div>}
+        </div>
+      </section>
       {error && <div className="glass wb-error-text">{error}</div>}
     </div>
   )
+}
+
+function mcpSourceLabel(source: McpServerConfig['source']): string {
+  return ({
+    workspace: tr('工作目录', 'Workspace'),
+    user: tr('手动添加', 'Manual'),
+    local: tr('本机配置', 'Local config'),
+    claude: 'Claude',
+    codex: 'Codex',
+    gemini: 'Gemini',
+    opencode: 'OpenCode',
+    ccgui: tr('全局配置', 'Global config'),
+    kun: tr('插件目录', 'Plugin folder'),
+    ecc: tr('插件目录', 'Plugin folder')
+  } as Record<McpServerConfig['source'], string>)[source] || source
+}
+
+function mcpStatusLabel(status: string): string {
+  if (status === 'ok') return tr('可用', 'OK')
+  if (status === 'error') return tr('异常', 'Error')
+  return tr('未测试', 'Untested')
 }
 
 function UsageStatsTab() {
@@ -1032,6 +1275,7 @@ function UsageStatsTab() {
 }
 
 void UsageStatsTab
+void UsageStatsTabV2
 
 function UsageStatsTabV2() {
   const [range, setRange] = useState<UsageRange>('all')
@@ -1190,6 +1434,607 @@ function UsageStatsTabV2() {
   )
 }
 
+function MemorySettingsTab() {
+  const [scopeFilter, setScopeFilter] = useState<MemoryScopeFilter>('all')
+  const [query, setQuery] = useState('')
+  const [entries, setEntries] = useState<MemoryEntry[]>([])
+  const [enabled, setEnabled] = useState(true)
+  const [editing, setEditing] = useState<MemoryEntry | null>(null)
+  const [editorMode, setEditorMode] = useState<'create' | 'edit' | 'import' | null>(null)
+  const [draft, setDraft] = useState({
+    title: '',
+    summary: '',
+    content: '',
+    tags: '',
+    status: 'approved' as MemoryEntryStatus,
+    category: 'preference' as MemoryCategory,
+    source: '',
+    scope: 'user',
+    confidence: 80,
+    pinned: false
+  })
+  const [importSource, setImportSource] = useState('Imported conversation')
+  const [importText, setImportText] = useState('')
+  const [message, setMessage] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    try {
+      const catalog = await window.electronAPI.memory.catalog()
+      setEntries(Array.isArray(catalog?.entries) ? catalog.entries : [])
+      setEnabled(catalog?.settings?.enabled !== false)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { refresh().catch(() => {}) }, [refresh])
+
+  const stats = useMemo(() => {
+    const active = entries.filter(entry => (entry.status || 'approved') === 'approved').length
+    const disabled = entries.filter(entry => entry.status === 'disabled').length
+    const pending = entries.filter(entry => entry.status === 'candidate').length
+    return { active, disabled, pending, total: entries.length }
+  }, [entries])
+
+  const visibleEntries = useMemo(() => {
+    const needle = query.trim().toLowerCase()
+    return entries.filter(entry => {
+      if (scopeFilter !== 'all' && memoryScopeOf(entry) !== scopeFilter) return false
+      if (!needle) return true
+      return [entry.title, entry.summary, entry.content, entry.category, entry.source, ...(entry.tags || [])]
+        .filter(Boolean).join(' ').toLowerCase().includes(needle)
+    })
+  }, [entries, query, scopeFilter])
+
+  const openCreate = () => {
+    setEditing(null)
+    setEditorMode('create')
+    setDraft({
+      title: '',
+      summary: '',
+      content: '',
+      tags: '',
+      status: 'approved',
+      category: 'preference',
+      source: '',
+      scope: scopeFilter === 'all' ? 'user' : scopeFilter,
+      confidence: 80,
+      pinned: false
+    })
+  }
+
+  const openEdit = (entry: MemoryEntry) => {
+    setEditing(entry)
+    setEditorMode('edit')
+    setDraft({
+      title: entry.title || '',
+      summary: entry.summary || '',
+      content: String(entry.content || entry.summary || ''),
+      tags: (entry.tags || []).join(', '),
+      status: entry.status || 'approved',
+      category: entry.category || 'preference',
+      source: entry.source || '',
+      scope: String(entry.metadata?.scope || memoryScopeOf(entry)),
+      confidence: typeof entry.confidence === 'number' ? Math.round(entry.confidence * 100) : 80,
+      pinned: !!(entry.metadata?.pinned || entry.metadata?.pin)
+    })
+  }
+
+  const closeEditor = () => {
+    setEditing(null)
+    setEditorMode(null)
+    setMessage(null)
+  }
+
+  const toggleEnabled = async (nextEnabled: boolean) => {
+    setEnabled(nextEnabled)
+    const next = await window.electronAPI.memory.updateSettings({ enabled: nextEnabled })
+    setEnabled(next.enabled)
+    await refresh()
+  }
+
+  const saveDraft = async () => {
+    const title = draft.title.trim() || draft.content.trim().slice(0, 64)
+    if (!title || !draft.content.trim()) return
+    const patch = {
+      title,
+      summary: draft.summary.trim() || draft.content.trim().slice(0, 180),
+      content: draft.content.trim(),
+      tags: draft.tags.split(',').map(item => item.trim()).filter(Boolean),
+      status: draft.status,
+      category: draft.category,
+      source: draft.source.trim() || undefined,
+      confidence: Math.max(0, Math.min(100, Math.round(draft.confidence))) / 100,
+      metadata: {
+        ...(editing?.metadata || {}),
+        pinned: draft.pinned,
+        scope: draft.scope,
+        updatedFrom: 'settings'
+      }
+    }
+    if (editorMode === 'edit' && editing) {
+      await window.electronAPI.memory.updateEntry(editing.id, patch)
+    } else {
+      await window.electronAPI.memory.addEntry(patch)
+    }
+    closeEditor()
+    await refresh()
+  }
+
+  const importConversation = async () => {
+    if (!importText.trim()) return
+    setLoading(true)
+    setMessage(null)
+    try {
+      const next = await window.electronAPI.memory.importConversation(importSource.trim() || 'Imported conversation', importText)
+      setImportText('')
+      setEditorMode(null)
+      setMessage(tr(`已生成 ${next.length} 条候选记忆`, `Generated ${next.length} memory candidates`))
+      await refresh()
+    } catch (e: any) {
+      setMessage(e?.message || tr('导入失败', 'Import failed'))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const approveCandidate = async (id: string) => {
+    await window.electronAPI.memory.approveCandidate(id)
+    await refresh()
+  }
+
+  const disableMemory = async (id: string) => {
+    await window.electronAPI.memory.disableEntry(id)
+    await refresh()
+  }
+
+  const deleteMemory = async (id: string) => {
+    if (!window.confirm(tr('删除这条记忆？此操作不可撤销。', 'Delete this memory? This cannot be undone.'))) return
+    await window.electronAPI.memory.delete(id)
+    if (editing?.id === id) closeEditor()
+    await refresh()
+  }
+
+  const togglePinned = async (entry: MemoryEntry) => {
+    await window.electronAPI.memory.updateEntry(entry.id, {
+      metadata: {
+        ...(entry.metadata || {}),
+        pinned: !(entry.metadata?.pinned || entry.metadata?.pin),
+        pin: undefined
+      }
+    })
+    await refresh()
+  }
+
+  return (
+    <div className="wb-settings-stack wb-memory-settings wb-memory-kun">
+      <section className="glass wb-memory-kun-card">
+        <header className="wb-memory-kun-title">
+          <div>
+            <strong>{tr('长期记忆', 'Long-term memory')}</strong>
+            <span>{tr('记忆会跨会话保存事实和偏好，并在下一轮对话中自动注入上下文。', 'Memory persists facts and preferences across sessions and is injected into context on future turns.')}</span>
+          </div>
+          <span className="wb-memory-kun-save">{tr('修改会自动生效', 'Changes apply automatically')}</span>
+        </header>
+
+        <div className="wb-memory-kun-section wb-memory-kun-enable">
+          <div>
+            <strong>{tr('启用记忆', 'Enable memory')}</strong>
+            <span>{tr('关闭后不会注入或自动提取新记忆，已有记录会保留在这里。', 'When off, AgentHub will not inject memory or extract new candidates; existing records stay here.')}</span>
+          </div>
+          <Switch on={enabled} onChange={toggleEnabled} />
+        </div>
+
+        <div className="wb-memory-kun-section">
+          <div className="wb-memory-kun-copy">
+            <strong>{tr('概览', 'Overview')}</strong>
+            <span>{tr('记忆记录会保存偏好、项目背景、格式规则和反复纠正点。', 'Memory records store preferences, project context, format rules, and repeated corrections.')}</span>
+          </div>
+          <div className="wb-memory-kun-stats">
+            <div><span>{tr('活跃', 'Active')}</span><strong>{stats.active}</strong></div>
+            <div><span>{tr('待确认', 'Pending')}</span><strong>{stats.pending}</strong></div>
+            <div><span>{tr('状态', 'Status')}</span><strong>{enabled ? tr('开启', 'On') : tr('关闭', 'Off')}</strong></div>
+          </div>
+        </div>
+
+        <div className="wb-memory-kun-section">
+          <div className="wb-memory-kun-record-head">
+            <div>
+              <strong>{tr('记忆记录', 'Memory records')}</strong>
+              <span>{tr('新建、编辑、禁用或删除记忆记录。修改会在下一轮对话生效。', 'Create, edit, disable, or delete memories. Changes apply on the next turn.')}</span>
+            </div>
+            <div className="wb-memory-kun-actions">
+              <button className="ah-btn sm" onClick={refresh} disabled={loading}><Icon d={IC.refresh} size={13} />{tr('刷新', 'Refresh')}</button>
+              <button className="ah-btn sm" onClick={() => { setEditorMode(editorMode === 'import' ? null : 'import'); setEditing(null) }}>{tr('导入', 'Import')}</button>
+              <button className="ah-btn sm primary" onClick={openCreate}><Icon d={IC.plus} size={13} />{tr('新建', 'New')}</button>
+            </div>
+          </div>
+
+          <div className="wb-memory-kun-toolbar">
+            <div className="wb-memory-kun-tabs">
+              {MEMORY_SCOPES.map(scope => (
+                <button key={scope} className={scopeFilter === scope ? 'active' : ''} onClick={() => setScopeFilter(scope)}>
+                  {memoryScopeLabel(scope)}
+                </button>
+              ))}
+            </div>
+            <input value={query} onChange={event => setQuery(event.target.value)} placeholder={tr('搜索记忆', 'Search memories')} />
+          </div>
+
+          {editorMode === 'import' && (
+            <div className="wb-memory-kun-editor">
+              <div className="wb-memory-kun-editor-head">
+                <strong>{tr('导入对话', 'Import conversation')}</strong>
+                <button className="ah-btn sm" onClick={closeEditor}>{tr('取消', 'Cancel')}</button>
+              </div>
+              <input className="ah-input" value={importSource} onChange={e => setImportSource(e.target.value)} placeholder={tr('来源名称 / 对话标题', 'Source name / chat title')} />
+              <textarea className="ah-textarea" value={importText} onChange={e => setImportText(e.target.value)} placeholder={tr('粘贴对话记录...', 'Paste conversation transcript...')} />
+              <div className="wb-tool-actions">
+                <button className="ah-btn sm primary" onClick={importConversation} disabled={loading || !importText.trim()}>{tr('导入并提取候选', 'Import and extract')}</button>
+              </div>
+            </div>
+          )}
+
+          {(editorMode === 'create' || editorMode === 'edit') && (
+            <div className="wb-memory-kun-editor">
+              <div className="wb-memory-kun-editor-head">
+                <strong>{editorMode === 'create' ? tr('新建记忆', 'Create memory') : tr('编辑记忆', 'Edit memory')}</strong>
+                <button className="ah-btn sm" onClick={closeEditor}>{tr('取消', 'Cancel')}</button>
+              </div>
+              <textarea className="ah-textarea" value={draft.content} onChange={e => setDraft({ ...draft, content: e.target.value })} placeholder={tr('想让助手记住什么？例如：偏好 TypeScript，2 空格缩进。', 'What should AgentHub remember?')} />
+              <div className="wb-memory-kun-edit-grid">
+                <input className="ah-input" value={draft.title} onChange={e => setDraft({ ...draft, title: e.target.value })} placeholder={tr('标题', 'Title')} />
+                <select className="ah-select" value={draft.category} onChange={e => setDraft({ ...draft, category: e.target.value as MemoryCategory })}>
+                  {MEMORY_CATEGORIES.map(category => <option key={category} value={category}>{memoryCategoryLabel(category)}</option>)}
+                </select>
+                <select className="ah-select" value={draft.scope} onChange={e => setDraft({ ...draft, scope: e.target.value })}>
+                  <option value="user">{tr('用户', 'User')}</option>
+                  <option value="workspace">{tr('工作区', 'Workspace')}</option>
+                  <option value="project">{tr('项目', 'Project')}</option>
+                </select>
+                <input className="ah-input" value={draft.tags} onChange={e => setDraft({ ...draft, tags: e.target.value })} placeholder={tr('标签，逗号分隔', 'Tags, comma-separated')} />
+              </div>
+              <div className="wb-memory-governance-row">
+                <label>
+                  <input type="checkbox" checked={draft.pinned} onChange={e => setDraft({ ...draft, pinned: e.target.checked })} />
+                  <span>{tr('置顶并优先注入上下文', 'Pin and prioritize in context')}</span>
+                </label>
+                <label className="wb-appearance-range">
+                  <span>{tr('置信度', 'Confidence')}</span>
+                  <input type="range" min={0} max={100} value={draft.confidence} onChange={e => setDraft({ ...draft, confidence: Number(e.target.value) })} />
+                  <span>{draft.confidence}%</span>
+                </label>
+              </div>
+              <div className="wb-tool-actions">
+                <button className="ah-btn sm primary" onClick={saveDraft} disabled={!draft.content.trim()}>{tr('保存', 'Save')}</button>
+                {editing && <button className="ah-btn sm danger" onClick={() => deleteMemory(editing.id)}>{tr('删除', 'Delete')}</button>}
+              </div>
+            </div>
+          )}
+
+          <div className="wb-memory-kun-list">
+            {visibleEntries.length === 0 ? (
+              <div className="wb-memory-kun-empty">
+                <Icon d={IC.brain} size={26} />
+                <span>{tr('暂无记忆记录。助手会在了解你的偏好后自动创建，也可以手动添加。', 'No memory records yet. AgentHub will create them as it learns your preferences, or you can add one manually.')}</span>
+              </div>
+            ) : visibleEntries.slice(0, 80).map(entry => (
+              <MemorySettingsRow key={entry.id} entry={entry} onEdit={openEdit} onApprove={approveCandidate} onDisable={disableMemory} onDelete={deleteMemory} onTogglePinned={togglePinned} />
+            ))}
+          </div>
+        </div>
+        {message && <div className="wb-memory-kun-message">{message}</div>}
+      </section>
+    </div>
+  )
+}
+
+function LegacyMemorySettingsTab() {
+  const [statusFilter, setStatusFilter] = useState<'all' | MemoryEntryStatus>('all')
+  const [query, setQuery] = useState('')
+  const [entries, setEntries] = useState<MemoryEntry[]>([])
+  const [candidates, setCandidates] = useState<MemoryEntry[]>([])
+  const [editing, setEditing] = useState<MemoryEntry | null>(null)
+  const [editDraft, setEditDraft] = useState({
+    title: '',
+    summary: '',
+    content: '',
+    tags: '',
+    status: 'approved' as MemoryEntryStatus,
+    category: 'preference' as MemoryCategory,
+    source: '',
+    scope: '',
+    confidence: 70,
+    pinned: false
+  })
+  const [importSource, setImportSource] = useState('Imported conversation')
+  const [importText, setImportText] = useState('')
+  const [message, setMessage] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    try {
+      const catalog = await window.electronAPI.memory.catalog()
+      const allEntries: MemoryEntry[] = Array.isArray(catalog?.entries) ? catalog.entries : []
+      const q = query.trim().toLowerCase()
+      setEntries(allEntries.filter(entry => {
+        if (statusFilter !== 'all' && (entry.status || 'approved') !== statusFilter) return false
+        if (!q) return true
+        return [entry.title, entry.summary, entry.content, entry.category, ...(entry.tags || [])]
+          .filter(Boolean).join(' ').toLowerCase().includes(q)
+      }))
+      setCandidates(allEntries.filter(entry => entry.status === 'candidate'))
+    } finally {
+      setLoading(false)
+    }
+  }, [query, statusFilter])
+
+  useEffect(() => { refresh().catch(() => {}) }, [refresh])
+
+  const startEdit = (entry: MemoryEntry) => {
+    setEditing(entry)
+    setEditDraft({
+      title: entry.title || '',
+      summary: entry.summary || '',
+      content: String(entry.content || ''),
+      tags: (entry.tags || []).join(', '),
+      status: entry.status || 'approved',
+      category: entry.category || 'preference',
+      source: entry.source || '',
+      scope: String(entry.metadata?.scope || ''),
+      confidence: typeof entry.confidence === 'number' ? Math.round(entry.confidence * 100) : 70,
+      pinned: !!(entry.metadata?.pinned || entry.metadata?.pin)
+    })
+  }
+
+  const importConversation = async () => {
+    if (!importText.trim()) return
+    setLoading(true)
+    setMessage(null)
+    try {
+      const next = await window.electronAPI.memory.importConversation(importSource.trim() || 'Imported conversation', importText)
+      setImportText('')
+      setMessage(tr(`已生成 ${next.length} 条候选记忆`, `Generated ${next.length} memory candidates`))
+      await refresh()
+    } catch (e: any) {
+      setMessage(e?.message || tr('导入失败', 'Import failed'))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const approveCandidate = async (id: string) => {
+    await window.electronAPI.memory.approveCandidate(id)
+    await refresh()
+  }
+
+  const disableMemory = async (id: string) => {
+    await window.electronAPI.memory.disableEntry(id)
+    await refresh()
+  }
+
+  const saveEdit = async () => {
+    if (!editing) return
+    await window.electronAPI.memory.updateEntry(editing.id, {
+      title: editDraft.title,
+      summary: editDraft.summary,
+      content: editDraft.content,
+      tags: editDraft.tags.split(',').map(item => item.trim()).filter(Boolean),
+      status: editDraft.status,
+      category: editDraft.category,
+      source: editDraft.source.trim() || undefined,
+      confidence: Math.max(0, Math.min(100, Math.round(editDraft.confidence))) / 100,
+      metadata: {
+        ...(editing.metadata || {}),
+        pinned: editDraft.pinned,
+        scope: editDraft.scope.trim() || undefined,
+        updatedFrom: 'settings'
+      }
+    })
+    setEditing(null)
+    await refresh()
+  }
+
+  const deleteMemory = async (id: string) => {
+    if (!window.confirm(tr('删除这条记忆？此操作不可撤销。', 'Delete this memory? This cannot be undone.'))) return
+    await window.electronAPI.memory.delete(id)
+    if (editing?.id === id) setEditing(null)
+    await refresh()
+  }
+
+  const togglePinned = async (entry: MemoryEntry) => {
+    await window.electronAPI.memory.updateEntry(entry.id, {
+      metadata: {
+        ...(entry.metadata || {}),
+        pinned: !(entry.metadata?.pinned || entry.metadata?.pin),
+        pin: undefined
+      }
+    })
+    await refresh()
+  }
+
+  return (
+    <div className="wb-settings-stack wb-memory-settings">
+      <div className="glass wb-provider-card">
+        <div className="wb-provider-head">
+          <div>
+            <strong>{tr('长期记忆', 'Long-Term Memory')}</strong>
+            <span>{tr('管理偏好、项目背景、反复纠正点和导入对话样本。', 'Manage preferences, project context, repeated corrections, and imported conversation samples.')}</span>
+          </div>
+          <button className="ah-btn sm" onClick={refresh} disabled={loading}><Icon d={IC.refresh} size={14} />{loading ? tr('刷新中', 'Refreshing') : tr('刷新', 'Refresh')}</button>
+        </div>
+        <div className="wb-tool-inline-form">
+          <input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') refresh().catch(() => {}) }} placeholder={tr('搜索记忆', 'Search memories')} />
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value as 'all' | MemoryEntryStatus)}>
+            <option value="all">{tr('全部状态', 'All statuses')}</option>
+            <option value="approved">{tr('已学习', 'Learned')}</option>
+            <option value="candidate">{tr('待确认', 'Pending')}</option>
+            <option value="disabled">{tr('已禁用', 'Disabled')}</option>
+          </select>
+          <button className="ah-btn sm" onClick={refresh}>{tr('搜索', 'Search')}</button>
+        </div>
+      </div>
+
+      <div className="glass wb-provider-card wb-memory-settings-card">
+        <div className="wb-provider-head"><strong>{tr('导入对话', 'Import Conversation')}</strong><span>{tr('从历史对话提取偏好、风格、项目和纠正记忆。', 'Extract preferences, style, project context, and corrections from chat history.')}</span></div>
+        <input className="ah-input" value={importSource} onChange={e => setImportSource(e.target.value)} placeholder={tr('来源名称 / 对话历史标题', 'Source name / chat history title')} />
+        <textarea className="ah-textarea" value={importText} onChange={e => setImportText(e.target.value)} placeholder={tr('粘贴对话记录...', 'Paste conversation transcript...')} />
+        <div className="wb-tool-actions">
+          <button className="ah-btn sm primary" onClick={importConversation} disabled={loading || !importText.trim()}>{tr('导入并提取候选', 'Import and extract candidates')}</button>
+          {message && <small>{message}</small>}
+        </div>
+      </div>
+
+      {candidates.length > 0 && (
+        <div className="glass wb-provider-card wb-memory-settings-card">
+          <div className="wb-provider-head"><strong>{tr('待确认记忆', 'Pending Memories')}</strong><span>{candidates.length} {tr('条', 'items')}</span></div>
+          {candidates.slice(0, 12).map(candidate => (
+            <MemorySettingsRow key={candidate.id} entry={candidate} onEdit={startEdit} onApprove={approveCandidate} onDisable={disableMemory} onDelete={deleteMemory} onTogglePinned={togglePinned} />
+          ))}
+        </div>
+      )}
+
+      {editing && (
+        <div className="glass wb-provider-card wb-memory-settings-card">
+          <div className="wb-provider-head"><strong>{tr('编辑记忆', 'Edit Memory')}</strong><span>{memoryMeta(editing)}</span></div>
+          <div className="wb-form-grid two">
+            <label className="wb-field">
+              <span>{tr('分类', 'Category')}</span>
+              <select className="ah-select" value={editDraft.category} onChange={e => setEditDraft({ ...editDraft, category: e.target.value as MemoryCategory })}>
+                {MEMORY_CATEGORIES.map(category => <option key={category} value={category}>{memoryCategoryLabel(category)}</option>)}
+              </select>
+            </label>
+            <label className="wb-field">
+              <span>{tr('状态', 'Status')}</span>
+              <select className="ah-select" value={editDraft.status} onChange={e => setEditDraft({ ...editDraft, status: e.target.value as MemoryEntryStatus })}>
+                <option value="approved">{tr('已学习', 'Learned')}</option>
+                <option value="candidate">{tr('待确认', 'Pending')}</option>
+                <option value="disabled">{tr('已禁用', 'Disabled')}</option>
+              </select>
+            </label>
+          </div>
+          <input className="ah-input" value={editDraft.title} onChange={e => setEditDraft({ ...editDraft, title: e.target.value })} placeholder={tr('标题', 'Title')} />
+          <input className="ah-input" value={editDraft.summary} onChange={e => setEditDraft({ ...editDraft, summary: e.target.value })} placeholder={tr('摘要', 'Summary')} />
+          <textarea className="ah-textarea" value={editDraft.content} onChange={e => setEditDraft({ ...editDraft, content: e.target.value })} placeholder={tr('完整内容 / 规则', 'Full content / rule')} />
+          <input className="ah-input" value={editDraft.tags} onChange={e => setEditDraft({ ...editDraft, tags: e.target.value })} placeholder={tr('标签，用逗号分隔', 'Tags, separated by commas')} />
+          <div className="wb-form-grid two">
+            <label className="wb-field">
+              <span>{tr('来源', 'Source')}</span>
+              <input className="ah-input" value={editDraft.source} onChange={e => setEditDraft({ ...editDraft, source: e.target.value })} placeholder={tr('来源对话 / 文件 / 规则', 'Source conversation / file / rule')} />
+            </label>
+            <label className="wb-field">
+              <span>{tr('作用域', 'Scope')}</span>
+              <input className="ah-input" value={editDraft.scope} onChange={e => setEditDraft({ ...editDraft, scope: e.target.value })} placeholder={tr('全局 / 项目 / 工作目录', 'Global / project / workspace')} />
+            </label>
+          </div>
+          <div className="wb-memory-governance-row">
+            <label>
+              <input type="checkbox" checked={editDraft.pinned} onChange={e => setEditDraft({ ...editDraft, pinned: e.target.checked })} />
+              <span>{tr('置顶并优先注入上下文', 'Pin and prioritize in context')}</span>
+            </label>
+            <label className="wb-appearance-range">
+              <span>{tr('置信度', 'Confidence')}</span>
+              <input type="range" min={0} max={100} value={editDraft.confidence} onChange={e => setEditDraft({ ...editDraft, confidence: Number(e.target.value) })} />
+              <span>{editDraft.confidence}%</span>
+            </label>
+          </div>
+          <div className="wb-tool-actions">
+            <button className="ah-btn sm" onClick={() => setEditing(null)}>{tr('取消', 'Cancel')}</button>
+            <button className="ah-btn sm primary" onClick={saveEdit} disabled={!editDraft.title.trim()}>{tr('保存', 'Save')}</button>
+            <button className="ah-btn sm danger" onClick={() => deleteMemory(editing.id)}>{tr('删除', 'Delete')}</button>
+          </div>
+        </div>
+      )}
+
+      <div className="glass wb-provider-card wb-memory-settings-card">
+        <div className="wb-provider-head"><strong>{tr('记忆库', 'Memory Library')}</strong><span>{entries.length} {tr('条', 'items')}</span></div>
+        {entries.length === 0 && <div className="wb-muted-box">{tr('暂无记忆。', 'No memories yet.')}</div>}
+        {entries.slice(0, 40).map(entry => (
+          <MemorySettingsRow key={entry.id} entry={entry} onEdit={startEdit} onApprove={approveCandidate} onDisable={disableMemory} onDelete={deleteMemory} onTogglePinned={togglePinned} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function MemorySettingsRow({ entry, onEdit, onApprove, onDisable, onDelete, onTogglePinned }: {
+  entry: MemoryEntry
+  onEdit: (entry: MemoryEntry) => void
+  onApprove: (id: string) => void
+  onDisable: (id: string) => void
+  onDelete: (id: string) => void
+  onTogglePinned: (entry: MemoryEntry) => void
+}) {
+  const pinned = !!(entry.metadata?.pinned || entry.metadata?.pin)
+  return (
+    <div className={'wb-memory-kun-row wb-memory-settings-row' + (pinned ? ' pinned' : '')}>
+      <div className="wb-memory-kun-row-main">
+        <strong>{pinned && <span className="wb-memory-pin">{tr('置顶', 'Pinned')}</span>}{entry.title || entry.category || entry.id}</strong>
+        <small>{String(entry.summary || entry.content || entry.title || '').slice(0, 220)}</small>
+        <div className="wb-memory-kun-row-meta">{memoryMeta(entry)}</div>
+      </div>
+      <div className="wb-tool-actions">
+        <button onClick={() => onEdit(entry)}>{tr('编辑', 'Edit')}</button>
+        <button onClick={() => onTogglePinned(entry)}>{pinned ? tr('取消置顶', 'Unpin') : tr('置顶', 'Pin')}</button>
+        {entry.status === 'candidate' && <button onClick={() => onApprove(entry.id)}>{tr('批准', 'Approve')}</button>}
+        {entry.status !== 'disabled' && <button onClick={() => onDisable(entry.id)}>{tr('禁用', 'Disable')}</button>}
+        <button className="danger" onClick={() => onDelete(entry.id)}>{tr('删除', 'Delete')}</button>
+      </div>
+    </div>
+  )
+}
+
+function memoryScopeOf(entry: Partial<MemoryEntry>): Exclude<MemoryScopeFilter, 'all'> {
+  const scope = String(entry.metadata?.scope || '').toLowerCase()
+  if (scope === 'user' || scope === 'workspace' || scope === 'project') return scope
+  if (entry.category === 'project' || entry.category === 'file' || entry.category === 'task') return 'project'
+  return 'user'
+}
+
+function memoryScopeLabel(scope: MemoryScopeFilter): string {
+  return ({
+    all: tr('全部', 'All'),
+    user: tr('用户', 'User'),
+    workspace: tr('工作区', 'Workspace'),
+    project: tr('项目', 'Project')
+  } as Record<MemoryScopeFilter, string>)[scope]
+}
+
+function memoryMeta(entry: Partial<MemoryEntry>): string {
+  return [
+    memoryCategoryLabel(entry.category || 'conversation'),
+    memoryStatusLabel(entry.status || 'approved'),
+    typeof entry.confidence === 'number' ? `${Math.round(entry.confidence * 100)}%` : '',
+    entry.metadata?.pinned || entry.metadata?.pin ? tr('置顶', 'Pinned') : '',
+    entry.metadata?.scope ? `${tr('作用域', 'Scope')}:${entry.metadata.scope}` : '',
+    entry.source ? `${tr('来源', 'Source')}:${entry.source}` : '',
+    entry.tags?.length ? `#${entry.tags.slice(0, 3).join(' #')}` : ''
+  ].filter(Boolean).join(' / ')
+}
+
+function memoryCategoryLabel(category: MemoryCategory): string {
+  return ({
+    preference: tr('偏好', 'Preference'),
+    project: tr('项目', 'Project'),
+    style: tr('风格', 'Style'),
+    decision: tr('决策', 'Decision'),
+    correction: tr('纠正', 'Correction'),
+    imported_conversation: tr('导入对话', 'Imported conversation'),
+    conversation: tr('会话', 'Conversation'),
+    task: tr('任务', 'Task'),
+    skill: tr('技能', 'Skill'),
+    file: tr('文件', 'File'),
+    system: tr('系统', 'System')
+  } as Record<MemoryCategory, string>)[category] || category
+}
+
+function memoryStatusLabel(status: MemoryEntryStatus): string {
+  return ({ approved: tr('已学习', 'Learned'), candidate: tr('待确认', 'Pending'), disabled: tr('已禁用', 'Disabled') } as Record<MemoryEntryStatus, string>)[status] || status
+}
+
 function usageModelKey(row: UsageModelRow): string {
   return `${row.agentId || 'agent'}:${row.modelId}`
 }
@@ -1227,21 +2072,21 @@ function UpdatesSettingsTab() {
       <div className="glass wb-provider-card">
         <div className="wb-card-head">
           <div>
-            <strong>版本与更新</strong>
-            <span>检查当前版本、渠道和下载页。</span>
+            <strong>{tr('版本与更新', 'Version & Updates')}</strong>
+            <span>{tr('检查当前版本、渠道和下载页。', 'Check the current version, channel, and download page.')}</span>
           </div>
-          <Seg value={status?.channel || 'stable'} onChange={value => setChannel(value as UpdateStatus['channel'])} options={[{ value: 'stable', label: '稳定版' }, { value: 'preview', label: '预览版' }]} />
+          <Seg value={status?.channel || 'stable'} onChange={value => setChannel(value as UpdateStatus['channel'])} options={[{ value: 'stable', label: tr('稳定版', 'Stable') }, { value: 'preview', label: tr('预览版', 'Preview') }]} />
         </div>
         <div className="wb-tool-summary-grid">
-          <div><strong>{status?.version || '-'}</strong><span>当前版本</span></div>
-          <div><strong>{status?.latestVersion || '-'}</strong><span>最新版本</span></div>
-          <div><strong>{status?.checkedAt ? new Date(status.checkedAt).toLocaleString() : '-'}</strong><span>检查时间</span></div>
+          <div><strong>{status?.version || '-'}</strong><span>{tr('当前版本', 'Current')}</span></div>
+          <div><strong>{status?.latestVersion || '-'}</strong><span>{tr('最新版本', 'Latest')}</span></div>
+          <div><strong>{status?.checkedAt ? new Date(status.checkedAt).toLocaleString() : '-'}</strong><span>{tr('检查时间', 'Checked at')}</span></div>
         </div>
         {status?.error && <div className="wb-error-text">{status.error}</div>}
         <div className="wb-card-actions">
-          <button className="ah-btn sm primary" onClick={check} disabled={loading}>{loading ? '检查中' : '检查更新'}</button>
-          <button className="ah-btn sm" onClick={() => window.electronAPI.updates.openDownload()}>打开下载页</button>
-          <button className="ah-btn sm" onClick={refresh} disabled={loading}>刷新状态</button>
+          <button className="ah-btn sm primary" onClick={check} disabled={loading}>{loading ? tr('检查中', 'Checking') : tr('检查更新', 'Check updates')}</button>
+          <button className="ah-btn sm" onClick={() => window.electronAPI.updates.openDownload()}>{tr('打开下载页', 'Open download page')}</button>
+          <button className="ah-btn sm" onClick={refresh} disabled={loading}>{tr('刷新状态', 'Refresh status')}</button>
         </div>
       </div>
     </div>
@@ -1297,98 +2142,98 @@ function AppearanceTab({ motion, setMotion }: { motion: MotionLevel; setMotion: 
             </aside>
             <main>
               <strong>AgentHub</strong>
-              <p>主题和字体会立即应用到工作台。</p>
+              <p>{tr('主题和字体会立即应用到工作台。', 'Theme and fonts apply to the workbench immediately.')}</p>
               <code>+ preview.diff</code>
             </main>
           </div>
         </div>
         <div>
-          <strong>外观</strong>
-          <span>调整主题、字体、动效和编辑体验。设置会自动保存。</span>
+          <strong>{tr('外观', 'Appearance')}</strong>
+          <span>{tr('调整主题、字体、动效和编辑体验。设置会自动保存。', 'Adjust theme, fonts, motion, and editing feel. Preferences are saved automatically.')}</span>
         </div>
-        <button className="ah-btn sm" onClick={reset}>恢复默认</button>
+        <button className="ah-btn sm" onClick={reset}>{tr('恢复默认', 'Reset defaults')}</button>
       </div>
 
       <div className="glass wb-provider-card wb-appearance-card">
         <div className="wb-card-head">
           <div>
-            <strong>主题</strong>
-            <span>可跟随系统，也可以固定为浅色或深色。</span>
+            <strong>{tr('主题', 'Theme')}</strong>
+            <span>{tr('可跟随系统，也可以固定为浅色或深色。', 'Follow the system, or pin light or dark mode.')}</span>
           </div>
         </div>
         <div className="wb-appearance-row">
-          <div><strong>主题模式</strong><span>选择工作台整体明暗风格。</span></div>
+          <div><strong>{tr('主题模式', 'Theme mode')}</strong><span>{tr('选择工作台整体明暗风格。', 'Choose the workbench light/dark style.')}</span></div>
           <Seg value={prefs.themeMode} onChange={value => update(themeModePatch(value as AppearancePreferences['themeMode']))} options={[
-            { value: 'light', label: '浅色' },
-            { value: 'dark', label: '深色' },
-            { value: 'system', label: '系统' }
+            { value: 'light', label: tr('浅色', 'Light') },
+            { value: 'dark', label: tr('深色', 'Dark') },
+            { value: 'system', label: tr('系统', 'System') }
           ]} />
         </div>
         <div className="wb-appearance-theme-grid">
-          <ThemePresetCard active={prefs.themeMode === 'light'} title="AgentHub Light" detail="明亮桌面工作台" colors={['#f7f8fb', '#ffffff', prefs.accentColor]} onClick={() => update({ themeMode: 'light', backgroundColor: '#f7f8fb', foregroundColor: '#20242c' })} />
-          <ThemePresetCard active={prefs.themeMode === 'dark'} title="AgentHub Dark" detail="低亮度专注模式" colors={['#10141c', '#161b24', prefs.accentColor]} onClick={() => update({ themeMode: 'dark', backgroundColor: '#10141c', foregroundColor: '#e7edf7' })} />
+          <ThemePresetCard active={prefs.themeMode === 'light'} title="AgentHub Light" detail={tr('明亮桌面工作台', 'Bright desktop workbench')} colors={['#f7f8fb', '#ffffff', prefs.accentColor]} onClick={() => update({ themeMode: 'light', backgroundColor: '#f7f8fb', foregroundColor: '#20242c' })} />
+          <ThemePresetCard active={prefs.themeMode === 'dark'} title="AgentHub Dark" detail={tr('低亮度专注模式', 'Low-light focus mode')} colors={['#10141c', '#161b24', prefs.accentColor]} onClick={() => update({ themeMode: 'dark', backgroundColor: '#10141c', foregroundColor: '#e7edf7' })} />
         </div>
       </div>
 
       <div className="glass wb-provider-card wb-appearance-card">
         <div className="wb-card-head">
           <div>
-            <strong>颜色</strong>
-            <span>保留简洁风格，只调整核心色值。</span>
+            <strong>{tr('颜色', 'Colors')}</strong>
+            <span>{tr('保留简洁风格，只调整核心色值。', 'Keep the simple style while tuning core colors.')}</span>
           </div>
         </div>
         <div className="wb-appearance-grid three">
-          <ColorField label="强调色" value={prefs.accentColor} onChange={value => update({ accentColor: value })} />
-          <ColorField label="背景色" value={prefs.backgroundColor} onChange={value => update({ backgroundColor: value })} />
-          <ColorField label="前景色" value={prefs.foregroundColor} onChange={value => update({ foregroundColor: value })} />
+          <ColorField label={tr('强调色', 'Accent')} value={prefs.accentColor} onChange={value => update({ accentColor: value })} />
+          <ColorField label={tr('背景色', 'Background')} value={prefs.backgroundColor} onChange={value => update({ backgroundColor: value })} />
+          <ColorField label={tr('前景色', 'Foreground')} value={prefs.foregroundColor} onChange={value => update({ foregroundColor: value })} />
         </div>
-        <RangeRow label="对比度" detail="增强或降低界面边界与文字层级。" value={prefs.contrast} min={80} max={125} suffix="%" onChange={value => update({ contrast: value })} />
+        <RangeRow label={tr('对比度', 'Contrast')} detail={tr('增强或降低界面边界与文字层级。', 'Increase or soften UI boundaries and text hierarchy.')} value={prefs.contrast} min={80} max={125} suffix="%" onChange={value => update({ contrast: value })} />
       </div>
 
       <div className="glass wb-provider-card wb-appearance-card">
         <div className="wb-card-head">
           <div>
-            <strong>字体</strong>
-            <span>UI 字体作用于界面，代码字体作用于终端、Diff 和代码块。</span>
+            <strong>{tr('字体', 'Fonts')}</strong>
+            <span>{tr('UI 字体作用于界面，代码字体作用于终端、Diff 和代码块。', 'UI font affects the interface; code font affects terminal, diff, and code blocks.')}</span>
           </div>
         </div>
         <div className="wb-appearance-grid two">
           <label className="wb-field">
-            <span>UI 字体</span>
+            <span>{tr('UI 字体', 'UI font')}</span>
             <input className="ah-input" value={prefs.uiFont} onChange={event => update({ uiFont: event.target.value })} />
           </label>
           <label className="wb-field">
-            <span>代码字体</span>
+            <span>{tr('代码字体', 'Code font')}</span>
             <input className="ah-input mono" value={prefs.codeFont} onChange={event => update({ codeFont: event.target.value })} />
           </label>
         </div>
         <div className="wb-appearance-grid two">
-          <StepperRow label="UI 字号" value={prefs.uiFontSize} min={12} max={18} onChange={value => update({ uiFontSize: value })} />
-          <StepperRow label="代码字号" value={prefs.codeFontSize} min={11} max={18} onChange={value => update({ codeFontSize: value })} />
+          <StepperRow label={tr('UI 字号', 'UI size')} value={prefs.uiFontSize} min={12} max={18} onChange={value => update({ uiFontSize: value })} />
+          <StepperRow label={tr('代码字号', 'Code size')} value={prefs.codeFontSize} min={11} max={18} onChange={value => update({ codeFontSize: value })} />
         </div>
       </div>
 
       <div className="glass wb-provider-card wb-appearance-card">
         <div className="wb-card-head">
           <div>
-            <strong>交互</strong>
-            <span>控制侧栏、光标、动效和 Diff 标记的呈现。</span>
+            <strong>{tr('交互', 'Interaction')}</strong>
+            <span>{tr('控制侧栏、光标、动效和 Diff 标记的呈现。', 'Control sidebar, cursor, motion, and diff marker behavior.')}</span>
           </div>
         </div>
-        <PreferenceRow title="半透明侧栏" detail="让左侧栏轻微透出桌面背景。">
+        <PreferenceRow title={tr('半透明侧栏', 'Translucent sidebar')} detail={tr('让左侧栏轻微透出桌面背景。', 'Let the sidebar subtly show the desktop background.')}>
           <Switch on={prefs.translucentSidebar} onChange={value => update({ translucentSidebar: value })} />
         </PreferenceRow>
-        <PreferenceRow title="按钮使用指针光标" detail="关闭后按钮不再强制显示手型光标。">
+        <PreferenceRow title={tr('按钮使用指针光标', 'Pointer cursor on buttons')} detail={tr('关闭后按钮不再强制显示手型光标。', 'When off, buttons no longer force a pointer cursor.')}>
           <Switch on={prefs.usePointerCursor} onChange={value => update({ usePointerCursor: value })} />
         </PreferenceRow>
-        <PreferenceRow title="动效强度" detail="影响弹层、面板和列表的过渡动画。">
+        <PreferenceRow title={tr('动效强度', 'Motion level')} detail={tr('影响弹层、面板和列表的过渡动画。', 'Affects transitions for popovers, panels, and lists.')}>
           <Seg value={prefs.motion} onChange={value => update({ motion: value as MotionLevel })} options={[
-            { value: 'off', label: '关闭' },
-            { value: 'subtle', label: '简洁' },
-            { value: 'rich', label: '丰富' }
+            { value: 'off', label: tr('关闭', 'Off') },
+            { value: 'subtle', label: tr('简洁', 'Subtle') },
+            { value: 'rich', label: tr('丰富', 'Rich') }
           ]} />
         </PreferenceRow>
-        <PreferenceRow title="Agent 运行超时" detail="单个 Agent 超过该时长会自动停止，并标记为超时失败。">
+        <PreferenceRow title={tr('Agent 运行超时', 'Agent run timeout')} detail={tr('单个 Agent 超过该时长会自动停止，并标记为超时失败。', 'An Agent is stopped and marked timed out after this duration.')}>
           <div className="wb-timeout-control">
             <input
               type="range"
@@ -1403,12 +2248,12 @@ function AppearanceTab({ motion, setMotion }: { motion: MotionLevel; setMotion: 
                   .catch(() => {})
               }}
             />
-            <span>{runTimeoutMinutes} 分钟</span>
+            <span>{tr(`${runTimeoutMinutes} 分钟`, `${runTimeoutMinutes} min`)}</span>
           </div>
         </PreferenceRow>
-        <PreferenceRow title="Diff 标记" detail="选择只用颜色，或同时显示 +/- 标记。">
+        <PreferenceRow title={tr('Diff 标记', 'Diff marker')} detail={tr('选择只用颜色，或同时显示 +/- 标记。', 'Choose color-only markers or show +/- signs too.')}>
           <Seg value={prefs.diffMarker} onChange={value => update({ diffMarker: value as DiffMarkerStyle })} options={[
-            { value: 'color', label: '颜色' },
+            { value: 'color', label: tr('颜色', 'Color') },
             { value: 'sign', label: '+/-' }
           ]} />
         </PreferenceRow>
@@ -1417,34 +2262,59 @@ function AppearanceTab({ motion, setMotion }: { motion: MotionLevel; setMotion: 
       <div className="glass wb-provider-card wb-appearance-card">
         <div className="wb-card-head">
           <div>
-            <strong>通用偏好</strong>
-            <span>这些选项会保存到本机设置；已有运行时支持的项目会直接生效。</span>
+            <strong>{tr('通用偏好', 'General preferences')}</strong>
+            <span>{tr('这些选项会保存到本机设置；已有运行时支持的项目会直接生效。', 'These options are saved locally; runtime-supported items apply immediately.')}</span>
           </div>
         </div>
-        <PreferenceRow title="默认打开目标" detail="应用启动后优先进入的区域。">
+        <PreferenceRow title={tr('启动打开区域', 'Startup area')} detail={tr('应用启动后优先进入的区域。', 'Choose which area opens first when the app starts.')}>
+          <select className="ah-select" value={prefs.startupOpenTarget} onChange={event => update({ startupOpenTarget: event.target.value as StartupOpenTarget })}>
+            <option value="chat">{tr('新对话', 'New chat')}</option>
+            <option value="last">{tr('上次位置', 'Last location')}</option>
+            <option value="settings">{tr('设置', 'Settings')}</option>
+          </select>
+        </PreferenceRow>
+        <PreferenceRow title={tr('默认打开目标', 'Default open target')} detail={tr('点击文件路径或文件夹时使用的打开方式。', 'Choose how file and folder references open.')}>
           <select className="ah-select" value={prefs.defaultOpenTarget} onChange={event => update({ defaultOpenTarget: event.target.value as DefaultOpenTarget })}>
-            <option value="chat">新对话</option>
-            <option value="last">上次位置</option>
-            <option value="settings">设置</option>
+            <option value="antigravity">Antigravity</option>
+            <option value="explorer">{tr('文件管理器', 'File Explorer')}</option>
+            <option value="system">{tr('系统默认', 'System default')}</option>
           </select>
         </PreferenceRow>
-        <PreferenceRow title="Agent 环境" detail="控制后续 Agent 进程继承环境的偏好。">
+        <PreferenceRow title={tr('默认附件位置', 'Default attachment location')} detail={tr('添加文件或图片附件时优先打开的位置。', 'Preferred starting folder when adding file or image attachments.')}>
+          <DialogLocationControl
+            value={prefs.defaultFileLocation}
+            customPath={prefs.defaultFilePath}
+            kind="file"
+            onModeChange={value => update({ defaultFileLocation: value })}
+            onPathChange={value => update({ defaultFilePath: value })}
+          />
+        </PreferenceRow>
+        <PreferenceRow title={tr('默认文件夹位置', 'Default folder location')} detail={tr('添加或编辑工作目录时优先打开的位置。', 'Preferred starting folder when adding or editing working folders.')}>
+          <DialogLocationControl
+            value={prefs.defaultFolderLocation}
+            customPath={prefs.defaultFolderPath}
+            kind="folder"
+            onModeChange={value => update({ defaultFolderLocation: value })}
+            onPathChange={value => update({ defaultFolderPath: value })}
+          />
+        </PreferenceRow>
+        <PreferenceRow title={tr('Agent 环境', 'Agent environment')} detail={tr('控制后续 Agent 进程继承环境的偏好。', 'Controls how future Agent processes inherit the environment.')}>
           <select className="ah-select" value={prefs.agentEnvironment} onChange={event => update({ agentEnvironment: event.target.value as AgentEnvironment })}>
-            <option value="inherit">继承当前环境</option>
-            <option value="clean">干净环境</option>
-            <option value="login-shell">登录 Shell</option>
+            <option value="inherit">{tr('继承当前环境', 'Inherit current environment')}</option>
+            <option value="clean">{tr('干净环境', 'Clean environment')}</option>
+            <option value="login-shell">{tr('登录 Shell', 'Login shell')}</option>
           </select>
         </PreferenceRow>
-        <PreferenceRow title="集成终端 Shell" detail="/terminal 会使用这个 Shell 执行命令。">
+        <PreferenceRow title={tr('集成终端 Shell', 'Integrated terminal shell')} detail={tr('/terminal 会使用这个 Shell 执行命令。', '/terminal uses this shell to run commands.')}>
           <select className="ah-select" value={prefs.terminalShell} onChange={event => update({ terminalShell: event.target.value as TerminalShell })}>
-            <option value="system">系统默认</option>
+            <option value="system">{tr('系统默认', 'System default')}</option>
             <option value="powershell">PowerShell</option>
             <option value="cmd">Cmd</option>
             <option value="git-bash">Git Bash</option>
             <option value="wsl">WSL</option>
           </select>
         </PreferenceRow>
-        <PreferenceRow title="界面语言" detail="切换后立即生效。">
+        <PreferenceRow title={tr('界面语言', 'Interface language')} detail={tr('切换后立即生效。', 'Applies immediately after switching.')}>
           <Seg value={prefs.language} onChange={value => update({ language: value as AppearancePreferences['language'] })} options={[{ value: 'zh', label: '中文' }, { value: 'en', label: 'English' }]} />
         </PreferenceRow>
       </div>
@@ -1485,6 +2355,37 @@ function PreferenceRow({ title, detail, children }: { title: string; detail: str
     <div className="wb-appearance-row">
       <div><strong>{title}</strong><span>{detail}</span></div>
       {children}
+    </div>
+  )
+}
+
+function DialogLocationControl({ value, customPath, kind, onModeChange, onPathChange }: {
+  value: DefaultDialogLocation
+  customPath: string
+  kind: 'file' | 'folder'
+  onModeChange: (value: DefaultDialogLocation) => void
+  onPathChange: (value: string) => void
+}) {
+  const pickCustomPath = async () => {
+    const picked = await window.electronAPI.app.pickFolder({ defaultPath: customPath || defaultDialogPath('folder') })
+    if (!picked) return
+    rememberDialogPath('folder', picked)
+    onPathChange(picked)
+    onModeChange('custom')
+  }
+  return (
+    <div className="wb-dialog-location-control">
+      <select className="ah-select" value={value} onChange={event => onModeChange(event.target.value as DefaultDialogLocation)}>
+        <option value="last">{tr('上次使用位置', 'Last used location')}</option>
+        <option value="workspace">{tr('当前工作目录', 'Current workspace')}</option>
+        <option value="custom">{tr('自定义目录', 'Custom folder')}</option>
+      </select>
+      {value === 'custom' && (
+        <div className="wb-folder-picker">
+          <input className="ah-input mono" value={customPath} onChange={event => onPathChange(event.target.value)} placeholder={kind === 'file' ? tr('附件默认目录', 'Attachment default folder') : tr('文件夹默认目录', 'Folder default location')} />
+          <button className="ah-btn sm" onClick={pickCustomPath}>{tr('选择', 'Choose')}</button>
+        </div>
+      )}
     </div>
   )
 }

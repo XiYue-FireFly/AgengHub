@@ -42,6 +42,7 @@ export const IC = {
   max: <><rect x="5.5" y="5.5" width="13" height="13" rx="2"></rect></>,
   folder: <><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"></path></>,
   file: <><path d="M7 3.5h7l3 3V20a1.5 1.5 0 0 1-1.5 1.5h-8A1.5 1.5 0 0 1 6 20V5A1.5 1.5 0 0 1 7.5 3.5z"></path><path d="M14 3.5V7h3.5"></path><path d="M8.5 12h7M8.5 16h5"></path></>,
+  git: <><circle cx="6" cy="6" r="2"></circle><circle cx="18" cy="6" r="2"></circle><circle cx="12" cy="18" r="2"></circle><path d="M8 6h8"></path><path d="M6 8v2a8 8 0 0 0 6 7.7"></path><path d="M18 8v2a8 8 0 0 1-6 7.7"></path></>,
   image: <><rect x="4" y="5" width="16" height="14" rx="2"></rect><circle cx="9" cy="10" r="1.5"></circle><path d="M7 17l4.2-4.2 2.6 2.6L16 13l3 4"></path></>,
   pencil: <><path d="M4 20h4l10-10-4-4L4 16z"></path><path d="M14 6l4 4"></path></>,
   mic: <><path d="M12 3.5a3 3 0 0 0-3 3V12a3 3 0 0 0 6 0V6.5a3 3 0 0 0-3-3z"></path><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0"></path><path d="M12 18v3"></path><path d="M9 21h6"></path></>,

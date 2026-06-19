@@ -43,7 +43,7 @@ interface DetectableLocalAgent {
 const CONSERVATIVE_LOCAL_CANDIDATES: DetectableLocalAgent[] = [
   { agentId: "gemini", label: "Gemini CLI", versionArgs: ["--version"], manualOnly: true, candidateKind: "cli" as const, requiresPromptArg: false, note: "CLI candidate. AgentHub can send prompts through stdin; add args only if this CLI needs them." },
   { agentId: "codebuddy", label: "CodeBuddy", versionArgs: ["--version"], manualOnly: true, candidateKind: "cli" as const, requiresPromptArg: false, note: "CLI candidate. AgentHub can send prompts through stdin; add args only if this CLI needs them." },
-  { agentId: "antigravity", label: "Antigravity / 反重力", versionArgs: ["--version"], manualOnly: true, candidateKind: "desktop" as const, requiresPromptArg: true, note: "Desktop/manual candidate. Use ACP or add non-interactive args containing {prompt} before dispatch." },
+  { agentId: "antigravity", label: "Antigravity", versionArgs: ["--version"], manualOnly: true, candidateKind: "desktop" as const, requiresPromptArg: true, note: "Desktop/manual candidate. Use ACP or add non-interactive args containing {prompt} before dispatch." },
   { agentId: "mimocode", label: "Mimocode CLI", versionArgs: ["--version"], manualOnly: true, candidateKind: "cli" as const, requiresPromptArg: false, note: "CLI candidate. AgentHub can send prompts through stdin; add args only if this CLI needs them." },
   { agentId: "zcode", label: "ZCode CLI", versionArgs: ["--version"], manualOnly: true, candidateKind: "cli" as const, requiresPromptArg: false, note: "CLI candidate. AgentHub can send prompts through stdin; add args only if this CLI needs them." },
   { agentId: "reasonix", label: "Reasonix CLI/Desktop", versionArgs: ["--version"], manualOnly: true, candidateKind: "desktop" as const, requiresPromptArg: true, note: "Desktop/manual candidate. Use ACP or add non-interactive args containing {prompt} before dispatch." }
@@ -110,6 +110,14 @@ export function getCachedLocalAgentStatuses(): LocalAgentStatus[] {
   return refreshLocalAgentStatusCache()
 }
 
+export function isUsableLocalAgentStatus(agent: LocalAgentStatus): boolean {
+  if (!agent.agentId || !agent.configured) return false
+  if (agent.loginState === "needs-login" || agent.loginState === "not-installed") return false
+  if ((agent.protocol === "stdio-plain" || agent.protocol === "acp") && !agent.binary?.trim()) return false
+  if (agent.manualOnly && agent.requiresPromptArg && agent.protocol !== "acp" && !/\{prompt\}/i.test(agent.args || "")) return false
+  return true
+}
+
 export function refreshLocalAgentStatusCache(): LocalAgentStatus[] {
   statusCache = { value: detectLocalAgentStatuses(), updatedAt: Date.now() }
   return statusCache.value
@@ -124,12 +132,14 @@ export function configureLocalAgent(agentId: string, patch: { binary?: string; a
   }
   const providerMgr = getProviderManager()
   const prev = providerMgr.getBinding(agentId)
+  const protocol = patch.protocol || prev?.protocol || "stdio-plain"
+  const isLocalProtocol = protocol === "stdio-plain" || protocol === "acp"
   providerMgr.upsertBinding({
     agentId,
-    providerId: prev?.providerId || "local-cli",
-    modelId: prev?.modelId || "local",
+    providerId: isLocalProtocol ? "local-cli" : prev?.providerId || "local-cli",
+    modelId: isLocalProtocol ? "local" : prev?.modelId || "local",
     thinking: prev?.thinking || { mode: "auto", level: "medium", collapseInUI: true },
-    protocol: patch.protocol || prev?.protocol || "stdio-plain",
+    protocol,
     binary: patch.binary ?? prev?.binary ?? "",
     args: patch.args ?? prev?.args ?? ""
   } as any)

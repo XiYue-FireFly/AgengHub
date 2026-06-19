@@ -21,7 +21,7 @@ export interface BuildContextProjectionInput {
   attachments: WorkbenchAttachment[]
   snapshot: WorkbenchSnapshot
   events: RuntimeEvent[]
-  memories?: Array<{ id?: string; title?: string; content?: string; text?: string; category?: string }>
+  memories?: Array<{ id?: string; title?: string; summary?: string; content?: string; text?: string; category?: string }>
   pinnedBlocks?: ContextBlock[]
   writeDraft?: { title: string; content: string } | null
   modelContextWindowTokens?: number
@@ -78,7 +78,7 @@ export function buildContextProjection(input: BuildContextProjectionInput): Cont
   }
 
   for (const memory of input.memories?.slice(0, 8) ?? []) {
-    const content = memory.content || memory.text || ""
+    const content = memory.content || memory.text || (memory as any).summary || ""
     blocks.push({
       id: `ctx-memory-${memory.id || hash(`${memory.title}:${content}`)}`,
       kind: "memory",
@@ -86,7 +86,7 @@ export function buildContextProjection(input: BuildContextProjectionInput): Cont
       detail: memory.category,
       content,
       sourceRef: memory.id,
-      estimateTokens: estimateTokens(content),
+      estimateTokens: estimateTokens(content || memory.title || ""),
       participation: "selected",
       createdAt: now
     })
@@ -164,7 +164,7 @@ function workspaceStateBlock(workspaceId: string | null, createdAt: number): Con
 
 function compactTurnForContext(turn: WorkbenchTurn, events: RuntimeEvent[]): string {
   const outputs = events
-    .filter(event => event.turnId === turn.id && (event.kind === "agent:done" || event.kind === "orchestrate"))
+    .filter(event => event.turnId === turn.id && event.payload?.visibility !== "run" && (event.kind === "agent:done" || event.kind === "orchestrate"))
     .map(event => event.payload?.content || event.payload?.error || "")
     .filter(Boolean)
     .join("\n")

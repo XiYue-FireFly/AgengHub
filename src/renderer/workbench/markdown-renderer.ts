@@ -150,16 +150,67 @@ function inlineMarkdown(value: string): string {
   }
 
   let text = escapeHtml(value)
-  text = text.replace(/`([^`]+)`/g, (_m, code) => stash(`<code>${code}</code>`))
+  text = text.replace(/`([^`]+)`/g, (_m, code) => {
+    const parsed = parseLocalFileReference(code)
+    if (parsed) return stash(fileReferenceHtml(parsed, code))
+    return stash(`<code>${code}</code>`)
+  })
   text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_m, label, url) =>
     stash(`<a href="${url}" target="_blank" rel="noreferrer">${label}</a>`)
   )
+  text = text.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label, rawTarget) => {
+    const parsed = parseLocalFileReference(rawTarget)
+    if (!parsed) return _m
+    return stash(fileReferenceHtml(parsed, label))
+  })
   text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   text = text.replace(/__([^_]+)__/g, '<strong>$1</strong>')
   text = text.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
   text = text.replace(/(^|[^_])_([^_\n]+)_/g, '$1<em>$2</em>')
   text = text.replace(/\u0000AGENTHUBTOKEN(\d+)\u0000/g, (_m, index) => tokens[Number(index)] ?? '')
   return text
+}
+
+function fileReferenceHtml(parsed: { path: string; line?: number }, label: string): string {
+  return [
+    `<a href="#" class="wb-file-ref-chip" data-file-path="${escapeHtml(parsed.path)}"`,
+    parsed.line ? ` data-line="${parsed.line}"` : '',
+    '>',
+    `<span class="wb-file-ref-icon">${escapeHtml(fileKindLabel(parsed.path))}</span>`,
+    `<span>${label}</span>`,
+    '</a>'
+  ].join('')
+}
+
+function parseLocalFileReference(value: string): { path: string; line?: number } | null {
+  const raw = value.trim().replace(/^['"]|['"]$/g, '')
+  if (!raw || /^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) return null
+  const match = raw.match(/^(.+?)(?::(\d+))?$/)
+  if (!match) return null
+  const path = match[1]
+  if (!isLikelyLocalPath(path)) return null
+  const line = match[2] ? Number(match[2]) : undefined
+  return { path, line: Number.isFinite(line) ? line : undefined }
+}
+
+function isLikelyLocalPath(path: string): boolean {
+  return /^[a-z]:[\\/]/i.test(path) ||
+    path.startsWith('/') ||
+    path.startsWith('./') ||
+    path.startsWith('../') ||
+    /^[\w.-]+[\\/]/.test(path) ||
+    /\.(tsx?|jsx?|mjs|cjs|json|ya?ml|toml|md|css|scss|html|py|go|rs|java|cs|cpp|c|h|hpp|vue|svelte)$/i.test(path)
+}
+
+function fileKindLabel(path: string): string {
+  const ext = path.split(/[\\/]/).pop()?.split('.').pop()?.toLowerCase() || ''
+  if (ext === 'ts' || ext === 'tsx') return 'TS'
+  if (ext === 'js' || ext === 'jsx' || ext === 'mjs' || ext === 'cjs') return 'JS'
+  if (ext === 'json') return '{}'
+  if (ext === 'md') return 'MD'
+  if (ext === 'css' || ext === 'scss') return '#'
+  if (ext === 'py') return 'PY'
+  return '</>'
 }
 
 function escapeHtml(value: string): string {

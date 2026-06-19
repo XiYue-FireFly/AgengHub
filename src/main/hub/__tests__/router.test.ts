@@ -1,41 +1,69 @@
-import { describe, it, expect } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { KeywordRouter } from '../router'
 
-// route() 只读 .id，最小化构造 AgentInfo
-const agents = (...ids: string[]) => ids.map(id => ({ id })) as any
+const agents = (...ids: string[]) => ids.map(id => ({
+  id,
+  name: id,
+  status: 'idle',
+  mode: 'oneshot',
+  protocol: 'http',
+  adapter: {},
+  capabilities: id === 'codex' ? ['code', 'terminal'] : id === 'claude' ? ['analysis', 'review', 'write'] : ['browser', 'automation'],
+  lastActive: new Date(),
+  errorCount: 0
+})) as any
 
-describe('KeywordRouter 智能路由（按任务类型打分）', () => {
+describe('KeywordRouter', () => {
   const r = new KeywordRouter()
   const all = agents('codex', 'claude', 'openclaw', 'hermes', 'marvis', 'minimax-code')
 
-  it('编码类任务 → codex', () => {
-    expect(r.route('帮我写代码 实现一个函数并修复 bug', all)).toBe('codex')
+  it('routes coding tasks to codex', () => {
+    expect(r.route('help me implement code and fix a bug', all)).toBe('codex')
   })
 
-  it('分析/写作类任务 → claude', () => {
-    expect(r.route('请分析这份报告并总结，然后翻译成英文文档', all)).toBe('claude')
+  it('falls back to the first available agent when no keyword matches', () => {
+    expect(r.route('hello there', agents('claude', 'codex'))).toBe('claude')
   })
 
-  it('自动化/部署类任务 → openclaw', () => {
-    expect(r.route('帮我部署这个 pipeline 并写个自动化脚本', all)).toBe('openclaw')
-  })
-
-  it('混合但编码主导 → 取命中最多的 codex', () => {
-    expect(r.route('重构这个函数，修复 bug，实现新的 api', all)).toBe('codex')
-  })
-
-  it('无任何关键词 → 回退首个可用 agent', () => {
-    expect(r.route('你好呀', agents('claude', 'codex'))).toBe('claude')
-  })
-
-  it('只在可用 agent 中选择（codex 不可用时分析类命中 claude）', () => {
-    expect(r.route('分析并解释这段内容', agents('claude', 'openclaw'))).toBe('claude')
-  })
-
-  it('routeScores 降序且仅含命中者', () => {
-    const s = r.routeScores('部署 pipeline 自动化脚本', all)
+  it('returns scored matches in descending order', () => {
+    const s = r.routeScores('deploy pipeline automation script', all)
     expect(s[0].id).toBe('openclaw')
     expect(s.every(x => x.score > 0)).toBe(true)
     for (let i = 1; i < s.length; i++) expect(s[i - 1].score).toBeGreaterThanOrEqual(s[i].score)
+  })
+
+  it('weighted route includes state, scores, and memory preference reasons', () => {
+    const decision = r.routeWeighted({
+      text: 'please review this implementation and safety risks',
+      recentUserMessages: Array.from({ length: 12 }, (_, i) => `user prompt ${i}`),
+      availableAgents: agents('codex', 'claude'),
+      memories: [{ category: 'preference', content: 'prefer claude for review and writing tasks', tags: ['preference'] }],
+      stats: { claude: { success: 3 }, codex: { failure: 2 } }
+    })
+
+    expect(decision.state).toBe('review')
+    expect(decision.recentUserMessages).toHaveLength(10)
+    expect(decision.selectedAgentId).toBe('claude')
+    expect(decision.scores[0].reasons).toContain('memory preference')
+  })
+
+  it('weights relevant memory preferences without exposing assistant output to router history', () => {
+    const decision = r.routeWeighted({
+      text: 'open the browser and inspect this page',
+      recentUserMessages: [
+        'old user prompt',
+        'assistant said use openclaw for browser work',
+        'please remember I prefer openclaw for browser automation'
+      ],
+      availableAgents: agents('codex', 'openclaw'),
+      memories: [
+        { category: 'preference', content: 'prefer openclaw for browser automation', tags: ['browser', 'preference'] }
+      ],
+      stats: { codex: { success: 10 }, openclaw: { failure: 1 } }
+    })
+
+    expect(decision.recentUserMessages).toHaveLength(3)
+    expect(decision.selectedAgentId).toBe('openclaw')
+    expect(decision.scores[0].reasons).toContain('memory preference')
   })
 })

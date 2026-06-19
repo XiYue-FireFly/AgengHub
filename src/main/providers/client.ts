@@ -109,7 +109,7 @@ export class ProviderClient {
       try {
         const chunk: ChatCompletionChunk = JSON.parse(evt)
         const u = (chunk as any).usage
-        if (u) usage = normalizeUsage(u)
+        if (u) usage = normalizeUsage({ ...u, modelId: (chunk as any).model || model.id, providerId: provider.id })
         const fr = chunk.choices?.[0]?.finish_reason
         if (fr) finishReason = normFinish(fr)
         const delta = chunk.choices?.[0]?.delta
@@ -157,6 +157,8 @@ export class ProviderClient {
     let thinkingStartedAt: number | null = null
     let inputTokens = 0
     let outputTokens = 0
+    let usage: any = undefined
+    let accumulatedUsage: any = {}
     let stopReason: string | undefined
     const toolAcc: any[] = []   // 按 content block index 累积 tool_use（id/name 在 start，input 拼 partial_json）
     await this.readSse(res.body, (evt) => {
@@ -189,9 +191,15 @@ export class ProviderClient {
         if (obj.type === 'message_start' && obj.message?.usage) {
           inputTokens = obj.message.usage.input_tokens ?? inputTokens
           outputTokens = obj.message.usage.output_tokens ?? outputTokens
+          accumulatedUsage = { ...accumulatedUsage, ...obj.message.usage, input_tokens: inputTokens, output_tokens: outputTokens }
+          usage = normalizeUsage({ ...accumulatedUsage, modelId: model.id, providerId: provider.id })
         }
         if (obj.type === 'message_delta') {
-          if (obj.usage) outputTokens = obj.usage.output_tokens ?? outputTokens
+          if (obj.usage) {
+            outputTokens = obj.usage.output_tokens ?? outputTokens
+            accumulatedUsage = { ...accumulatedUsage, ...obj.usage, input_tokens: inputTokens, output_tokens: outputTokens }
+            usage = normalizeUsage({ ...accumulatedUsage, modelId: model.id, providerId: provider.id })
+          }
           if (obj.delta?.stop_reason) stopReason = obj.delta.stop_reason
         }
       } catch {}
@@ -200,7 +208,7 @@ export class ProviderClient {
     const toolCalls = toolAcc.filter(Boolean)
     cb.onDone?.({
       content,
-      usage: normalizeUsage({ input_tokens: inputTokens, output_tokens: outputTokens }),
+      usage: usage || normalizeUsage({ ...accumulatedUsage, input_tokens: inputTokens, output_tokens: outputTokens, modelId: model.id, providerId: provider.id }),
       finishReason: normFinish(stopReason),
       toolCalls: toolCalls.length ? toolCalls : undefined,
       thinking: thinkingTxt ? {
@@ -246,7 +254,7 @@ export class ProviderClient {
       if (!payload) return
       try {
         const obj = JSON.parse(payload)
-        if (obj.usageMetadata) usageMeta = obj.usageMetadata
+        if (obj.usageMetadata) usageMeta = { ...obj.usageMetadata, modelId: model.id, providerId: provider.id }
         const fr = obj.candidates?.[0]?.finishReason
         if (fr) geminiFinish = normFinish(fr)
         const parts = obj.candidates?.[0]?.content?.parts || []
@@ -417,13 +425,88 @@ function normFinish(raw: any): string | undefined {
   return 'stop'
 }
 
-function normalizeUsage(u: any): { prompt_tokens: number; completion_tokens: number; total_tokens: number } | undefined {
+function normalizeUsage(u: any): {
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+  reasoning_tokens: number
+  modelId?: string
+  providerId?: string
+  raw?: any
+} | undefined {
   if (!u) return undefined
-  const prompt = u.prompt_tokens ?? u.input_tokens ?? u.promptTokenCount
-  const completion = u.completion_tokens ?? u.output_tokens ?? u.candidatesTokenCount
-  const total = u.total_tokens ?? u.totalTokenCount ?? (prompt !== undefined || completion !== undefined ? (prompt ?? 0) + (completion ?? 0) : undefined)
-  if (prompt === undefined && completion === undefined && total === undefined) return undefined
-  return { prompt_tokens: prompt ?? 0, completion_tokens: completion ?? 0, total_tokens: total ?? 0 }
+  const prompt = num(
+    u.prompt_tokens,
+    u.promptTokens,
+    u.input_tokens,
+    u.inputTokens,
+    u.promptTokenCount
+  )
+  const cacheRead = num(
+    u.cache_read_tokens,
+    u.cacheReadTokens,
+    u.cache_read_input_tokens,
+    u.cacheReadInputTokens,
+    u.cachedContentTokenCount,
+    u.prompt_tokens_details?.cached_tokens,
+    u.input_tokens_details?.cached_tokens
+  ) ?? 0
+  const cacheCreation = num(
+    u.cache_creation_tokens,
+    u.cacheCreationTokens,
+    u.cache_creation_input_tokens,
+    u.cacheCreationInputTokens
+  ) ?? 0
+  const reasoning = num(
+    u.reasoning_tokens,
+    u.reasoningTokens,
+    u.thoughtsTokenCount,
+    u.output_tokens_details?.reasoning_tokens,
+    u.completion_tokens_details?.reasoning_tokens
+  ) ?? 0
+  const reportedTotal = num(u.total_tokens, u.totalTokens, u.totalTokenCount)
+  const explicitCompletion = num(u.completion_tokens, u.completionTokens, u.output_tokens, u.outputTokens, u.candidatesTokenCount)
+  const completion = reportedTotal !== undefined && u.totalTokenCount !== undefined
+    ? Math.max(reportedTotal - (prompt ?? 0), 0)
+    : explicitCompletion
+  const fallbackTotal = (prompt ?? 0) + (completion ?? 0) + cacheCreation + (cacheReadAlreadyInInput(u) ? 0 : cacheRead)
+  const total = reportedTotal ?? ((prompt !== undefined || completion !== undefined || cacheCreation > 0 || cacheRead > 0) ? fallbackTotal : undefined)
+  if (prompt === undefined && completion === undefined && total === undefined && cacheRead <= 0 && cacheCreation <= 0) return undefined
+  return {
+    prompt_tokens: prompt ?? 0,
+    completion_tokens: completion ?? 0,
+    total_tokens: Math.max(total ?? 0, cacheRead, cacheCreation),
+    input_tokens: prompt ?? 0,
+    output_tokens: completion ?? 0,
+    cache_read_tokens: cacheRead,
+    cache_creation_tokens: cacheCreation,
+    reasoning_tokens: reasoning,
+    modelId: typeof u.modelId === 'string' ? u.modelId : undefined,
+    providerId: typeof u.providerId === 'string' ? u.providerId : undefined,
+    raw: u
+  }
+}
+
+function num(...values: any[]): number | undefined {
+  for (const value of values) {
+    const n = Number(value)
+    if (Number.isFinite(n)) return Math.max(0, Math.round(n))
+  }
+  return undefined
+}
+
+function cacheReadAlreadyInInput(u: any): boolean {
+  return Boolean(
+    u?.prompt_tokens_details?.cached_tokens != null ||
+    u?.input_tokens_details?.cached_tokens != null ||
+    u?.inputTokensDetails?.cachedTokens != null ||
+    u?.cachedContentTokenCount != null ||
+    u?.cached_content_token_count != null
+  )
 }
 
 export function buildProviderClient(resolved: ResolvedCall): ProviderClient {

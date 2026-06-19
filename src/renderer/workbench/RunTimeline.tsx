@@ -1,9 +1,10 @@
 import React from 'react'
 import { Icon, IC, AgentMark } from '../glass/ui'
 import { AGENT_META } from '../glass/meta'
-import { tr } from '../glass/i18n'
+import { getLang, tr } from '../glass/i18n'
 import { SetupTab } from '../glass/connection-status'
 import { localAgentOptions } from './localAgentOptions'
+import { buildCustomScheduleTemplate } from './customSchedule'
 
 export function RunTimeline({
   events,
@@ -15,6 +16,8 @@ export function RunTimeline({
   setMode,
   customSchedule,
   setCustomSchedule,
+  smartSchedule,
+  setSmartSchedule,
   openSetup,
   onClose,
   terminalRuns,
@@ -29,20 +32,26 @@ export function RunTimeline({
   setMode: (mode: DispatchPreset) => void
   customSchedule: SchedulePreview
   setCustomSchedule: (schedule: SchedulePreview) => void
+  smartSchedule: SchedulePreview
+  setSmartSchedule: (schedule: SchedulePreview) => void
   openSetup: (tab?: SetupTab | 'appearance') => void
   onClose: () => void
   terminalRuns?: TerminalRun[]
   setTerminalRuns?: (runs: TerminalRun[]) => void
 }) {
-  const schedule = mode === 'custom' ? customSchedule : schedules.find(s => s.preset === mode)
-  const recent = [...events].slice(-14).reverse()
+  const schedule = mode === 'custom' ? customSchedule : mode === 'firefly-custom' ? smartSchedule : schedules.find(s => s.preset === mode)
+  const editableSchedule = mode === 'custom' || mode === 'firefly-custom'
+  const timelineEvents = events.filter(event => event.kind !== 'memory:candidate')
+  const recent = [...timelineEvents].slice(-14).reverse()
   const [detecting, setDetecting] = React.useState(false)
   const runningTurns = turns.filter(turn => turn.status === 'running' || turn.status === 'queued').length
   const completedTurns = turns.filter(turn => turn.status === 'completed').length
   const failedTurns = turns.filter(turn => turn.status === 'failed').length
   const usableAgentIds = localAgentOptions(localAgents)
   const readyAgents = usableAgentIds.length
-  const displayAgents = [...localAgents].sort((a, b) => agentRank(a, usableAgentIds) - agentRank(b, usableAgentIds))
+  const displayAgents = usableAgentIds
+    .map(id => localAgents.find(agent => agent.agentId === id))
+    .filter((agent): agent is LocalAgentStatus => Boolean(agent))
 
   const refreshAgents = async () => {
     setDetecting(true)
@@ -84,7 +93,7 @@ export function RunTimeline({
           <span>{tr('调度步骤', 'schedule steps')}</span>
         </div>
         <div>
-          <strong>{events.length}</strong>
+          <strong>{timelineEvents.length}</strong>
           <span>{tr('事件', 'events')}</span>
         </div>
       </div>
@@ -104,7 +113,7 @@ export function RunTimeline({
             </div>
           ))}
           {displayAgents.length === 0 && (
-            <div className="wb-muted-box">{tr('还没有本地 Agent 候选。点击刷新重新检测。', 'No local agent candidates yet. Refresh to detect again.')}</div>
+            <div className="wb-muted-box">{tr('还没有可调度的本地 Agent。候选和路径配置请到设置 > 路由处理。', 'No dispatch-ready local agents. Configure candidates and paths in Settings > Routing.')}</div>
           )}
         </div>
       </section>
@@ -119,15 +128,20 @@ export function RunTimeline({
             </select>
           </div>
           <p>{scheduleDescription(schedule, mode)}</p>
-          {mode === 'custom'
-            ? <CustomScheduleEditor schedule={customSchedule} setSchedule={setCustomSchedule} localAgents={localAgents} />
+          {editableSchedule
+            ? <CustomScheduleEditor
+                schedule={mode === 'firefly-custom' ? smartSchedule : customSchedule}
+                setSchedule={mode === 'firefly-custom' ? setSmartSchedule : setCustomSchedule}
+                localAgents={localAgents}
+                lockedPreset={mode === 'firefly-custom' ? 'firefly-custom' : 'custom'}
+              />
             : schedule?.steps.map((step, index) => (
               <div key={step.id} className="wb-schedule-step">
                 <em>{index + 1}</em>
                 {AGENT_META[step.agentId] ? <AgentMark id={step.agentId} size={20} radius={5} /> : <Icon d={IC.broadcast} size={15} />}
                 <span>
-                  {step.label}
-                  <small>{roleLabel(step.role)}{step.dependsOn?.length ? ` / 依赖 ${step.dependsOn.length} 步` : ''}</small>
+                  {localizedStepLabel(step)}
+                  <small>{roleLabel(step.role)}{dependencyLabel(step.dependsOn?.length || 0)}</small>
                 </span>
               </div>
             ))}
@@ -223,16 +237,19 @@ function terminalStatus(run: TerminalRun): string {
 function CustomScheduleEditor({
   schedule,
   setSchedule,
-  localAgents
+  localAgents,
+  lockedPreset = 'custom'
 }: {
   schedule: SchedulePreview
   setSchedule: (schedule: SchedulePreview) => void
   localAgents: LocalAgentStatus[]
+  lockedPreset?: DispatchPreset
 }) {
   const agents = localAgentOptions(localAgents)
   const updateStep = (stepId: string, patch: Partial<SchedulePreview['steps'][number]>) => {
     setSchedule({
       ...schedule,
+      preset: lockedPreset,
       steps: schedule.steps.map(step => step.id === stepId ? { ...step, ...patch } : step)
     })
   }
@@ -240,6 +257,7 @@ function CustomScheduleEditor({
     const index = schedule.steps.length + 1
     setSchedule({
       ...schedule,
+      preset: lockedPreset,
       steps: [
         ...schedule.steps,
         {
@@ -257,7 +275,7 @@ function CustomScheduleEditor({
     const nextSteps = schedule.steps
       .filter(step => step.id !== stepId)
       .map(step => ({ ...step, dependsOn: step.dependsOn?.filter(dep => dep !== stepId) }))
-    setSchedule({ ...schedule, steps: nextSteps.length ? nextSteps : schedule.steps })
+    setSchedule({ ...schedule, preset: lockedPreset, steps: nextSteps.length ? nextSteps : schedule.steps })
   }
   const toggleDependency = (stepId: string, depId: string) => {
     const step = schedule.steps.find(item => item.id === stepId)
@@ -267,9 +285,22 @@ function CustomScheduleEditor({
     else deps.add(depId)
     updateStep(stepId, { dependsOn: [...deps] })
   }
+  const applyTemplate = (kind: 'five' | 'parallel' | 'executor') => {
+    const next = buildCustomScheduleTemplate(kind, { ...schedule, preset: lockedPreset }, agents)
+    if (next) setSchedule({ ...next, preset: lockedPreset })
+  }
+  const templatesDisabled = agents.length === 0
 
   return (
     <div className="wb-custom-schedule">
+      <div className="wb-template-buttons">
+        <button onClick={() => applyTemplate('five')} disabled={templatesDisabled}>{tr('五角色模板', 'Five-role')}</button>
+        <button onClick={() => applyTemplate('parallel')} disabled={templatesDisabled}>{tr('并行审查', 'Parallel review')}</button>
+        <button onClick={() => applyTemplate('executor')} disabled={templatesDisabled}>{tr('执行门禁', 'Executor gate')}</button>
+      </div>
+      {templatesDisabled && (
+        <div className="wb-muted-box">{tr('没有可用本地 Agent 时不能套用调度模板。请先在路由设置里配置 CLI。', 'Configure a usable local CLI agent before applying schedule templates.')}</div>
+      )}
       {schedule.steps.map((step, index) => (
         <div key={step.id} className="wb-custom-step">
           <div className="wb-custom-step-head">
@@ -281,11 +312,14 @@ function CustomScheduleEditor({
             </button>
           </div>
           <div className="wb-custom-step-grid">
-            <select value={step.agentId} onChange={event => updateStep(step.id, { agentId: event.target.value })}>
-              {agents.length === 0 && <option value="auto">{tr('无可用本地 Agent', 'No local agents ready')}</option>}
+            <select value={agents.includes(step.agentId) ? step.agentId : 'auto'} onChange={event => updateStep(step.id, { agentId: event.target.value })}>
+              {!agents.includes(step.agentId) && <option value="auto">{agents.length === 0 ? tr('无可用本地 Agent', 'No local agents ready') : tr('请选择可用 Agent', 'Select a ready agent')}</option>}
               {agents.map(agentId => <option key={agentId} value={agentId}>{agentName(agentId)}</option>)}
             </select>
             <select value={step.role} onChange={event => updateStep(step.id, { role: event.target.value as any })}>
+              <option value="router">{tr('路由', 'Router')}</option>
+              <option value="executor">{tr('执行', 'Executor')}</option>
+              <option value="gatekeeper">{tr('门禁', 'Gatekeeper')}</option>
               <option value="lead">{tr('主控', 'Lead')}</option>
               <option value="worker">{tr('执行', 'Worker')}</option>
               <option value="reviewer">{tr('评审', 'Reviewer')}</option>
@@ -315,12 +349,26 @@ function CustomScheduleEditor({
 }
 
 function roleLabel(role: string): string {
+  if (role === 'router') return tr('路由', 'router')
+  if (role === 'executor') return tr('执行', 'executor')
+  if (role === 'gatekeeper') return tr('门禁', 'gatekeeper')
   if (role === 'lead') return tr('主控', 'lead')
   if (role === 'worker') return tr('执行', 'worker')
   if (role === 'reviewer') return tr('评审', 'review')
   if (role === 'synthesizer') return tr('汇总', 'synthesis')
   if (role === 'target') return tr('目标', 'target')
   return role
+}
+
+function dependencyLabel(count: number): string {
+  if (!count) return ''
+  return ` / ${tr('依赖', 'depends on')} ${count} ${tr('步', 'step(s)')}`
+}
+
+function localizedStepLabel(step: SchedulePreview['steps'][number]): string {
+  const lang = getLang()
+  if (lang === 'zh') return step.labelZh || step.label || step.labelEn || step.id
+  return step.labelEn || step.label || step.labelZh || step.id
 }
 
 function agentName(agentId: string): string {
@@ -331,12 +379,22 @@ function agentName(agentId: string): string {
 function eventSummary(event: RuntimeEvent): string {
   const payload = event.payload || {}
   if (payload.error) return String(payload.error).slice(0, 56)
+  if (event.kind === 'route:decision') return `${payload.state || 'route'} -> ${payload.selectedAgentId || '-'}`
+  if (event.kind === 'guard:verdict') return guardEventSummary(payload)
   if (payload.status) return String(payload.status)
   if (payload.channel) return String(payload.channel)
   if (payload.text) return String(payload.text).slice(0, 56)
   if (payload.content) return String(payload.content).slice(0, 56)
   if (payload.kind) return String(payload.kind).replace('orchestrate:', '')
   return `seq ${event.seq}`
+}
+
+function guardEventSummary(payload: any): string {
+  if (payload?.requiresUserDecision) return tr('高风险 / 等待确认', 'High risk / waiting')
+  if (payload?.decision === 'approved') return tr('已确认继续', 'Approved')
+  if (payload?.decision === 'denied') return tr('已停止', 'Stopped')
+  if (payload?.decision === 'timeout') return tr('确认超时', 'Timed out')
+  return `${payload?.level || 'risk'} / ${payload?.status || 'verdict'}`
 }
 
 function relativeEventTime(ts: number): string {
@@ -407,6 +465,8 @@ function LocalAgentPicker({ agent, onChange }: { agent: LocalAgentStatus; onChan
 
 function scheduleLabel(schedule: SchedulePreview | undefined, mode: DispatchPreset): string {
   if (!schedule) return mode
+  if (getLang() === 'zh' && schedule.labelZh) return schedule.labelZh
+  if (getLang() === 'en' && schedule.labelEn) return schedule.labelEn
   return ({
     auto: tr('自动路由', 'Auto route'),
     broadcast: tr('广播', 'Broadcast'),
@@ -414,12 +474,15 @@ function scheduleLabel(schedule: SchedulePreview | undefined, mode: DispatchPres
     orchestrate: tr('编排', 'Orchestrate'),
     'lead-workers': tr('主控 + 工作者', 'Lead + workers'),
     'parallel-review': tr('并行评审', 'Parallel review'),
+    'firefly-custom': tr('智能五角色', 'Smart five-role'),
     custom: tr('自定义调度', 'Custom schedule')
-  } as Record<DispatchPreset, string>)[schedule.preset] || schedule.label
+  } as Partial<Record<DispatchPreset, string>>)[schedule.preset] || schedule.label
 }
 
 function scheduleDescription(schedule: SchedulePreview | undefined, mode: DispatchPreset): string {
   if (!schedule) return tr('暂无调度预览。', 'No schedule preview available.')
+  if (getLang() === 'zh' && schedule.descriptionZh) return schedule.descriptionZh
+  if (getLang() === 'en' && schedule.descriptionEn) return schedule.descriptionEn
   return ({
     auto: tr('让 AgentHub 为本轮选择最合适的可用 Agent。', 'Let AgentHub choose the best available agent for this turn.'),
     broadcast: tr('并行询问每个已配置的 Agent。', 'Ask every configured agent in parallel.'),
@@ -427,6 +490,7 @@ function scheduleDescription(schedule: SchedulePreview | undefined, mode: Dispat
     orchestrate: tr('使用计划、执行、验证与汇总路径。', 'Use the planning, execution, verification, and synthesis path.'),
     'lead-workers': tr('Claude/Codex 规划，Codex/OpenCode 执行，Claude 汇总。', 'Claude/Codex plan, Codex/OpenCode execute, Claude synthesizes.'),
     'parallel-review': tr('Codex、Claude、OpenCode 并行回答，再比较差异。', 'Run Codex, Claude, and OpenCode together, then compare outputs.'),
+    'firefly-custom': tr('主 Agent 对话，Router 只看最近用户意图，Reviewer/Gatekeeper 审查风险和格式，Executor 执行获批动作。', 'Main chats, router sees recent user intent only, reviewer/gatekeeper guard risk and format, executor runs approved actions.'),
     custom: tr('按你编辑的 Agent 节点和依赖关系执行；无依赖步骤可并行运行。', 'Run the agent nodes and dependencies you edit; independent steps can run in parallel.')
-  } as Record<DispatchPreset, string>)[mode] || schedule.description
+  } as Partial<Record<DispatchPreset, string>>)[mode] || schedule.description
 }
