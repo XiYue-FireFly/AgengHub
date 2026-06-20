@@ -27,7 +27,7 @@ import {
 } from '../keyboard-shortcuts'
 
 type ViewMode = 'chat' | 'write' | 'tasks' | 'settings'
-type SettingsTabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts'
+type SettingsTabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models'
 type RightPanel = 'runs' | 'git' | 'worktrees' | 'browser' | null
 type ThinkingLevelChoice = 'low' | 'medium' | 'high' | 'xhigh'
 type WorkbenchThinking = { mode: 'off' | 'auto' | 'enabled'; level: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; collapseInUI?: boolean; budgetTokens?: number }

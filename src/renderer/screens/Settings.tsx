@@ -35,7 +35,7 @@ import {
 
 export type MotionLevel = 'off' | 'subtle' | 'rich'
 
-type TabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts'
+type TabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models'
 const MEMORY_CATEGORIES: MemoryCategory[] = ['preference', 'project', 'style', 'decision', 'correction', 'imported_conversation', 'conversation', 'task', 'skill', 'file', 'system']
 const MEMORY_SCOPES = ['all', 'user', 'workspace', 'project'] as const
 type MemoryScopeFilter = typeof MEMORY_SCOPES[number]
@@ -100,6 +100,16 @@ NAV_ITEMS.splice(shortcutsNavInsertIndex >= 0 ? shortcutsNavInsertIndex : NAV_IT
   icon: IC.terminal
 })
 
+const modelsNavInsertIndex = NAV_ITEMS.findIndex(item => item.value === 'providers')
+NAV_ITEMS.splice(modelsNavInsertIndex >= 0 ? modelsNavInsertIndex + 1 : NAV_ITEMS.length, 0, {
+  value: 'models',
+  label: '\u6a21\u578b',
+  labelEn: 'Models',
+  description: '\u67e5\u770b\u6240\u6709\u4f9b\u5e94\u5546\u6a21\u578b\u7684\u80fd\u529b\u548c\u4e0a\u4e0b\u6587\u7a97\u53e3\u3002',
+  descriptionEn: 'View model capabilities and context windows across providers.',
+  icon: IC.pulse
+})
+
 const VISIBLE_NAV_ITEMS = NAV_ITEMS.filter(item => item.value !== 'usage')
 
 function settingsNavLabel(item: typeof NAV_ITEMS[number]): string {
@@ -155,6 +165,7 @@ export function SettingsScreen(props: SettingsScreenProps) {
           />
         )}
         {visibleTab === 'local-agents' && <LocalAgentsTab />}
+        {visibleTab === 'models' && <ModelsTab providers={props.providers} />}
         {visibleTab === 'routing' && (
           <RoutingTab
             providers={props.providers}
@@ -1025,6 +1036,74 @@ function ShortcutsSettingsTab() {
 function shortcutCommandLabel(command?: { labelZh: string; labelEn: string }): string {
   if (!command) return ''
   return getLang() === 'en' ? command.labelEn : command.labelZh
+}
+
+function ModelsTab({ providers }: { providers: ProviderDef[] }) {
+  const [filter, setFilter] = useState('')
+  const models = useMemo(() => {
+    const all: Array<{ providerId: string; providerName: string; modelId: string; label: string; contextWindow: number; supportsTools: boolean; supportsVision: boolean; supportsThinking: boolean }> = []
+    for (const provider of providers) {
+      if (!provider.enabled) continue
+      for (const model of provider.models) {
+        all.push({
+          providerId: provider.id,
+          providerName: provider.name,
+          modelId: model.id,
+          label: model.label,
+          contextWindow: model.contextWindow || 128_000,
+          supportsTools: !!model.supportsTools,
+          supportsVision: !!model.supportsVision,
+          supportsThinking: !!model.supportsThinking
+        })
+      }
+    }
+    return all
+  }, [providers])
+
+  const filtered = useMemo(() => {
+    const needle = filter.trim().toLowerCase()
+    if (!needle) return models
+    return models.filter(m =>
+      m.modelId.toLowerCase().includes(needle) ||
+      m.label.toLowerCase().includes(needle) ||
+      m.providerName.toLowerCase().includes(needle)
+    )
+  }, [models, filter])
+
+  const formatContext = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${Math.round(n / 1_000)}K` : String(n)
+
+  return (
+    <div className="wb-settings-stack">
+      <section className="glass">
+        <div className="wb-settings-section-head">
+          <div>
+            <strong>{tr('模型能力', 'Model capabilities')}</strong>
+            <span>{tr('所有已启用供应商的模型列表，含上下文窗口和支持的能力。', 'All enabled provider models with context windows and capabilities.')}</span>
+          </div>
+          <input className="ah-input" placeholder={tr('搜索模型...', 'Search models...')} value={filter} onChange={e => setFilter(e.target.value)} style={{ maxWidth: 220 }} />
+        </div>
+        <div className="wb-models-grid">
+          {filtered.map(m => (
+            <div key={`${m.providerId}::${m.modelId}`} className="wb-model-card glass">
+              <div className="wb-model-card-head">
+                <strong>{m.label}</strong>
+                <span className="ah-chip">{m.providerName}</span>
+              </div>
+              <small className="mono">{m.modelId}</small>
+              <div className="wb-model-card-meta">
+                <span title="Context window">{formatContext(m.contextWindow)} ctx</span>
+                {m.supportsTools && <span className="wb-model-badge tools" title="Supports tool calls">tools</span>}
+                {m.supportsVision && <span className="wb-model-badge vision" title="Supports vision">vision</span>}
+                {m.supportsThinking && <span className="wb-model-badge thinking" title="Supports thinking/reasoning">thinking</span>}
+              </div>
+            </div>
+          ))}
+          {filtered.length === 0 && <div className="wb-memory-kun-empty"><span>{tr('无匹配模型', 'No matching models')}</span></div>}
+        </div>
+        <div className="wb-models-summary"><span>{tr(`共 ${filtered.length} 个模型，来自 ${new Set(filtered.map(m => m.providerId)).size} 个供应商`, `${filtered.length} model(s) from ${new Set(filtered.map(m => m.providerId)).size} provider(s)`)}</span></div>
+      </section>
+    </div>
+  )
 }
 
 function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) {
