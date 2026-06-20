@@ -207,7 +207,7 @@
 - 未覆盖（记入后续）：
   - P0-4 审批系统增强（请求持久化 + 结构化 action/risk/preview，已实现）
   - P0-5 Usage 统计持久化（append-only ledger，已实现）
-  - P1-6 拆分 index.ts
+  - P1-6 拆分 index.ts（guard-verdict service 已提取，index.ts 从 1862→1793 行，其余模块待后续）
   - P1-7 五角色调度 verdict 结构化
   - P1-8 Provider direct 隔离测试
   - P1-9 本地 CLI 能力检测
