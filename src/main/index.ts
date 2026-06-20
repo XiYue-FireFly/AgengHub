@@ -777,10 +777,12 @@ function safeBrowserUrl(url: string): boolean {
   }
 }
 
-type OpenPathTarget = "antigravity" | "explorer" | "system"
+type OpenPathTarget = "antigravity" | "explorer" | "system" | "vscode" | "cursor" | "windsurf" | "zed" | "file-manager"
+
+const VALID_OPEN_TARGETS: ReadonlySet<string> = new Set(["antigravity", "explorer", "system", "vscode", "cursor", "windsurf", "zed", "file-manager"])
 
 function normalizeOpenPathTarget(value: unknown): OpenPathTarget {
-  return value === "antigravity" || value === "system" || value === "explorer" ? value : "explorer"
+  return VALID_OPEN_TARGETS.has(String(value)) ? value as OpenPathTarget : "explorer"
 }
 
 function safeLocalOpenPath(rawPath: unknown): string {
@@ -867,7 +869,7 @@ async function openLocalPath(input: { path: string; target?: OpenPathTarget; lin
   const targetPath = resolveOpenPathCandidate(input.path, input.workspaceRoot)
   if (!existsSync(targetPath)) return { ok: false, path: targetPath, target, error: "Path does not exist." }
   try {
-    if (target === "explorer") {
+    if (target === "explorer" || target === "file-manager") {
       if (statSync(targetPath).isDirectory()) {
         const result = await shell.openPath(targetPath)
         if (result) throw new Error(result)
@@ -876,6 +878,11 @@ async function openLocalPath(input: { path: string; target?: OpenPathTarget; lin
       }
     } else if (target === "antigravity") {
       await openPathInAntigravity(targetPath, input.line, input.column)
+    } else if (target === "vscode" || target === "cursor" || target === "windsurf" || target === "zed") {
+      // Use open-target module for named editors
+      const { openWithEditor } = require("./runtime/open-target")
+      const result = await openWithEditor(target, targetPath, input.line, input.column)
+      if (!result.ok) throw new Error(result.error || `Failed to open in ${target}`)
     } else {
       const result = await shell.openPath(targetPath)
       if (result) throw new Error(result)
