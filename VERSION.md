@@ -212,3 +212,9 @@
   - P1-8 Provider direct 隔离测试（已有 provider-direct.test.ts 覆盖三项场景）
   - P1-9 本地 CLI 能力检测（已实现：kind 字段 + GUI 二进制标记 desktop-candidate）
   - P2-10~13 Skills inventory / MCP inventory / UI 优化 / 文件编辑器
+
+#### 新功能（claude-goal.md 第一批基础设施）
+
+  - model-capabilities.ts：统一模型能力查询（context window / tools / vision / thinking），15 tests
+  - MCP tool listing：`mcp:listTools` IPC，连接 MCP server 并列出工具，4 tests
+  - open-target.ts：编辑器检测与文件打开（VS Code / Cursor / Windsurf / Zed / Antigravity / 系统默认 / 文件管理器），9 tests
