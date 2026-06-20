@@ -1033,6 +1033,10 @@ function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) {
   const [error, setError] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
   const [draft, setDraft] = useState({ name: '', transport: 'stdio' as McpServerConfig['transport'], command: '', args: '', url: '' })
+  const [toolsForServer, setToolsForServer] = useState<string | null>(null)
+  const [toolsList, setToolsList] = useState<{ name: string; description?: string }[]>([])
+  const [toolsLoading, setToolsLoading] = useState(false)
+  const [toolsError, setToolsError] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -1074,6 +1078,30 @@ function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) {
     } finally {
       setLoading(false)
     }
+  }
+
+  const listTools = async (serverId: string) => {
+    if (toolsForServer === serverId) { setToolsForServer(null); return }
+    setToolsForServer(serverId)
+    setToolsLoading(true)
+    setToolsError(null)
+    setToolsList([])
+    try {
+      const result = await window.electronAPI.mcp.listTools(serverId, workspaceId)
+      if (result.ok) setToolsList(result.tools || [])
+      else setToolsError(result.error || tr('获取工具列表失败', 'Failed to list tools'))
+    } catch (err: any) {
+      setToolsError(err?.message || tr('获取工具列表失败', 'Failed to list tools'))
+    } finally {
+      setToolsLoading(false)
+    }
+  }
+
+  const copyCommand = (server: McpServerConfig) => {
+    const cmd = server.transport === 'stdio'
+      ? [server.command, ...(server.args || [])].filter(Boolean).join(' ')
+      : server.url || ''
+    navigator.clipboard.writeText(cmd).catch(() => {})
   }
 
   return (
@@ -1124,15 +1152,38 @@ function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) {
               <div>
                 <strong>{server.name}</strong>
                 <small className="mono">{server.transport === 'stdio' ? [server.command, ...(server.args || [])].filter(Boolean).join(' ') : server.url}</small>
+                {(server.args?.length || server.env) && <small className="wb-mcp-meta">{server.args?.length ? tr(`${server.args.length} 参数`, `${server.args.length} args`) : ''}{server.env ? ` · ${Object.keys(server.env).length} env` : ''}</small>}
               </div>
               <span className="ah-chip">{mcpSourceLabel(server.source)}</span>
               <span className={'wb-mcp-clean-status ' + (server.status || 'unknown')} title={server.error || ''}>{mcpStatusLabel(server.status || 'unknown')}</span>
               <Switch on={server.enabled} onChange={async value => { await window.electronAPI.mcp.setEnabled(server.id, value, workspaceId); await refresh() }} />
               <span className="wb-card-actions">
                 <button className="ah-btn sm" onClick={async () => { await window.electronAPI.mcp.test(server.id, workspaceId); await refresh() }}>{tr('测试', 'Test')}</button>
+                {server.transport === 'stdio' && <button className="ah-btn sm" onClick={() => listTools(server.id)}>{toolsForServer === server.id ? tr('收起工具', 'Hide tools') : tr('工具列表', 'Tools')}</button>}
+                <button className="ah-btn sm" onClick={() => copyCommand(server)}>{tr('复制命令', 'Copy')}</button>
                 {server.source === 'user' && <button className="ah-btn sm danger" onClick={async () => { if (!window.confirm(tr(`删除 MCP 服务「${server.name}」？`, `Delete MCP service "${server.name}"?`))) return; await window.electronAPI.mcp.remove(server.id); await refresh() }}>{tr('删除', 'Delete')}</button>}
               </span>
               {server.error && <small className="wb-mcp-clean-error">{server.error}</small>}
+              {toolsForServer === server.id && (
+                <div className="wb-mcp-tools-panel">
+                  {toolsLoading && <small>{tr('正在获取工具列表...', 'Loading tools...')}</small>}
+                  {toolsError && <small className="wb-mcp-clean-error">{toolsError}</small>}
+                  {toolsList.length > 0 && (
+                    <div className="wb-mcp-tools-list">
+                      <small>{tr(`共 ${toolsList.length} 个工具`, `${toolsList.length} tool(s) found`)}</small>
+                      {toolsList.map(tool => (
+                        <div key={tool.name} className="wb-mcp-tool-item">
+                          <strong>{tool.name}</strong>
+                          {tool.description && <span>{tool.description.slice(0, 120)}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {!toolsLoading && !toolsError && toolsList.length === 0 && (
+                    <small>{tr('未发现工具', 'No tools found')}</small>
+                  )}
+                </div>
+              )}
             </div>
           ))}
           {servers.length === 0 && <div className="wb-memory-kun-empty"><Icon d={IC.link} size={24} /><span>{tr('暂无 MCP 服务。', 'No MCP services yet.')}</span></div>}

@@ -179,6 +179,7 @@ interface ElectronAPI {
     remove: (id: string) => Promise<boolean>
     setEnabled: (id: string, enabled: boolean, workspaceId?: string | null) => Promise<McpServerConfig | null>
     test: (id: string, workspaceId?: string | null) => Promise<McpServerConfig>
+    listTools: (id: string, workspaceId?: string | null) => Promise<{ ok: boolean; tools: { name: string; description?: string }[]; error?: string }>
   }
   worktrees: {
     list: (parentWorkspaceId?: string | null) => Promise<WorktreeItem[]>
