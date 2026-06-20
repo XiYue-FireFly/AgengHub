@@ -20,6 +20,30 @@ import type {
 const DAY_MS = 86_400_000
 const CHARS_PER_TOKEN = 4
 const PRICING_KEY = "usage.pricing.v1"
+const LEDGER_KEY = "usage.ledger.v1"
+
+// --- Persistent usage ledger (survives runtime event trimming) ---
+
+function loadLedger(): UsageRequestRecord[] {
+  const raw: any = store.get(LEDGER_KEY)
+  return Array.isArray(raw) ? raw : []
+}
+
+function saveLedger(records: UsageRequestRecord[]): void {
+  store.set(LEDGER_KEY, records)
+}
+
+/** Append new records to the ledger, deduplicating by eventId. */
+function appendLedgerEntries(newRecords: UsageRequestRecord[]): UsageRequestRecord[] {
+  if (!newRecords.length) return loadLedger()
+  const existing = loadLedger()
+  const existingIds = new Set(existing.map(r => r.eventId))
+  const toAdd = newRecords.filter(r => !existingIds.has(r.eventId))
+  if (!toAdd.length) return existing
+  const merged = [...toAdd, ...existing].sort((a, b) => b.createdAt - a.createdAt)
+  saveLedger(merged)
+  return merged
+}
 
 interface UsageBucket {
   tokens: number
@@ -246,7 +270,16 @@ export function isModelUsageEvent(event: RuntimeEvent): boolean {
   return Boolean(event.agentId || event.payload?.agentId)
 }
 
+/**
+ * Build usage records: ledger-first with write-through to runtime events.
+ * Ledger entries survive runtime event trimming. New events not yet in the
+ * ledger are computed, persisted, and merged.
+ */
 function buildUsageRecords(): UsageRequestRecord[] {
+  const ledger = loadLedger()
+  const ledgerEventIds = new Set(ledger.map(r => r.eventId))
+
+  // Build from runtime events (same logic as before)
   const runtime = getWorkbenchRuntimeStore()
   const snapshot = runtime.snapshot(undefined)
   const turnById = new Map(snapshot.turns.map(turn => [turn.id, turn]))
@@ -258,39 +291,45 @@ function buildUsageRecords(): UsageRequestRecord[] {
   const errorEvents = events.filter(event => event.kind === "agent:error")
   const errorTurnIds = new Set(errorEvents.map(event => event.turnId))
   const actualEventIds = new Set<string>()
-  const records: UsageRequestRecord[] = []
+  const newRecords: UsageRequestRecord[] = []
 
   for (const event of doneEvents) {
+    if (ledgerEventIds.has(event.id)) continue // already in ledger
     const usage = normalizeUsage(event.payload?.usage)
     if (!usage || usage.totalTokens <= 0) continue
     const record = recordFromEvent(event, usage, "actual", turnById.get(event.turnId))
     actualEventIds.add(event.id)
-    records.push(record)
+    newRecords.push(record)
   }
 
   for (const event of doneEvents) {
-    if (actualEventIds.has(event.id)) continue
+    if (ledgerEventIds.has(event.id) || actualEventIds.has(event.id)) continue
     const turn = turnById.get(event.turnId)
     if (!turn) continue
     const modelId = modelIdForEvent(event)
     const providerId = providerIdForEvent(event)
     const estimated = estimateUsageForDoneEvent(turn, event)
     if (estimated.totalTokens <= 0) continue
-    records.push(recordFromEvent(event, estimated, "estimated", turn))
+    newRecords.push(recordFromEvent(event, estimated, "estimated", turn))
   }
 
   for (const event of errorEvents) {
-    records.push(emptyRecordFromEvent(event, turnById.get(event.turnId)))
+    if (ledgerEventIds.has(event.id)) continue
+    newRecords.push(emptyRecordFromEvent(event, turnById.get(event.turnId)))
   }
 
   for (const turn of snapshot.turns) {
     if (turn.status !== "cancelled" || errorTurnIds.has(turn.id)) continue
     const threadEvents = runtime.eventsSince(turn.threadId, 0)
     const event = [...threadEvents].reverse().find(item => item.turnId === turn.id && item.kind === "turn:status" && item.payload?.status === "cancelled")
-    if (event) records.push(emptyRecordFromTurnStatus(event, turn))
+    if (event && !ledgerEventIds.has(event.id)) newRecords.push(emptyRecordFromTurnStatus(event, turn))
   }
 
-  return records.sort((a, b) => b.createdAt - a.createdAt)
+  // Write-through: persist new records to ledger, return merged
+  if (newRecords.length > 0) {
+    return appendLedgerEntries(newRecords)
+  }
+  return ledger.length > 0 ? ledger : []
 }
 
 function recordFromEvent(event: RuntimeEvent, usage: UsageTokenBreakdown, source: UsageSource, turn?: WorkbenchTurn): UsageRequestRecord {
@@ -769,9 +808,17 @@ function inputSurfaceTokens(inputTokens: number, cacheReadTokens: number, cacheR
   return cacheReadInputIncluded ? Math.max(inputTokens, cacheReadTokens) : inputTokens + cacheReadTokens
 }
 
+/**
+ * Estimate token count with CJK-aware counting.
+ * CJK characters are ~1.5 tokens each (GPT/Claude tokenizers), not 0.25
+ * as the naive chars/4 would suggest. ASCII text remains ~4 chars/token.
+ */
 function estimateTokens(text: string): number {
-  const chars = text.replace(/\s+/g, " ").trim().length
-  return chars > 0 ? Math.ceil(chars / CHARS_PER_TOKEN) : 0
+  const normalized = text.replace(/\s+/g, ' ').trim()
+  if (!normalized.length) return 0
+  const cjkChars = (normalized.match(/[一-鿿぀-ゟ゠-ヿ가-힯]/g) || []).length
+  const asciiChars = normalized.length - cjkChars
+  return Math.ceil(cjkChars * 1.5 + asciiChars / CHARS_PER_TOKEN)
 }
 
 function previewText(value: any): string | undefined {

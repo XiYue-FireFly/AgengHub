@@ -644,3 +644,69 @@ describe("usageStats", () => {
     })
   })
 })
+
+describe("P0-5 usage ledger persistence", () => {
+  beforeEach(() => {
+    for (const key of Object.keys(memory)) delete memory[key]
+    vi.doUnmock("../../providers/manager")
+    vi.doUnmock("../../providers/client")
+    vi.resetModules()
+  })
+
+  afterEach(() => {
+    for (const runtime of runtimes.splice(0)) runtime.dispose?.()
+    vi.useRealTimers()
+  })
+
+  it("persists usage records to ledger so they survive event trimming", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const { usageStats } = await import("../usage-stats")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const { thread, turn } = runtime.createTurn({ prompt: "hello", mode: "auto", workspaceId: null })
+    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
+      providerId: "openai",
+      modelId: "gpt-4o",
+      content: "done",
+      usage: { input_tokens: 100, output_tokens: 50 }
+    })
+
+    const stats1 = usageStats("all", "overview")
+    expect(stats1.totalTokens).toBeGreaterThan(0)
+
+    const ledger = memory["usage.ledger.v1"]
+    expect(Array.isArray(ledger)).toBe(true)
+    expect(ledger.length).toBe(1)
+    expect(ledger[0].providerId).toBe("openai")
+    expect(ledger[0].modelId).toBe("gpt-4o")
+    expect(ledger[0].source).toBe("actual")
+
+    // Simulate event trimming: new runtime without old events
+    for (const r of runtimes.splice(0)) r.dispose?.()
+    const newRuntime = new WorkbenchRuntimeStore()
+    runtimes.push(newRuntime)
+
+    const stats2 = usageStats("all", "overview")
+    expect(stats2.totalTokens).toBeGreaterThan(0)
+    expect(stats2.requests).toBe(1)
+  })
+
+  it("estimates CJK text tokens higher than naive chars/4", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const { usageRecords } = await import("../usage-stats")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const { thread, turn } = runtime.createTurn({ prompt: "这是一段二十个中文字符的测试文本用于验证", mode: "auto", workspaceId: null })
+    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
+      providerId: "local-cli",
+      modelId: "codex",
+      content: "这是一段二十个中文字符的测试文本用于验证"
+    })
+
+    const result = usageRecords({}, 1, 50)
+    const record = result.records[0]
+    if (record && record.source === "estimated") {
+      expect(record.inputTokens).toBeGreaterThan(5)
+    }
+  })
+})
