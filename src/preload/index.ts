@@ -317,6 +317,31 @@ const api = {
     restore: (filename: string) => ipcRenderer.invoke('backup:restore', filename),
     delete: (filename: string) => ipcRenderer.invoke('backup:delete', filename)
   },
+  // --- Conversation Export ---
+  conversation: {
+    exportMarkdown: (data: any) => ipcRenderer.invoke('conversation:exportMarkdown', data),
+    exportHtml: (data: any) => ipcRenderer.invoke('conversation:exportHtml', data),
+    exportFile: (data: any, format: string, path: string) => ipcRenderer.invoke('conversation:exportFile', data, format, path)
+  },
+  // --- Notifications ---
+  notifications: {
+    list: (unreadOnly?: boolean) => ipcRenderer.invoke('notifications:list', unreadOnly),
+    unreadCount: () => ipcRenderer.invoke('notifications:unreadCount'),
+    push: (input: any) => ipcRenderer.invoke('notifications:push', input),
+    markRead: (id: string) => ipcRenderer.invoke('notifications:markRead', id),
+    markAllRead: () => ipcRenderer.invoke('notifications:markAllRead'),
+    delete: (id: string) => ipcRenderer.invoke('notifications:delete', id),
+    clearAll: () => ipcRenderer.invoke('notifications:clearAll')
+  },
+  // --- Onboarding ---
+  onboarding: {
+    getState: () => ipcRenderer.invoke('onboarding:getState'),
+    shouldShow: () => ipcRenderer.invoke('onboarding:shouldShow'),
+    completeStep: (step: string, skipped?: boolean) => ipcRenderer.invoke('onboarding:completeStep', step, skipped),
+    skipAll: () => ipcRenderer.invoke('onboarding:skipAll'),
+    reset: () => ipcRenderer.invoke('onboarding:reset'),
+    nextStep: () => ipcRenderer.invoke('onboarding:nextStep')
+  },
   // --- /AgentHub skills + native agentic ---
   platform: process.platform
 }

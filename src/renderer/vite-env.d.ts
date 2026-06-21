@@ -271,6 +271,28 @@ interface ElectronAPI {
     restore: (filename: string) => Promise<{ restored: string[]; error?: string }>
     delete: (filename: string) => Promise<boolean>
   }
+  conversation: {
+    exportMarkdown: (data: any) => Promise<string>
+    exportHtml: (data: any) => Promise<string>
+    exportFile: (data: any, format: string, path: string) => Promise<{ ok: boolean; path: string; error?: string }>
+  }
+  notifications: {
+    list: (unreadOnly?: boolean) => Promise<Array<{ id: string; title: string; body: string; category: string; read: boolean; createdAt: string; action?: any }>>
+    unreadCount: () => Promise<number>
+    push: (input: any) => Promise<any>
+    markRead: (id: string) => Promise<boolean>
+    markAllRead: () => Promise<number>
+    delete: (id: string) => Promise<boolean>
+    clearAll: () => Promise<void>
+  }
+  onboarding: {
+    getState: () => Promise<{ version: number; completed: boolean; completedAt?: string; completedSteps: string[]; skippedSteps: string[] }>
+    shouldShow: () => Promise<boolean>
+    completeStep: (step: string, skipped?: boolean) => Promise<any>
+    skipAll: () => Promise<void>
+    reset: () => Promise<void>
+    nextStep: () => Promise<string | null>
+  }
   platform: string
 }
 

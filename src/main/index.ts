@@ -82,6 +82,9 @@ import { listPrompts, getPrompt, upsertPrompt, deletePrompt, searchPrompts, getS
 import { listShortcuts, getShortcut, updateShortcut, resetShortcut, resetAllShortcuts, detectConflicts } from "./runtime/keyboard-shortcuts"
 import { runDiagnostics } from "./runtime/diagnostics"
 import { createBackup, listBackups, restoreBackup, deleteBackup } from "./runtime/backup"
+import { formatAsMarkdown, formatAsHtml, exportConversation } from "./runtime/conversation-export"
+import { listNotifications, getUnreadCount, pushNotification, markRead, markAllRead, deleteNotification, clearAllNotifications } from "./runtime/notifications"
+import { getOnboardingState, shouldShowOnboarding, completeStep, skipAllOnboarding, resetOnboarding, getNextStep } from "./runtime/onboarding"
 import { installAppMenu } from "./menu"
 
 function resolveAppVersionFromMain(): string {
@@ -1622,6 +1625,28 @@ ipcMain.handle("backup:create", () => createBackup(() => store.getAll(), app.get
 ipcMain.handle("backup:list", () => listBackups(app.getPath("userData")))
 ipcMain.handle("backup:restore", (_e, filename: string) => restoreBackup(app.getPath("userData"), filename, (k: string, v: any) => store.set(k, v)))
 ipcMain.handle("backup:delete", (_e, filename: string) => deleteBackup(app.getPath("userData"), filename))
+
+// --- Conversation Export ---
+ipcMain.handle("conversation:exportMarkdown", (_e, data: any) => formatAsMarkdown(data))
+ipcMain.handle("conversation:exportHtml", (_e, data: any) => formatAsHtml(data))
+ipcMain.handle("conversation:exportFile", (_e, data: any, format: string, path: string) => exportConversation(data, format as any, path))
+
+// --- Notifications ---
+ipcMain.handle("notifications:list", (_e, unreadOnly?: boolean) => listNotifications(unreadOnly))
+ipcMain.handle("notifications:unreadCount", () => getUnreadCount())
+ipcMain.handle("notifications:push", (_e, input: any) => pushNotification(input))
+ipcMain.handle("notifications:markRead", (_e, id: string) => markRead(id))
+ipcMain.handle("notifications:markAllRead", () => markAllRead())
+ipcMain.handle("notifications:delete", (_e, id: string) => deleteNotification(id))
+ipcMain.handle("notifications:clearAll", () => clearAllNotifications())
+
+// --- Onboarding ---
+ipcMain.handle("onboarding:getState", () => getOnboardingState())
+ipcMain.handle("onboarding:shouldShow", () => shouldShowOnboarding())
+ipcMain.handle("onboarding:completeStep", (_e, step: string, skipped?: boolean) => completeStep(step as any, skipped))
+ipcMain.handle("onboarding:skipAll", () => skipAllOnboarding())
+ipcMain.handle("onboarding:reset", () => resetOnboarding())
+ipcMain.handle("onboarding:nextStep", () => getNextStep())
 
 ipcMain.handle("routes:explain", async (_event, turnId: string) => routeDecisionForTurn(turnId))
 
