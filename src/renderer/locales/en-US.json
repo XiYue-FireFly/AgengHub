@@ -1,0 +1,76 @@
+{
+  "_meta": { "lang": "en-US", "version": 1 },
+  "nav": {
+    "chat": "Chat",
+    "write": "Writing",
+    "tasks": "Tasks",
+    "settings": "Settings"
+  },
+  "settings": {
+    "appearance": "Appearance",
+    "providers": "Providers",
+    "localAgents": "Local Agents",
+    "routing": "Routing",
+    "approvals": "Approvals",
+    "workspaces": "Workspaces",
+    "skills": "Skills",
+    "mcp": "MCP",
+    "memory": "Long-Term Memory",
+    "models": "Models",
+    "shortcuts": "Shortcuts",
+    "prompts": "Prompts",
+    "updates": "Version & Updates"
+  },
+  "mcp": {
+    "title": "MCP services",
+    "description": "Manage MCP services from local, workspace, and plugin folders; enabled services sync to capable agents.",
+    "scanLocal": "Scan local",
+    "refresh": "Refresh",
+    "addService": "Add service",
+    "total": "Total",
+    "enabled": "Enabled",
+    "workspace": "Workspace",
+    "test": "Test",
+    "tools": "Tools",
+    "copy": "Copy",
+    "delete": "Delete",
+    "noServers": "No MCP services yet.",
+    "loadingTools": "Loading tools...",
+    "noTools": "No tools found"
+  },
+  "models": {
+    "title": "Model capabilities",
+    "description": "All enabled provider models with context windows and capabilities.",
+    "searchPlaceholder": "Search models...",
+    "noMatch": "No matching models",
+    "tools": "tools",
+    "vision": "vision",
+    "thinking": "thinking"
+  },
+  "memory": {
+    "title": "Long-Term Memory",
+    "noEntries": "No memory entries yet."
+  },
+  "composer": {
+    "send": "Send",
+    "stop": "Stop",
+    "attach": "Attach"
+  },
+  "commandPalette": {
+    "searchPlaceholder": "Search commands...",
+    "noMatch": "No matching commands",
+    "footer": "↑↓ navigate · Enter execute · Esc close"
+  },
+  "onboarding": {
+    "welcome": "Welcome to AgentHub",
+    "skip": "Skip",
+    "next": "Next",
+    "finish": "Get started"
+  },
+  "notifications": {
+    "title": "Notifications",
+    "markAllRead": "Mark all read",
+    "clearAll": "Clear all",
+    "empty": "No notifications"
+  }
+}

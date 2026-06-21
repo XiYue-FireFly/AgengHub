@@ -14,6 +14,7 @@ import { WriteWorkspace } from './WriteWorkspace'
 import { GitWorkbenchPanel } from './GitWorkbenchPanel'
 import { WorkspaceItem, AgentMap } from './types'
 import { CommandPalette, PaletteCommand } from './CommandPalette'
+import { ErrorBoundary } from '../ErrorBoundary'
 import { localAgentLabel, localAgentOptions } from './localAgentOptions'
 import { customScheduleHasRunnableSteps, defaultCustomSchedule, defaultSmartFiveRoleSchedule, isStoredSchedule, sanitizeCustomSchedule } from './customSchedule'
 import { defaultDialogPath, readAppearanceLocal, rememberDialogPath } from '../appearance'
@@ -1003,6 +1004,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
           )}
 
           {view === 'chat' && (
+            <ErrorBoundary label="Chat">
             <>
               <div className="wb-chat-head">
                 <WorkbenchChatTopBar
@@ -1095,6 +1097,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
                 events={events}
               />
             </>
+            </ErrorBoundary>
           )}
 
           {view === 'tasks' && (
