@@ -243,3 +243,21 @@
   - shortcuts: list/get/update/reset/resetAll/conflicts — 6 个 IPC + preload
   - diagnostics: run — 1 个 IPC + preload
   - backup: create/list/restore/delete — 4 个 IPC + preload
+
+#### 新功能（New 系列）
+
+  - New-1 全局命令面板（CommandPalette.tsx，Ctrl+Shift+P，模糊搜索，键盘导航）
+  - New-2 会话导出（MD/HTML/JSON，工具调用折叠，thinking 折叠，XSS 安全）
+  - New-3 会话导入与回放（JSON schema 校验，legacy 迁移，checkpoint 分支，摘要）
+  - New-6 工作区文件（@ 提及，fuzzy 搜索，文件预览，binary 拒绝）
+  - New-9 Slash 命令构建器（{{param}} 提取，冲突检测，参数替换）
+  - New-11 GitHub 集成（gh CLI，PR/Issue 列表，当前分支 PR 检测）
+  - New-12 Plugin Manager（manifest 扫描，验证，贡献聚合，安全模型）
+  - New-13 Release Workspace（pre-release 检查，ready 判定）
+  - New-14 Onboarding（8 步引导流，跳过/完成/重置）
+  - New-15 通知中心（push/markRead/markAllRead，7 天自动清理，未读计数）
+
+#### 基础设施
+
+  - Memory Graph（节点-边图谱，cleanup 建议）
+  - DX-1 CI workflow 更新（支持 sync/* 分支触发）
