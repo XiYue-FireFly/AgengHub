@@ -92,6 +92,7 @@ export function ComposerBar({
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('full')
   const [quickRole, setQuickRole] = useState<'none' | 'reviewer' | 'executor' | 'gatekeeper'>('none')
   const [quickCardsCollapsed, setQuickCardsCollapsed] = useState(false)
+  const [queue, setQueue] = useState<Array<{ text: string; attachments: WorkbenchAttachment[]; overrides?: any }>>([])
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const modelPickerRef = useRef<HTMLDivElement | null>(null)
   const workspacePickerRef = useRef<HTMLDivElement | null>(null)
@@ -197,9 +198,32 @@ export function ComposerBar({
     setActiveCommandIndex(0)
   }, [slashQuery])
 
+  // Process queue when sending becomes false
+  useEffect(() => {
+    if (sending || queue.length === 0) return
+    const next = queue[0]
+    setQueue(prev => prev.slice(1))
+    setText(next.text)
+    setAttachments(next.attachments)
+    // Defer to next tick so state updates propagate
+    setTimeout(() => {
+      if (next.text.trim()) {
+        onSend(next.text.trim(), next.attachments, next.overrides)
+      }
+    }, 50)
+  }, [sending, queue])
+
   const send = async () => {
     const prompt = text.trim() || (attachments.length ? tr('请分析我附加的内容。', 'Please analyze the attached content.') : '')
-    if (!prompt || sending) return
+    if (!prompt) return
+    // If currently sending, queue the message
+    if (sending) {
+      setQueue(prev => [...prev, { text: prompt, attachments: [...attachments], overrides: quickRoleSendOverrides(quickRole === 'none' ? undefined : quickRoleSchedule(quickRole, readyAgentIds)) }])
+      setText('')
+      setAttachments([])
+      setQuickRole('none')
+      return
+    }
     if (shouldRunComposerCommand(prompt, commands) && onRunCommand) {
       const handled = await onRunCommand({ text: prompt })
       if (handled) {
@@ -520,6 +544,16 @@ export function ComposerBar({
           />
 
           <div className="wb-composer-input-actions">
+            {/* Context capacity indicator */}
+            {modelSelection && (
+              <ContextCapacityIndicator
+                text={text}
+                attachments={attachments}
+                workspaceId={workspaceId}
+                modelSelection={modelSelection}
+                providers={providers}
+              />
+            )}
             <button className="wb-icon-button" title={tr('添加文件或图片', 'Attach file or image')} disabled={sending} onClick={pickAttachments}>
               <Icon d={IC.plus} size={17} />
             </button>
@@ -659,9 +693,14 @@ export function ComposerBar({
                 disabled={sending}
               />
             )}
+            {queue.length > 0 && (
+              <span style={{ fontSize: 11, color: 'var(--color-info)', padding: '2px 6px', borderRadius: 10, background: 'rgba(59,130,246,0.1)' }}>
+                {queue.length} {tr('排队', 'queued')}
+              </span>
+            )}
             {sending
               ? <button className="wb-send stop" onClick={onCancel} title={tr('停止', 'Stop')}><Icon d={IC.stop} size={15} /></button>
-              : <button className="wb-send" disabled={!text.trim() && attachments.length === 0} onClick={send} title={tr('发送', 'Send')}><Icon d={IC.send} size={15} /></button>}
+              : <button className="wb-send" disabled={!text.trim() && attachments.length === 0 && queue.length === 0} onClick={send} title={tr('发送', 'Send')}><Icon d={IC.send} size={15} /></button>}
           </div>
         </div>
 
@@ -860,6 +899,52 @@ function providerModelRows(providers: ProviderDef[], onlyProviderId?: string | n
     }
   }
   return rows
+}
+
+function ContextCapacityIndicator({
+  text,
+  attachments,
+  workspaceId,
+  modelSelection,
+  providers
+}: {
+  text: string
+  attachments: WorkbenchAttachment[]
+  workspaceId: string | null
+  modelSelection: ModelSelection
+  providers: ProviderDef[]
+}) {
+  const [capacity, setCapacity] = useState<{ usedRatio: number; tone: string } | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    const estimate = () => {
+      const provider = providers.find(p => p.id === modelSelection.providerId)
+      const model = provider?.models?.find(m => m.id === modelSelection.modelId)
+      const windowTokens = model?.contextWindow || 128_000
+      // Simple text-based estimation
+      const textTokens = Math.ceil((text.length + attachments.reduce((sum, a) => sum + (a.text?.length || 0), 0)) / 4)
+      const usedRatio = Math.min(1, textTokens / windowTokens)
+      const tone = usedRatio > 0.85 ? 'danger' : usedRatio > 0.7 ? 'warn' : 'ok'
+      if (alive) setCapacity({ usedRatio, tone })
+    }
+    estimate()
+    return () => { alive = false }
+  }, [text, attachments, modelSelection, providers])
+
+  if (!capacity) return null
+
+  const pct = Math.round(capacity.usedRatio * 100)
+  const color = capacity.tone === 'danger' ? 'var(--color-error)' : capacity.tone === 'warn' ? 'var(--color-warning)' : 'var(--tx-3)'
+
+  return (
+    <span
+      style={{ fontSize: 11, color, padding: '2px 6px', borderRadius: 4, background: 'var(--bg-input)' }}
+      title={tr(`上下文占用: ${pct}%`, `Context usage: ${pct}%`)}
+    >
+      {pct}%
+    </span>
+  )
 }
 
 export function quickRoleSchedule(role: 'reviewer' | 'executor' | 'gatekeeper', readyAgentIds: string[]): SchedulePreview | null {
