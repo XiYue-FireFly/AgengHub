@@ -293,6 +293,17 @@ interface ElectronAPI {
     reset: () => Promise<void>
     nextStep: () => Promise<string | null>
   }
+  workspaceFiles: {
+    list: (rootPath: string, max?: number) => Promise<Array<{ path: string; relativePath: string; name: string; extension: string; isDirectory: boolean; sizeBytes: number }>>
+    search: (rootPath: string, query: string, max?: number) => Promise<Array<{ path: string; relativePath: string; name: string; extension: string; isDirectory: boolean; sizeBytes: number }>>
+    preview: (filePath: string, maxLines?: number) => Promise<{ ok: boolean; content?: string; error?: string }>
+  }
+  github: {
+    checkCli: () => Promise<{ available: boolean; authenticated: boolean; version?: string; error?: string }>
+    listPrs: (state?: string, limit?: number) => Promise<Array<{ number: number; title: string; state: string; author: string; url: string; branch: string; createdAt: string; labels: string[] }>>
+    listIssues: (state?: string, limit?: number) => Promise<Array<{ number: number; title: string; state: string; author: string; url: string; labels: string[]; createdAt: string }>>
+    currentBranchPr: () => Promise<{ branch: string; pr?: any }>
+  }
   platform: string
 }
 

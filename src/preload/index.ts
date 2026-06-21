@@ -342,6 +342,19 @@ const api = {
     reset: () => ipcRenderer.invoke('onboarding:reset'),
     nextStep: () => ipcRenderer.invoke('onboarding:nextStep')
   },
+  // --- Workspace Files ---
+  workspaceFiles: {
+    list: (rootPath: string, max?: number) => ipcRenderer.invoke('workspaceFiles:list', rootPath, max),
+    search: (rootPath: string, query: string, max?: number) => ipcRenderer.invoke('workspaceFiles:search', rootPath, query, max),
+    preview: (filePath: string, maxLines?: number) => ipcRenderer.invoke('workspaceFiles:preview', filePath, maxLines)
+  },
+  // --- GitHub Integration ---
+  github: {
+    checkCli: () => ipcRenderer.invoke('github:checkCli'),
+    listPrs: (state?: string, limit?: number) => ipcRenderer.invoke('github:listPrs', state, limit),
+    listIssues: (state?: string, limit?: number) => ipcRenderer.invoke('github:listIssues', state, limit),
+    currentBranchPr: () => ipcRenderer.invoke('github:currentBranchPr')
+  },
   // --- /AgentHub skills + native agentic ---
   platform: process.platform
 }

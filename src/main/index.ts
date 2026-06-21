@@ -85,6 +85,8 @@ import { createBackup, listBackups, restoreBackup, deleteBackup } from "./runtim
 import { formatAsMarkdown, formatAsHtml, exportConversation } from "./runtime/conversation-export"
 import { listNotifications, getUnreadCount, pushNotification, markRead, markAllRead, deleteNotification, clearAllNotifications } from "./runtime/notifications"
 import { getOnboardingState, shouldShowOnboarding, completeStep, skipAllOnboarding, resetOnboarding, getNextStep } from "./runtime/onboarding"
+import { listWorkspaceFiles, searchWorkspaceFiles, readFilePreview } from "./runtime/workspace-files"
+import { checkGhCli, listPullRequests, listIssues, getCurrentBranchPr } from "./runtime/github-integration"
 import { installAppMenu } from "./menu"
 
 function resolveAppVersionFromMain(): string {
@@ -1647,6 +1649,17 @@ ipcMain.handle("onboarding:completeStep", (_e, step: string, skipped?: boolean) 
 ipcMain.handle("onboarding:skipAll", () => skipAllOnboarding())
 ipcMain.handle("onboarding:reset", () => resetOnboarding())
 ipcMain.handle("onboarding:nextStep", () => getNextStep())
+
+// --- Workspace Files ---
+ipcMain.handle("workspaceFiles:list", (_e, rootPath: string, max?: number) => listWorkspaceFiles(rootPath, max))
+ipcMain.handle("workspaceFiles:search", (_e, rootPath: string, query: string, max?: number) => searchWorkspaceFiles(rootPath, query, max))
+ipcMain.handle("workspaceFiles:preview", (_e, filePath: string, maxLines?: number) => readFilePreview(filePath, maxLines))
+
+// --- GitHub Integration ---
+ipcMain.handle("github:checkCli", () => checkGhCli())
+ipcMain.handle("github:listPrs", async (_e, state?: string, limit?: number) => listPullRequests(state as any, limit))
+ipcMain.handle("github:listIssues", async (_e, state?: string, limit?: number) => listIssues(state as any, limit))
+ipcMain.handle("github:currentBranchPr", () => getCurrentBranchPr())
 
 ipcMain.handle("routes:explain", async (_event, turnId: string) => routeDecisionForTurn(turnId))
 
