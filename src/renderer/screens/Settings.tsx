@@ -35,7 +35,7 @@ import {
 
 export type MotionLevel = 'off' | 'subtle' | 'rich'
 
-type TabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models' | 'plugins'
+type TabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models' | 'plugins' | 'usage'
 const MEMORY_CATEGORIES: MemoryCategory[] = ['preference', 'project', 'style', 'decision', 'correction', 'imported_conversation', 'conversation', 'task', 'skill', 'file', 'system']
 const MEMORY_SCOPES = ['all', 'user', 'workspace', 'project'] as const
 type MemoryScopeFilter = typeof MEMORY_SCOPES[number]
@@ -78,6 +78,7 @@ const NAV_ITEMS: Array<{ value: TabKey; label: string; labelEn: string; descript
   { value: 'skills', label: '技能', labelEn: 'Skills', description: '导入和管理本地 Agent 技能。', descriptionEn: 'Import and manage local Agent skills.', icon: IC.bolt },
   { value: 'mcp', label: 'MCP', labelEn: 'MCP', description: '管理本地和工作目录 MCP 服务。', descriptionEn: 'Manage local and workspace MCP services.', icon: IC.link },
   { value: 'plugins', label: '插件', labelEn: 'Plugins', description: '扫描和管理本地插件。', descriptionEn: 'Scan and manage local plugins.', icon: IC.bolt },
+  { value: 'usage', label: '用量统计', labelEn: 'Usage', description: '查看 API 用量、Token 消耗和成本统计。', descriptionEn: 'View API usage, token consumption and cost statistics.', icon: IC.pulse },
   { value: 'updates', label: '版本与更新', labelEn: 'Version & Updates', description: '检查当前版本、渠道和下载入口。', descriptionEn: 'Check version, channel, and download entry.', icon: IC.refresh }
 ]
 
@@ -111,7 +112,7 @@ NAV_ITEMS.splice(modelsNavInsertIndex >= 0 ? modelsNavInsertIndex + 1 : NAV_ITEM
   icon: IC.pulse
 })
 
-const VISIBLE_NAV_ITEMS = NAV_ITEMS.filter(item => item.value !== 'usage')
+const VISIBLE_NAV_ITEMS = NAV_ITEMS
 
 function settingsNavLabel(item: typeof NAV_ITEMS[number]): string {
   return getLang() === 'en' ? item.labelEn : item.label
@@ -125,7 +126,7 @@ export function SettingsScreen(props: SettingsScreenProps) {
   const [tab, setTab] = useState<TabKey>(props.initialTab || 'appearance')
   useEffect(() => setTab(props.initialTab || 'appearance'), [props.initialTab])
 
-  const visibleTab = tab === 'usage' ? 'appearance' : tab
+  const visibleTab = tab
   const active = VISIBLE_NAV_ITEMS.find(item => item.value === visibleTab) ?? VISIBLE_NAV_ITEMS[0]
   const showSetupNext = visibleTab === 'providers' || visibleTab === 'local-agents' || visibleTab === 'routing' || visibleTab === 'workspaces'
 
@@ -182,6 +183,7 @@ export function SettingsScreen(props: SettingsScreenProps) {
         {visibleTab === 'skills' && <SkillsTab />}
         {visibleTab === 'mcp' && <McpSettingsTab workspaceId={props.workspaceId ?? null} />}
         {visibleTab === 'plugins' && <PluginSettingsTab workspaceId={props.workspaceId ?? null} />}
+        {visibleTab === 'usage' && <UsageStatsTab />}
         {visibleTab === 'shortcuts' && <ShortcutsSettingsTab />}
         {visibleTab === 'memory' && <MemorySettingsTab />}
         {visibleTab === 'updates' && <UpdatesSettingsTab />}
@@ -1481,8 +1483,7 @@ function UsageStatsTab() {
   )
 }
 
-void UsageStatsTab
-void UsageStatsTabV2
+// UsageStatsTab and UsageStatsTabV2 are now active
 
 function UsageStatsTabV2() {
   const [range, setRange] = useState<UsageRange>('all')
