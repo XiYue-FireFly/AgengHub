@@ -242,7 +242,10 @@ const api = {
   },
   browser: {
     open: (input: { workspaceId?: string | null; url?: string }) => ipcRenderer.invoke('browser:open', input),
-    capture: (attachment: any) => ipcRenderer.invoke('browser:capture', attachment)
+    capture: (attachment: any) => ipcRenderer.invoke('browser:capture', attachment),
+    summarize: (snapshot: any) => ipcRenderer.invoke('browser:summarize', snapshot),
+    extractText: (html: string) => ipcRenderer.invoke('browser:extractText', html),
+    analyzePrompt: (snapshot: any, request?: string) => ipcRenderer.invoke('browser:analyzePrompt', snapshot, request)
   },
   usage: {
     stats: (range?: 'all' | '90d' | '30d' | '7d', view?: 'overview' | 'models' | 'requests' | 'providers' | 'pricing') => ipcRenderer.invoke('usage:stats', range, view),
@@ -386,6 +389,18 @@ const api = {
   // --- Release Workspace ---
   release: {
     checks: () => ipcRenderer.invoke('release:checks')
+  },
+  // --- Terminal AI ---
+  terminalAi: {
+    buildPrompt: (userPrompt: string, context: any) => ipcRenderer.invoke('terminalAi:buildPrompt', userPrompt, context),
+    suggestCommand: (intent: string, context: any) => ipcRenderer.invoke('terminalAi:suggestCommand', intent, context),
+    explainOutput: (context: any) => ipcRenderer.invoke('terminalAi:explainOutput', context)
+  },
+  // --- Inline Edit ---
+  inlineEdit: {
+    buildPrompt: (request: any) => ipcRenderer.invoke('inlineEdit:buildPrompt', request),
+    validate: (original: string, replacement: string) => ipcRenderer.invoke('inlineEdit:validate', original, replacement),
+    apply: (content: string, startLine: number, endLine: number, replacement: string) => ipcRenderer.invoke('inlineEdit:apply', content, startLine, endLine, replacement)
   },
   // --- /AgentHub skills + native agentic ---
   platform: process.platform

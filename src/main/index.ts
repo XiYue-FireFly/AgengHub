@@ -92,6 +92,9 @@ import { importConversationFromFile, importConversationFromJson, branchFromCheck
 import { buildMemoryGraph, suggestCleanup } from "./runtime/memory-graph"
 import { scanPlugins, validateManifest, getPluginContributions } from "./runtime/plugin-manager"
 import { runReleaseChecks } from "./runtime/release-workspace"
+import { buildTerminalPrompt, suggestCommandPrompt, explainOutputPrompt } from "./runtime/terminal-ai"
+import { summarizePageSnapshot, extractReadableText, buildPageAnalysisPrompt } from "./runtime/browser-workspace"
+import { buildInlineEditPrompt, validateEditResult, applyInlineEdit } from "./runtime/inline-edit"
 import { installAppMenu } from "./menu"
 
 function resolveAppVersionFromMain(): string {
@@ -1702,6 +1705,21 @@ ipcMain.handle("release:checks", async () => {
     gitClean: true
   })
 })
+
+// --- Terminal AI ---
+ipcMain.handle("terminalAi:buildPrompt", (_e, userPrompt: string, context: any) => buildTerminalPrompt(userPrompt, context))
+ipcMain.handle("terminalAi:suggestCommand", (_e, intent: string, context: any) => suggestCommandPrompt(intent, context))
+ipcMain.handle("terminalAi:explainOutput", (_e, context: any) => explainOutputPrompt(context))
+
+// --- Browser Workspace ---
+ipcMain.handle("browser:summarize", (_e, snapshot: any) => summarizePageSnapshot(snapshot))
+ipcMain.handle("browser:extractText", (_e, html: string) => extractReadableText(html))
+ipcMain.handle("browser:analyzePrompt", (_e, snapshot: any, request?: string) => buildPageAnalysisPrompt(snapshot, request))
+
+// --- Inline Edit ---
+ipcMain.handle("inlineEdit:buildPrompt", (_e, request: any) => buildInlineEditPrompt(request))
+ipcMain.handle("inlineEdit:validate", (_e, original: string, replacement: string) => validateEditResult(original, replacement))
+ipcMain.handle("inlineEdit:apply", (_e, content: string, startLine: number, endLine: number, replacement: string) => applyInlineEdit(content, startLine, endLine, replacement))
 
 ipcMain.handle("routes:explain", async (_event, turnId: string) => routeDecisionForTurn(turnId))
 
