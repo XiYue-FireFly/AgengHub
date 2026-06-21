@@ -246,7 +246,11 @@ git diff --check
 - 新增模块：22 个（含 4 个 IPC 域模块 + 1 个 CSS 分离文件 + 3 个 GitBranchControl/CommandPalette/模型能力/UI 组件）
 - 架构治理：index.ts ~2128 行（提取 55 IPC handler）、WorkbenchLayout.tsx 2333 行（提取 GitBranchControl 170 行）、globals.css 10164 行（提取 command-palette.css 130 行）
 - 安全：store:get/set 访问控制 ✅、HubServer 错误处理 ✅、sandbox=true ✅、Map 清理 ✅
-- 已完成 Phase：Phase 1.1-1.4 ✅ / Phase 2 ✅ / Phase 3 ✅ / Phase 4 ✅
+- 架构治理：index.ts IPC 提取 ✅、WorkbenchLayout 拆分 ✅、globals.css 分离 ✅
+- 类型安全：共享 IPC 类型定义 ✅（`src/shared/ipc-types.ts`）
+- 编码规范：`AGENTS.md` ✅
+- 功能增强：workflow-runner ✅、context-manager ✅、workspace-groups ✅、browser-agent ✅
+- 已完成 Phase：Phase 1.1-1.4 ✅ / Phase 2 ✅ / Phase 3 ✅ / Phase 4 ✅ / Phase 5 ✅
 
 ## 附录 B：审查日志（2026-06-21）
 
