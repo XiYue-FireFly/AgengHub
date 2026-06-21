@@ -2071,7 +2071,7 @@ function BrowserPanelV2({
 
   return (
     <div className="wb-tool-panel wb-browser-panel">
-      <PanelTitle title={tr('浏览器', 'Browser')} subtitle={session?.title || session?.url || tr('空白预览', 'Blank preview')} onClose={onClose} />
+      <PanelTitle title={tr('页面捕获', 'Page Capture')} subtitle={session?.title || session?.url || tr('输入网址载入页面', 'Enter a URL to load')} onClose={onClose} />
       <div className="wb-browser-toolbar">
         <button onClick={() => webviewRef.current?.goBack?.()} disabled={!session || !navState.canGoBack}><Icon d={IC.chev} size={13} style={{ transform: 'rotate(180deg)' }} /></button>
         <button onClick={() => webviewRef.current?.goForward?.()} disabled={!session || !navState.canGoForward}><Icon d={IC.chev} size={13} /></button>
