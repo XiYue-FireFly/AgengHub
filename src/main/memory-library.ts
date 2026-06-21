@@ -513,7 +513,15 @@ function isMemoryWorthText(value: string): boolean {
   const text = stripped.replace(/\s+/g, ' ').trim()
   if (text.length < 12) return false
   const compact = text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
-  const noise = ['hi', 'hello', 'test', 'testing', 'ok', 'okay', '你好', '您好', '测试', '随便', '哈哈', '在吗', '收到', '分析项目', '继续', 'dailysessionsnapshot', 'latestsessionsnapshot']
+  // Extended noise list: covers low-value Chinese phrases that passed the old gate
+  const noise = [
+    'hi', 'hello', 'test', 'testing', 'ok', 'okay',
+    '你好', '您好', '测试', '随便', '哈哈', '在吗', '收到', '分析项目', '继续',
+    '修一下', '改一下', '弄一下', '帮我看看', '这个不对', '换一个', '看看这个',
+    '之前那个', '刚才那个', '再来一次', '重试', '没反应', '卡住了',
+    '好的', '可以', '没问题', '知道了', '明白了', '谢谢',
+    'dailysessionsnapshot', 'latestsessionsnapshot'
+  ]
   if (noise.includes(compact)) return false
   // Check if the entire text consists only of noise words (iterative stripping)
   let remainder = compact
@@ -526,9 +534,10 @@ function isMemoryWorthText(value: string): boolean {
   if (remainder.length < 4) return false
   if (/^\[agenthub custom schedule\]/i.test(text)) return false
   if (/^(completed|cancelled|failed|running)\s+via\s+/i.test(text)) return false
+  // Reject very short pure-command fragments without value signals
+  const VALUE_SIGNALS = /(prefer|preference|always|usually|default|style|format|decision|correction|instead|project|workspace|repo|偏好|希望|以后|默认|总是|优先|保持|格式|风格|语气|项目|仓库|决定|确认|修正|纠正|不要|应该|改成|去除|发布|打包|验证)/i
+  if (text.length < 30 && !VALUE_SIGNALS.test(text)) return false
   // Noise blacklist passed — accept the line as a valid memory candidate.
-  // Value-signal keywords (preference/decision/style) are handled by the
-  // scoring layer in scoreMemoryEntry, not as a hard gate here.
   return true
 }
 

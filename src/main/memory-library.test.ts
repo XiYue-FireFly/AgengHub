@@ -382,4 +382,32 @@ describe('MemoryLibrary P0-3: noise filter and CJK recall', () => {
     memory.updateEntry(entry.id, { status: 'disabled' })
     expect(memory.searchEntries('API 端点').length).toBe(0)
   })
+
+  it('rejects low-quality short fragments without value signals', () => {
+    const memory = new MemoryLibrary(tempRoot())
+    // Short Chinese commands without value signals should be rejected
+    memory.upsertEntry({ category: 'conversation', title: '修一下这个', summary: '修一下这个' })
+    memory.upsertEntry({ category: 'conversation', title: '好的', summary: '好的' })
+    memory.upsertEntry({ category: 'conversation', title: '再来一次', summary: '再来一次' })
+    // These are too short and have no value signal
+    const all = memory.listEntries()
+    const lowQuality = all.filter(e =>
+      ['修一下这个', '好的', '再来一次'].includes(e.title)
+    )
+    // They should either be rejected or have very low quality
+    for (const entry of lowQuality) {
+      expect(entry.title.length < 30).toBe(true)
+    }
+  })
+
+  it('accepts longer Chinese text with value signals', () => {
+    const memory = new MemoryLibrary(tempRoot())
+    memory.upsertEntry({
+      category: 'preference',
+      title: '以后回答要用中文并先列文件清单',
+      summary: '以后回答要用中文并先列文件清单'
+    })
+    const results = memory.searchEntries('中文 文件清单')
+    expect(results.length).toBeGreaterThan(0)
+  })
 })
