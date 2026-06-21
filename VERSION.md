@@ -232,3 +232,14 @@
 
   - project-knowledge.ts：项目知识库（架构决策 / 约定 / 构建命令，工作区作用域 + 全局回退），4 tests
   - keyboard-shortcuts.ts：快捷键系统（14 个默认快捷键 / 自定义绑定 / 冲突检测 / 重置默认），5 tests
+
+#### P0 Bug 修复
+
+  - Bug-3：MCP probe 超时可配置（AGENTHUB_MCP_PROBE_TIMEOUT_MS 环境变量 / server.timeoutMs / 默认 5s，钳位 2.5-30s）
+
+#### IPC 集成（最后一公里）
+
+  - prompts: list/get/upsert/delete/search/slashCommands/incrementUse/seedDefaults — 8 个 IPC + preload
+  - shortcuts: list/get/update/reset/resetAll/conflicts — 6 个 IPC + preload
+  - diagnostics: run — 1 个 IPC + preload
+  - backup: create/list/restore/delete — 4 个 IPC + preload
