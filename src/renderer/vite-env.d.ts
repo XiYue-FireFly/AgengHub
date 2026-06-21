@@ -330,6 +330,11 @@ interface ElectronAPI {
     build: (entries: any[]) => Promise<any>
     cleanupSuggestions: (graph: any) => Promise<any[]>
   }
+  plugins: {
+    scan: (workspaceRoot?: string) => Promise<any[]>
+    validate: (manifest: any) => Promise<{ valid: boolean; errors?: string[] }>
+    contributions: (plugins: any[]) => Promise<{ commands: any[]; skills: any[]; prompts: any[] }>
+  }
   platform: string
 }
 

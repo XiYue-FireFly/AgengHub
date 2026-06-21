@@ -35,7 +35,7 @@ import {
 
 export type MotionLevel = 'off' | 'subtle' | 'rich'
 
-type TabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models'
+type TabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models' | 'plugins'
 const MEMORY_CATEGORIES: MemoryCategory[] = ['preference', 'project', 'style', 'decision', 'correction', 'imported_conversation', 'conversation', 'task', 'skill', 'file', 'system']
 const MEMORY_SCOPES = ['all', 'user', 'workspace', 'project'] as const
 type MemoryScopeFilter = typeof MEMORY_SCOPES[number]
@@ -77,6 +77,7 @@ const NAV_ITEMS: Array<{ value: TabKey; label: string; labelEn: string; descript
   { value: 'workspaces', label: '工作目录', labelEn: 'Workspaces', description: '管理绑定到会话的本地目录。', descriptionEn: 'Manage local folders bound to sessions.', icon: IC.folder },
   { value: 'skills', label: '技能', labelEn: 'Skills', description: '导入和管理本地 Agent 技能。', descriptionEn: 'Import and manage local Agent skills.', icon: IC.bolt },
   { value: 'mcp', label: 'MCP', labelEn: 'MCP', description: '管理本地和工作目录 MCP 服务。', descriptionEn: 'Manage local and workspace MCP services.', icon: IC.link },
+  { value: 'plugins', label: '插件', labelEn: 'Plugins', description: '扫描和管理本地插件。', descriptionEn: 'Scan and manage local plugins.', icon: IC.bolt },
   { value: 'updates', label: '版本与更新', labelEn: 'Version & Updates', description: '检查当前版本、渠道和下载入口。', descriptionEn: 'Check version, channel, and download entry.', icon: IC.refresh }
 ]
 
@@ -180,6 +181,7 @@ export function SettingsScreen(props: SettingsScreenProps) {
         {visibleTab === 'workspaces' && <WorkspacesTab />}
         {visibleTab === 'skills' && <SkillsTab />}
         {visibleTab === 'mcp' && <McpSettingsTab workspaceId={props.workspaceId ?? null} />}
+        {visibleTab === 'plugins' && <PluginSettingsTab workspaceId={props.workspaceId ?? null} />}
         {visibleTab === 'shortcuts' && <ShortcutsSettingsTab />}
         {visibleTab === 'memory' && <MemorySettingsTab />}
         {visibleTab === 'updates' && <UpdatesSettingsTab />}
@@ -2255,6 +2257,92 @@ function MemoryGraphSection({ entries }: { entries: MemoryEntry[] }) {
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+function PluginSettingsTab({ workspaceId }: { workspaceId: string | null }) {
+  const [plugins, setPlugins] = useState<any[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [contributions, setContributions] = useState<any>(null)
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      // Get workspace root if workspaceId is provided
+      let workspaceRoot: string | undefined
+      if (workspaceId) {
+        try {
+          const workspaces = await window.electronAPI.workspaces.list()
+          const ws = workspaces?.find((w: any) => w.id === workspaceId)
+          workspaceRoot = ws?.rootPath
+        } catch { /* ignore */ }
+      }
+      const list = await window.electronAPI.plugins.scan(workspaceRoot)
+      setPlugins(Array.isArray(list) ? list : [])
+      if (list && list.length > 0) {
+        const contribs = await window.electronAPI.plugins.contributions(list)
+        setContributions(contribs)
+      }
+    } catch (err: any) {
+      setError(err?.message || tr('扫描插件失败', 'Failed to scan plugins'))
+    } finally {
+      setLoading(false)
+    }
+  }, [workspaceId])
+
+  useEffect(() => { refresh() }, [refresh])
+
+  return (
+    <div className="wb-settings-stack">
+      <section className="glass wb-mcp-clean-card">
+        <div className="wb-mcp-clean-head">
+          <div>
+            <strong>{tr('插件管理', 'Plugin Manager')}</strong>
+            <span>{tr('扫描本地插件目录，查看已安装插件的贡献点。', 'Scan local plugin directories and view installed plugin contributions.')}</span>
+          </div>
+          <button className="ah-btn sm" onClick={refresh} disabled={loading}>
+            {loading ? tr('扫描中...', 'Scanning...') : tr('扫描插件', 'Scan Plugins')}
+          </button>
+        </div>
+
+        {error && <div className="glass wb-error-text">{error}</div>}
+
+        <div className="wb-mcp-clean-stats">
+          <div><span>{tr('已发现', 'Found')}</span><strong>{plugins.length}</strong></div>
+          {contributions && (
+            <>
+              <div><span>{tr('命令', 'Commands')}</span><strong>{contributions.commands?.length || 0}</strong></div>
+              <div><span>{tr('技能', 'Skills')}</span><strong>{contributions.skills?.length || 0}</strong></div>
+              <div><span>{tr('提示词', 'Prompts')}</span><strong>{contributions.prompts?.length || 0}</strong></div>
+            </>
+          )}
+        </div>
+
+        <div className="wb-mcp-clean-list">
+          {plugins.map((plugin, idx) => (
+            <div key={plugin.id || idx} className="wb-mcp-clean-row">
+              <div style={{ flex: 1 }}>
+                <strong>{plugin.manifest?.name || plugin.id}</strong>
+                <small className="mono">{plugin.manifest?.version || '?'}</small>
+                {plugin.manifest?.description && (
+                  <div style={{ fontSize: 12, color: 'var(--tx-2)', marginTop: 2 }}>{plugin.manifest.description}</div>
+                )}
+                <div style={{ fontSize: 11, color: 'var(--tx-3)', marginTop: 4 }}>
+                  {tr('来源', 'Source')}: {plugin.source || 'unknown'} · {tr('路径', 'Path')}: {plugin.path || '?'}
+                </div>
+              </div>
+            </div>
+          ))}
+          {plugins.length === 0 && !loading && (
+            <div className="wb-memory-kun-empty">
+              <span>{tr('暂无已发现的插件。', 'No plugins discovered yet.')}</span>
+            </div>
+          )}
+        </div>
+      </section>
     </div>
   )
 }

@@ -32,7 +32,7 @@ import {
 } from '../keyboard-shortcuts'
 
 type ViewMode = 'chat' | 'write' | 'tasks' | 'settings' | 'workflows'
-type SettingsTabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models'
+type SettingsTabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models' | 'plugins'
 type RightPanel = 'runs' | 'git' | 'worktrees' | 'browser' | 'terminal' | null
 type ThinkingLevelChoice = 'low' | 'medium' | 'high' | 'xhigh'
 type WorkbenchThinking = { mode: 'off' | 'auto' | 'enabled'; level: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; collapseInUI?: boolean; budgetTokens?: number }
