@@ -97,6 +97,7 @@ import { scanPlugins, validateManifest, getPluginContributions } from "./runtime
 import { runReleaseChecks } from "./runtime/release-workspace"
 import { buildProjectMap, searchProjectFiles } from "./runtime/project-map"
 import { buildTerminalPrompt, suggestCommandPrompt, explainOutputPrompt } from "./runtime/terminal-ai"
+import { getBudgetConfig, checkBudget } from "./runtime/budget-center"
 import { registerAllIpcHandlers } from "./ipc"
 import { hub as hubLog, window_ as windowLog, pipeline as pipelineLog, proxy as proxyLog, store as storeLog } from "./logger"
 import { summarizePageSnapshot, extractReadableText, buildPageAnalysisPrompt } from "./runtime/browser-workspace"
@@ -1764,6 +1765,15 @@ ipcMain.handle("ai:quickComplete", async (_e, input: {
   timeoutMs?: number
 }): Promise<{ content: string; error?: string }> => {
   try {
+    // P1-5: Budget check before making API call
+    const budget = getBudgetConfig()
+    // For quickComplete, we estimate tokens from prompt length
+    const estimatedTokens = Math.ceil((input.prompt.length + (input.systemPrompt?.length || 0)) / 4)
+    const budgetCheck = checkBudget(budget, 0, 0, estimatedTokens) // daily/monthly spent tracked separately
+    if (!budgetCheck.allowed) {
+      return { content: '', error: `Budget exceeded: ${budgetCheck.reason}` }
+    }
+
     const mgr = getProviderManager()
     const config = mgr.getConfig()
 
