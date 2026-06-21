@@ -395,7 +395,9 @@ const api = {
   plugins: {
     scan: (workspaceRoot?: string) => ipcRenderer.invoke('plugins:scan', workspaceRoot),
     validate: (manifest: any) => ipcRenderer.invoke('plugins:validate', manifest),
-    contributions: (plugins: any[]) => ipcRenderer.invoke('plugins:contributions', plugins)
+    contributions: (plugins: any[]) => ipcRenderer.invoke('plugins:contributions', plugins),
+    repositories: () => ipcRenderer.invoke('plugins:repositories'),
+    importRepository: (input: { url: string; id?: string; name?: string; branch?: string }) => ipcRenderer.invoke('plugins:importRepository', input)
   },
   // --- Project Map ---
   projectMap: {
@@ -422,6 +424,65 @@ const api = {
   ai: {
     quickComplete: (input: { prompt: string; systemPrompt?: string; providerId?: string; modelId?: string; timeoutMs?: number }) =>
       ipcRenderer.invoke('ai:quickComplete', input)
+  },
+  // --- P4-F1: Models Center ---
+  models: {
+    list: (providers: any[]) => ipcRenderer.invoke('models:list', providers),
+    toggleFavorite: (providerId: string, modelId: string) => ipcRenderer.invoke('models:toggleFavorite', providerId, modelId),
+    toggleHidden: (providerId: string, modelId: string) => ipcRenderer.invoke('models:toggleHidden', providerId, modelId),
+    favorites: () => ipcRenderer.invoke('models:favorites'),
+    hidden: () => ipcRenderer.invoke('models:hidden')
+  },
+  // --- P4-F2: Budget Center ---
+  budget: {
+    get: () => ipcRenderer.invoke('budget:get'),
+    update: (patch: Record<string, unknown>) => ipcRenderer.invoke('budget:update', patch),
+    check: (dailySpent: number, monthlySpent: number, requestTokens: number) => ipcRenderer.invoke('budget:check', dailySpent, monthlySpent, requestTokens)
+  },
+  // --- P4-F3: Memory Studio ---
+  memoryStudio: {
+    scoreQuality: (entry: Record<string, unknown>) => ipcRenderer.invoke('memory:scoreQuality', entry),
+    detectConflicts: (entries: Record<string, unknown>[]) => ipcRenderer.invoke('memory:detectConflicts', entries)
+  },
+  // --- P4-F4: Workflow Center ---
+  workflowCenter: {
+    substituteVars: (template: string, vars: Record<string, unknown>[]) => ipcRenderer.invoke('workflow:substituteVars', template, vars),
+    evaluateCondition: (condition: string, vars: Record<string, unknown>[]) => ipcRenderer.invoke('workflow:evaluateCondition', condition, vars),
+    saveRun: (record: Record<string, unknown>) => ipcRenderer.invoke('workflow:saveRun', record),
+    runHistory: () => ipcRenderer.invoke('workflow:runHistory'),
+    runHistoryFor: (workflowId: string) => ipcRenderer.invoke('workflow:runHistoryFor', workflowId)
+  },
+  // --- P4-F5: Team Builder ---
+  teams: {
+    list: () => ipcRenderer.invoke('teams:list'),
+    save: (input: Record<string, unknown>) => ipcRenderer.invoke('teams:save', input),
+    delete: (id: string) => ipcRenderer.invoke('teams:delete', id),
+    defaultFirefly: (agentIds: string[]) => ipcRenderer.invoke('teams:defaultFirefly', agentIds)
+  },
+  // --- P4-F6: Project Knowledge ---
+  projectKnowledge: {
+    detectTechStack: (rootPath: string) => ipcRenderer.invoke('knowledge:detectTechStack', rootPath),
+    generateSummary: (rootPath: string, entries: Record<string, unknown>[]) => ipcRenderer.invoke('knowledge:generateSummary', rootPath, entries)
+  },
+  // --- P4-F7: Plugin Manager ---
+  pluginManager: {
+    install: (manifest: Record<string, unknown>) => ipcRenderer.invoke('plugins:install', manifest),
+    uninstall: (id: string) => ipcRenderer.invoke('plugins:uninstall', id),
+    toggle: (id: string) => ipcRenderer.invoke('plugins:toggle', id),
+    listInstalled: () => ipcRenderer.invoke('plugins:listInstalled'),
+    enabledContributions: () => ipcRenderer.invoke('plugins:enabledContributions')
+  },
+  // --- P4-F8: Diagnostics Suite ---
+  diagnosticsSuite: {
+    run: () => ipcRenderer.invoke('diagnostics:runSuite')
+  },
+  // --- P1-2: Firefly State Machine ---
+  firefly: {
+    createState: () => ipcRenderer.invoke('firefly:createState'),
+    completeRole: (state: Record<string, unknown>, role: string, output: string) => ipcRenderer.invoke('firefly:completeRole', state, role, output),
+    getRoleContext: (state: Record<string, unknown>, role: string, prompt: string, memory?: string, project?: string) => ipcRenderer.invoke('firefly:getRoleContext', state, role, prompt, memory, project),
+    isComplete: (state: Record<string, unknown>) => ipcRenderer.invoke('firefly:isComplete', state),
+    getOutput: (state: Record<string, unknown>) => ipcRenderer.invoke('firefly:getOutput', state)
   },
   // --- /AgentHub skills + native agentic ---
   platform: process.platform

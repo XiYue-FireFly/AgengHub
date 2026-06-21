@@ -93,11 +93,19 @@ import { checkGhCli, listPullRequests, listIssues, getCurrentBranchPr } from "./
 import { listSlashCommands, getSlashCommand, saveSlashCommand, deleteSlashCommand, resolveSlashCommand, validateShortcut, checkConflict } from "./runtime/slash-commands"
 import { importConversationFromFile, importConversationFromJson, branchFromCheckpoint, summarizeConversation } from "./runtime/conversation-import"
 import { buildMemoryGraph, suggestCleanup } from "./runtime/memory-graph"
-import { scanPlugins, validateManifest, getPluginContributions } from "./runtime/plugin-manager"
+import { scanPlugins, validateManifest, getPluginContributions, listPluginRepositories, importPluginRepository } from "./runtime/plugin-manager"
 import { runReleaseChecks } from "./runtime/release-workspace"
 import { buildProjectMap, searchProjectFiles } from "./runtime/project-map"
 import { buildTerminalPrompt, suggestCommandPrompt, explainOutputPrompt } from "./runtime/terminal-ai"
-import { getBudgetConfig, checkBudget } from "./runtime/budget-center"
+import { getBudgetConfig, checkBudget, updateBudgetConfig } from "./runtime/budget-center"
+import { buildModelList, toggleModelFavorite, toggleModelHidden, getModelFavorites, getModelHidden } from "./runtime/models-center"
+import { scoreMemoryQuality, detectMemoryConflicts } from "./runtime/memory-studio"
+import { substituteVariables, evaluateCondition, saveRunRecord, loadRunHistory, getWorkflowRunHistory } from "./runtime/workflow-center"
+import { listTeamPresets, saveTeamPreset, deleteTeamPreset, getDefaultFireflyTeam } from "./runtime/team-builder"
+import { detectTechStack, generateWorkspaceSummary } from "./runtime/project-knowledge-enhanced"
+import { installPlugin, uninstallPlugin, togglePlugin, listInstalledPlugins, getEnabledContributions } from "./runtime/plugin-manager-enhanced"
+import { runDiagnosticSuite } from "./runtime/diagnostics-suite"
+import { createFireflyState, completeRole, getRoleContext, isComplete, getFinalOutput } from "./runtime/firefly-state-machine"
 import { registerAllIpcHandlers } from "./ipc"
 import { hub as hubLog, window_ as windowLog, pipeline as pipelineLog, proxy as proxyLog, store as storeLog } from "./logger"
 import { summarizePageSnapshot, extractReadableText, buildPageAnalysisPrompt } from "./runtime/browser-workspace"
@@ -1730,6 +1738,8 @@ ipcMain.handle("conversation:summarize", (_e, conversation: any) => summarizeCon
 ipcMain.handle("plugins:scan", (_e, workspaceRoot?: string) => scanPlugins(workspaceRoot))
 ipcMain.handle("plugins:validate", (_e, manifest: any) => validateManifest(manifest))
 ipcMain.handle("plugins:contributions", (_e, plugins: any[]) => getPluginContributions(plugins))
+ipcMain.handle("plugins:repositories", () => listPluginRepositories())
+ipcMain.handle("plugins:importRepository", (_e, input: any) => importPluginRepository(input))
 
 // --- Release Workspace ---
 // --- Project Map ---
@@ -1856,6 +1866,65 @@ ipcMain.handle("inlineEdit:validate", (_e, original: string, replacement: string
 ipcMain.handle("inlineEdit:apply", (_e, content: string, startLine: number, endLine: number, replacement: string) => applyInlineEdit(content, startLine, endLine, replacement))
 
 ipcMain.handle("routes:explain", async (_event, turnId: string) => routeDecisionForTurn(turnId))
+
+// --- P4-F1: Models Center ---
+ipcMain.handle("models:list", (_e, providers: any[]) => buildModelList(providers))
+ipcMain.handle("models:toggleFavorite", (_e, providerId: string, modelId: string) => toggleModelFavorite(providerId, modelId))
+ipcMain.handle("models:toggleHidden", (_e, providerId: string, modelId: string) => toggleModelHidden(providerId, modelId))
+ipcMain.handle("models:favorites", () => [...getModelFavorites()])
+ipcMain.handle("models:hidden", () => [...getModelHidden()])
+
+// --- P4-F2: Budget Center ---
+ipcMain.handle("budget:get", () => getBudgetConfig())
+ipcMain.handle("budget:update", (_e, patch: any) => updateBudgetConfig(patch))
+ipcMain.handle("budget:check", (_e, dailySpent: number, monthlySpent: number, requestTokens: number) => checkBudget(getBudgetConfig(), dailySpent, monthlySpent, requestTokens))
+
+// --- P4-F3: Memory Studio ---
+ipcMain.handle("memory:scoreQuality", (_e, entry: any) => scoreMemoryQuality(entry))
+ipcMain.handle("memory:detectConflicts", (_e, entries: any[]) => detectMemoryConflicts(entries))
+
+// --- P4-F4: Workflow Center ---
+ipcMain.handle("workflow:substituteVars", (_e, template: string, vars: any[]) => substituteVariables(template, vars))
+ipcMain.handle("workflow:evaluateCondition", (_e, condition: string, vars: any[]) => evaluateCondition(condition, vars))
+ipcMain.handle("workflow:saveRun", (_e, record: any) => { saveRunRecord(record); return true })
+ipcMain.handle("workflow:runHistory", () => loadRunHistory())
+ipcMain.handle("workflow:runHistoryFor", (_e, workflowId: string) => getWorkflowRunHistory(workflowId))
+
+// --- P4-F5: Team Builder ---
+ipcMain.handle("teams:list", () => listTeamPresets())
+ipcMain.handle("teams:save", (_e, input: any) => saveTeamPreset(input))
+ipcMain.handle("teams:delete", (_e, id: string) => deleteTeamPreset(id))
+ipcMain.handle("teams:defaultFirefly", (_e, agentIds: string[]) => getDefaultFireflyTeam(agentIds))
+
+// --- P4-F6: Project Knowledge Enhanced ---
+ipcMain.handle("knowledge:detectTechStack", (_e, rootPath: string) => detectTechStack(rootPath))
+ipcMain.handle("knowledge:generateSummary", (_e, rootPath: string, entries: any[]) => generateWorkspaceSummary(rootPath, entries))
+
+// --- P4-F7: Plugin Manager Enhanced ---
+ipcMain.handle("plugins:install", (_e, manifest: any) => installPlugin(manifest))
+ipcMain.handle("plugins:uninstall", (_e, id: string) => uninstallPlugin(id))
+ipcMain.handle("plugins:toggle", (_e, id: string) => togglePlugin(id))
+ipcMain.handle("plugins:listInstalled", () => listInstalledPlugins())
+ipcMain.handle("plugins:enabledContributions", () => getEnabledContributions())
+
+// --- P4-F8: Diagnostics Suite ---
+ipcMain.handle("diagnostics:runSuite", async () => {
+  return runDiagnosticSuite({
+    appVersion: resolveAppVersionFromMain(),
+    hasProviders: (registry.getAll().length > 0),
+    hasAgents: (registry.getAll().length > 0),
+    hasMcpServers: (await import("./runtime/mcp")).listMcpServers().length > 0,
+    hasMemoryEntries: false,
+    hasWorkspace: !!getWorkspaceManager()?.getActive()
+  })
+})
+
+// --- P1-2: Firefly State Machine ---
+ipcMain.handle("firefly:createState", () => createFireflyState())
+ipcMain.handle("firefly:completeRole", (_e, state: any, role: string, output: string) => completeRole(state, role as any, output))
+ipcMain.handle("firefly:getRoleContext", (_e, state: any, role: string, prompt: string, memory?: string, project?: string) => getRoleContext(state, role as any, prompt, memory, project))
+ipcMain.handle("firefly:isComplete", (_e, state: any) => isComplete(state))
+ipcMain.handle("firefly:getOutput", (_e, state: any) => getFinalOutput(state))
 
 // Provider & Routing IPC handlers moved to src/main/ipc/provider-ipc.ts (registered via registerAllIpcHandlers)
 ipcMain.handle("proxy:info", async () => ({
