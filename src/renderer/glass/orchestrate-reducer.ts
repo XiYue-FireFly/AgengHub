@@ -4,7 +4,7 @@
    事件契约见 COLLAB.md：orchestrate:plan / orchestrate:subtask / orchestrate:final。
    ============================================================ */
 
-import { OrchestrateState, OrchestrateSubtask } from './orchestrate-view'
+import { OrchestrateState, OrchestrateSubtask } from './orchestrate-types'
 
 export function initialOrchestrateState(): OrchestrateState {
   return { phase: 'planning', subtasks: [] }
