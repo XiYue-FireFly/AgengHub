@@ -4,6 +4,7 @@ import { ActivityTrail } from '../glass/activity-view'
 import { ToolCallStream } from '../glass/ToolCallStream'
 import { ExecutionReport } from '../glass/ExecutionReport'
 import { InlineEditAffordance } from './InlineEditAffordance'
+import { ForkButton } from './ForkButton'
 import { AGENT_META } from '../glass/meta'
 import { tr } from '../glass/i18n'
 import { SetupTab, firstRunActionForError } from '../glass/connection-status'
@@ -71,14 +72,14 @@ export function ThreadView({
               <button onClick={() => onRetry(turn.id)} title={tr('重试', 'Retry')}><Icon d={IC.refresh} size={14} /></button>
             )}
           </div>
-          <AgentOutputs turn={turn} events={byTurn.get(turn.id) ?? []} openSetup={openSetup} onCancelAgent={onCancelAgent} onResolveGuard={onResolveGuard} workspaceRoot={workspaceRoot} />
+          <AgentOutputs turn={turn} events={byTurn.get(turn.id) ?? []} openSetup={openSetup} onCancelAgent={onCancelAgent} onResolveGuard={onResolveGuard} workspaceRoot={workspaceRoot} threadId={thread?.id} />
         </article>
       ))}
     </section>
   )
 }
 
-function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, workspaceRoot }: { turn: WorkbenchTurn; events: RuntimeEvent[]; openSetup: (tab?: SetupTab | 'appearance') => void; onCancelAgent: (turnId: string, agentId: string) => void; onResolveGuard: (requestId: string, approved: boolean) => void; workspaceRoot?: string | null }) {
+function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, workspaceRoot, threadId }: { turn: WorkbenchTurn; events: RuntimeEvent[]; openSetup: (tab?: SetupTab | 'appearance') => void; onCancelAgent: (turnId: string, agentId: string) => void; onResolveGuard: (requestId: string, approved: boolean) => void; workspaceRoot?: string | null; threadId?: string }) {
   const grouped = new Map<string, RuntimeEvent[]>()
   const visibleEvents = events.filter(event => event.kind !== 'turn:created' && event.kind !== 'turn:status' && event.kind !== 'run:created' && event.kind !== 'run:status')
   for (const event of visibleEvents) {
@@ -143,6 +144,16 @@ function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, 
               </div>
             )}
             {status !== 'running' && <CompletionSummary agentId={agentId} events={agentEvents} summary={summary} status={status} workspaceRoot={workspaceRoot} />}
+            {/* Fork button for completed turns */}
+            {status === 'completed' && (
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+                <ForkButton
+                  turnId={turn.id}
+                  threadId={threadId || turn.threadId || ''}
+                  messageContent={text || doneContent || ''}
+                />
+              </div>
+            )}
           </div>
         )
       })}

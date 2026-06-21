@@ -123,7 +123,8 @@ const api = {
     create: (input: { workspaceId?: string | null; title?: string }) => ipcRenderer.invoke('threads:create', input),
     rename: (threadId: string, title: string) => ipcRenderer.invoke('threads:rename', threadId, title),
     delete: (threadId: string) => ipcRenderer.invoke('threads:delete', threadId),
-    select: (threadId: string | null) => ipcRenderer.invoke('threads:select', threadId)
+    select: (threadId: string | null) => ipcRenderer.invoke('threads:select', threadId),
+    fork: (input: { sourceThreadId: string; sourceTurnId: string; message: string }) => ipcRenderer.invoke('threads:fork', input)
   },
   turns: {
     create: (input: { threadId?: string | null; workspaceId?: string | null; prompt: string; mode?: string; targetAgent?: string | null; thinking?: any; modelSelection?: ModelSelection; attachments?: any[]; customSchedule?: any }) =>
@@ -171,6 +172,14 @@ const api = {
   commands: {
     list: () => ipcRenderer.invoke('commands:list'),
     run: (input: { id?: string; text?: string }) => ipcRenderer.invoke('commands:run', input)
+  },
+  workflows: {
+    list: (category?: string) => ipcRenderer.invoke('workflows:list', category),
+    get: (id: string) => ipcRenderer.invoke('workflows:get', id),
+    upsert: (input: any) => ipcRenderer.invoke('workflows:upsert', input),
+    delete: (id: string) => ipcRenderer.invoke('workflows:delete', id),
+    search: (query: string) => ipcRenderer.invoke('workflows:search', query),
+    seed: () => ipcRenderer.invoke('workflows:seed')
   },
   ecc: {
     status: () => ipcRenderer.invoke('ecc:status'),
@@ -282,6 +291,8 @@ const api = {
     setMode: (mode: 'all' | 'selected') => ipcRenderer.invoke('agentic:setMode', mode),
     // 写/执行审批门禁
     getApprovalConfig: () => ipcRenderer.invoke('agentic:getApprovalConfig'),
+    setApprovalPreset: (preset: 'read-only' | 'auto' | 'full-access' | 'ask-all' | 'custom') =>
+      ipcRenderer.invoke('agentic:setApprovalPreset', preset),
     setApprovalDefault: (tool: 'write' | 'exec', policy: 'allow' | 'ask' | 'deny') =>
       ipcRenderer.invoke('agentic:setApprovalDefault', tool, policy),
     setApprovalOverride: (agentId: string, tool: 'write' | 'exec', policy: 'allow' | 'ask' | 'deny' | null) =>

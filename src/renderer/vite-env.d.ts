@@ -93,6 +93,7 @@ interface ElectronAPI {
     rename: (threadId: string, title: string) => Promise<WorkbenchThread>
     delete: (threadId: string) => Promise<boolean>
     select: (threadId: string | null) => Promise<string | null>
+    fork: (input: { sourceThreadId: string; sourceTurnId: string; message: string }) => Promise<WorkbenchThread>
   }
   turns: {
     create: (input: { threadId?: string | null; workspaceId?: string | null; prompt: string; mode?: DispatchPreset; targetAgent?: string | null; thinking?: any; modelSelection?: ModelSelection; attachments?: WorkbenchAttachment[]; customSchedule?: SchedulePreview }) => Promise<any>

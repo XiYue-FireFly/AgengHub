@@ -28,6 +28,8 @@ import { getApprovalConfig, GuardedTool, ApprovalPolicy } from "./agentic/approv
 import { ChatCompletionMessage } from "./providers/types"
 // --- /AgentHub skills + native agentic ---
 import { getWorkbenchRuntimeStore } from "./runtime/store"
+import { createExecutionTracker } from "./runtime/execution-tracker"
+import { listWorkflows, getWorkflow, upsertWorkflow, deleteWorkflow, searchWorkflows, seedDefaultWorkflows } from "./runtime/workflows"
 import { DispatchPreset, ModelSelection, SchedulePreview, ScheduleStep, WorkbenchAttachment, WorkbenchTurn } from "./runtime/types"
 import { fireflyFiveRoleTemplate, listSchedules, previewSchedule } from "./runtime/schedules"
 import { configureLocalAgent, detectLocalAgentStatuses, getCachedLocalAgentStatuses, refreshLocalAgentStatusCache } from "./runtime/local-agents"
@@ -566,7 +568,10 @@ async function runCustomScheduleTurn(input: {
       const error = task.errors.get(step.agentId) || task.error
       if (!error && (step.role === "reviewer" || step.role === "gatekeeper" || step.role === "executor")) {
         const verdict = evaluateGuardVerdict(content, step.role)
-        if (guardShouldBlockExecutor(verdict, step.role) || executorVerdictNeedsApproval(verdict, step.role)) {
+        // 「完全访问」预设统管所有拦截：用户已明确表达完全信任，
+        // Guard 内容审查（含 high/block 危险命令判定）一并跳过，避免与 agentic approval 预设脱节造成"设了完全访问仍被拦"的困惑。
+        const guardBypassedByPreset = getApprovalConfig().getConfig().preset === "full-access"
+        if (!guardBypassedByPreset && (guardShouldBlockExecutor(verdict, step.role) || executorVerdictNeedsApproval(verdict, step.role))) {
           const reason = verdict.reasons.join("; ")
           if (verdict.level === "high" || verdict.status === "block") {
             const guardDecision = await requestGuardApproval(guardStore, {
@@ -1200,6 +1205,17 @@ ipcMain.handle("threads:create", (_event, input: { workspaceId?: string | null; 
 ipcMain.handle("threads:rename", (_event, threadId: string, title: string) => runtimeStore.renameThread(threadId, title))
 ipcMain.handle("threads:delete", (_event, threadId: string) => runtimeStore.deleteThread(threadId))
 ipcMain.handle("threads:select", (_event, threadId: string | null) => runtimeStore.selectThread(threadId))
+ipcMain.handle("threads:fork", (_event, input: { sourceThreadId: string; sourceTurnId: string; message: string }) => {
+  // Create a new thread forked from the source turn
+  const newThread = runtimeStore.createThread({ title: `Fork: ${input.message.slice(0, 50)}` })
+  // Copy events up to the source turn into the new thread
+  const sourceEvents = runtimeStore.eventsSince(input.sourceThreadId, 0)
+  const turnEvents = sourceEvents.filter((e: any) => e.turnId === input.sourceTurnId)
+  for (const event of turnEvents) {
+    runtimeStore.appendStreamEvent(newThread.id, { ...event, turnId: newThread.id })
+  }
+  return newThread
+})
 ipcMain.handle("runtime:snapshot", (_event, workspaceId?: string | null) => runtimeStore.snapshot(workspaceId))
 ipcMain.handle("runtime:eventsSince", (_event, threadId: string, seq = 0) => runtimeStore.eventsSince(threadId, seq))
 ipcMain.handle("context:projection", (_event, input: { threadId?: string | null; workspaceId?: string | null; prompt?: string; attachments?: WorkbenchAttachment[]; writeDraft?: { title: string; content: string } | null; pinnedBlocks?: any[] }) => {
@@ -1481,6 +1497,12 @@ ipcMain.handle("schedules:list", () => listSchedules())
 ipcMain.handle("schedules:runPreview", (_event, preset: DispatchPreset) => previewSchedule(preset))
 ipcMain.handle("commands:list", () => listWorkbenchCommands())
 ipcMain.handle("commands:run", (_event, input: { id?: string; text?: string }) => runWorkbenchCommand(input))
+ipcMain.handle("workflows:list", (_event, category?: string) => listWorkflows(category as any))
+ipcMain.handle("workflows:get", (_event, id: string) => getWorkflow(id))
+ipcMain.handle("workflows:upsert", (_event, input: any) => upsertWorkflow(input))
+ipcMain.handle("workflows:delete", (_event, id: string) => deleteWorkflow(id))
+ipcMain.handle("workflows:search", (_event, query: string) => searchWorkflows(query))
+ipcMain.handle("workflows:seed", () => { seedDefaultWorkflows(); return listWorkflows() })
 ipcMain.handle("ecc:status", () => eccCommandStatus())
 ipcMain.handle("ecc:update", () => updateEccCommands())
 ipcMain.handle("terminal:run", (_event, input: { workspaceId?: string | null; command: string }) => getTerminalRuntime().run(input))
@@ -1837,6 +1859,7 @@ ipcMain.handle("agentic:getMode", () => getAgenticConfig().getMode())
 ipcMain.handle("agentic:setMode", (_e, mode: 'all' | 'selected') => getAgenticConfig().setMode(mode))
 // 写/执行审批门禁：策略读写 + 运行时决策回传
 ipcMain.handle("agentic:getApprovalConfig", () => getApprovalConfig().getConfig())
+ipcMain.handle("agentic:setApprovalPreset", (_e, preset: string) => getApprovalConfig().setPreset(preset as any))
 ipcMain.handle("agentic:setApprovalDefault", (_e, tool: GuardedTool, policy: ApprovalPolicy) => getApprovalConfig().setDefault(tool, policy))
 ipcMain.handle("agentic:setApprovalOverride", (_e, agentId: string, tool: GuardedTool, policy: ApprovalPolicy | null) => getApprovalConfig().setOverride(agentId, tool, policy))
 ipcMain.handle("agentic:resolveApproval", (_e, requestId: string, approved: boolean) => dispatcher?.resolveApproval(requestId, approved) ?? false)
@@ -1937,9 +1960,63 @@ app.on("activate", () => {
   ensureWindowVisible()
 })
 
+// --- Execution Tracker IPC ---
+const executionTrackers = new Map<string, ReturnType<typeof createExecutionTracker>>()
+
+ipcMain.handle("execution:start", (_event, sessionId: string) => {
+  const tracker = createExecutionTracker(sessionId)
+  executionTrackers.set(sessionId, tracker)
+  return { sessionId, startTime: tracker.startTime }
+})
+
+ipcMain.handle("execution:tool-start", (_event, sessionId: string, toolId: string, toolName: string, input?: string) => {
+  const tracker = executionTrackers.get(sessionId)
+  if (tracker) {
+    tracker.startTool(toolId, toolName, input)
+    return true
+  }
+  return false
+})
+
+ipcMain.handle("execution:tool-end", (_event, sessionId: string, toolId: string, status: 'succeeded' | 'failed' | 'declined', output?: string, error?: string) => {
+  const tracker = executionTrackers.get(sessionId)
+  if (tracker) {
+    tracker.endTool(toolId, status, output, error)
+    return true
+  }
+  return false
+})
+
+ipcMain.handle("execution:file-modified", (_event, sessionId: string, filePath: string) => {
+  const tracker = executionTrackers.get(sessionId)
+  if (tracker) {
+    tracker.recordFileModification(filePath)
+    return true
+  }
+  return false
+})
+
+ipcMain.handle("execution:report", (_event, sessionId: string) => {
+  const tracker = executionTrackers.get(sessionId)
+  if (tracker) {
+    const stats = tracker.generateReport()
+    tracker.persistReport()
+    executionTrackers.delete(sessionId)
+    return stats
+  }
+  return null
+})
+
 app.on("before-quit", async () => {
   (app as any).isQuitting = true
-  await registry.stopAll()
+  // Kill any still-running terminal children so we don't orphan shell processes.
+  try { getTerminalRuntime().dispose() } catch { /* non-critical */ }
+  // registry.stopAll 可能卡在 stdio agent 不响应；加超时防止阻塞退出
+  const STOP_TIMEOUT_MS = 5000
+  await Promise.race([
+    registry.stopAll(),
+    new Promise<void>(resolve => setTimeout(resolve, STOP_TIMEOUT_MS))
+  ]).catch(() => {})
   hub?.stop()
   proxy.stop()
 })
