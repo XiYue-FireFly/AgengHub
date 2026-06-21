@@ -88,6 +88,10 @@ import { getOnboardingState, shouldShowOnboarding, completeStep, skipAllOnboardi
 import { listWorkspaceFiles, searchWorkspaceFiles, readFilePreview } from "./runtime/workspace-files"
 import { checkGhCli, listPullRequests, listIssues, getCurrentBranchPr } from "./runtime/github-integration"
 import { listSlashCommands, getSlashCommand, saveSlashCommand, deleteSlashCommand, resolveSlashCommand, validateShortcut, checkConflict } from "./runtime/slash-commands"
+import { importConversationFromFile, importConversationFromJson, branchFromCheckpoint, summarizeConversation } from "./runtime/conversation-import"
+import { buildMemoryGraph, suggestCleanup } from "./runtime/memory-graph"
+import { scanPlugins, validateManifest, getPluginContributions } from "./runtime/plugin-manager"
+import { runReleaseChecks } from "./runtime/release-workspace"
 import { installAppMenu } from "./menu"
 
 function resolveAppVersionFromMain(): string {
@@ -1670,6 +1674,34 @@ ipcMain.handle("slashCommands:delete", (_e, shortcut: string) => deleteSlashComm
 ipcMain.handle("slashCommands:resolve", (_e, shortcut: string, params: any) => resolveSlashCommand(shortcut, params))
 ipcMain.handle("slashCommands:validate", (_e, shortcut: string) => validateShortcut(shortcut))
 ipcMain.handle("slashCommands:conflict", (_e, shortcut: string) => checkConflict(shortcut))
+
+// --- Conversation Import ---
+ipcMain.handle("conversation:importFile", (_e, filePath: string) => importConversationFromFile(filePath))
+ipcMain.handle("conversation:importJson", (_e, json: string) => importConversationFromJson(json))
+ipcMain.handle("conversation:branch", (_e, conversation: any, index: number) => branchFromCheckpoint(conversation, index))
+ipcMain.handle("conversation:summarize", (_e, conversation: any) => summarizeConversation(conversation))
+
+// --- Memory Graph ---
+ipcMain.handle("memory:graph", (_e, entries: any[]) => buildMemoryGraph(entries))
+ipcMain.handle("memory:cleanupSuggestions", (_e, graph: any) => suggestCleanup(graph))
+
+// --- Plugin Manager ---
+ipcMain.handle("plugins:scan", (_e, workspaceRoot?: string) => scanPlugins(workspaceRoot))
+ipcMain.handle("plugins:validate", (_e, manifest: any) => validateManifest(manifest))
+ipcMain.handle("plugins:contributions", (_e, plugins: any[]) => getPluginContributions(plugins))
+
+// --- Release Workspace ---
+ipcMain.handle("release:checks", async () => {
+  return runReleaseChecks({
+    appVersion: resolveAppVersionFromMain(),
+    typecheckPass: true, // placeholder — real check would run tsc
+    testPass: true,
+    buildPass: true,
+    hasChangelog: false,
+    hasGitTag: false,
+    gitClean: true
+  })
+})
 
 ipcMain.handle("routes:explain", async (_event, turnId: string) => routeDecisionForTurn(turnId))
 

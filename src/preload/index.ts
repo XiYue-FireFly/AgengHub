@@ -365,6 +365,28 @@ const api = {
     validate: (shortcut: string) => ipcRenderer.invoke('slashCommands:validate', shortcut),
     conflict: (shortcut: string) => ipcRenderer.invoke('slashCommands:conflict', shortcut)
   },
+  // --- Conversation Import ---
+  conversationImport: {
+    importFile: (filePath: string) => ipcRenderer.invoke('conversation:importFile', filePath),
+    importJson: (json: string) => ipcRenderer.invoke('conversation:importJson', json),
+    branch: (conversation: any, index: number) => ipcRenderer.invoke('conversation:branch', conversation, index),
+    summarize: (conversation: any) => ipcRenderer.invoke('conversation:summarize', conversation)
+  },
+  // --- Memory Graph ---
+  memoryGraph: {
+    build: (entries: any[]) => ipcRenderer.invoke('memory:graph', entries),
+    cleanupSuggestions: (graph: any) => ipcRenderer.invoke('memory:cleanupSuggestions', graph)
+  },
+  // --- Plugin Manager ---
+  plugins: {
+    scan: (workspaceRoot?: string) => ipcRenderer.invoke('plugins:scan', workspaceRoot),
+    validate: (manifest: any) => ipcRenderer.invoke('plugins:validate', manifest),
+    contributions: (plugins: any[]) => ipcRenderer.invoke('plugins:contributions', plugins)
+  },
+  // --- Release Workspace ---
+  release: {
+    checks: () => ipcRenderer.invoke('release:checks')
+  },
   // --- /AgentHub skills + native agentic ---
   platform: process.platform
 }
