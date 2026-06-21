@@ -1,6 +1,6 @@
 import { app, BrowserWindow, Tray, Menu, nativeImage, Notification, ipcMain, shell, dialog, WebContents } from "electron"
 import { execFile } from "node:child_process"
-import { basename, extname, join, resolve } from "path"
+import { basename, extname, join, resolve, relative, isAbsolute } from "path"
 import { Dirent, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "fs"
 import { homedir } from "os"
 import { promisify } from "util"
@@ -12,6 +12,7 @@ import { Dispatcher, StreamEvent } from "./hub/dispatcher"
 import { store } from "./store"
 import { detectAgentsAsync } from "./hub/agent-detector"
 import { getProviderManager } from "./providers/manager"
+import { buildProviderClient } from "./providers/client"
 import { getLocalProxy } from "./routing/proxy"
 import { locateAgentCandidates } from "./hub/agent-locator"
 import { takeoverStatus, takeoverApply, takeoverRestore } from "./routing/takeover"
@@ -96,6 +97,7 @@ import { scanPlugins, validateManifest, getPluginContributions } from "./runtime
 import { runReleaseChecks } from "./runtime/release-workspace"
 import { buildProjectMap, searchProjectFiles } from "./runtime/project-map"
 import { buildTerminalPrompt, suggestCommandPrompt, explainOutputPrompt } from "./runtime/terminal-ai"
+import { registerAllIpcHandlers } from "./ipc"
 import { summarizePageSnapshot, extractReadableText, buildPageAnalysisPrompt } from "./runtime/browser-workspace"
 import { buildInlineEditPrompt, validateEditResult, applyInlineEdit } from "./runtime/inline-edit"
 import { installAppMenu } from "./menu"
@@ -827,11 +829,17 @@ function resolveOpenPathCandidate(rawPath: unknown, workspaceRoot?: string | nul
   const root = workspaceRoot ? resolve(workspaceRoot) : ""
   if (!root || !existsSync(root) || !statSync(root).isDirectory()) return resolved
   const rootCandidate = resolve(root, raw)
-  if (rootCandidate.startsWith(root) && existsSync(rootCandidate)) return rootCandidate
+  // P2-5: Use relative() for safe path containment check instead of startsWith
+  // (startsWith would match "C:\foo" against "C:\foobar" — a path escape risk).
+  const isWithinRoot = (candidate: string): boolean => {
+    const rel = relative(root, candidate)
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  }
+  if (isWithinRoot(rootCandidate) && existsSync(rootCandidate)) return rootCandidate
   if (!raw.includes("/") && !raw.includes("\\") && /^[\w.-]+\.[a-z0-9]+$/i.test(raw)) {
     return findFileByName(root, raw) || rootCandidate
   }
-  return rootCandidate.startsWith(root) ? rootCandidate : resolved
+  return isWithinRoot(rootCandidate) ? rootCandidate : resolved
 }
 
 function findFileByName(root: string, fileName: string): string | null {
@@ -986,7 +994,9 @@ function createWindow(): void {
       preload: join(__dirname, "../preload/index.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      // P2-4: Enable sandbox for defense-in-depth. Preload only uses
+      // contextBridge + ipcRenderer (both available in sandbox mode).
+      sandbox: true,
       webviewTag: true
     },
     show: isDevRenderer,
@@ -1513,6 +1523,8 @@ ipcMain.handle("tasks:delete", (_event, taskId: string) => {
   runtimeStore.deleteTask(taskId)
   const current = memory().loadRuntimeState()
   memory().saveRuntimeState({ messages: current.messages, tasks: current.tasks.filter((task: any) => task.id !== taskId) })
+  // P2-2: Clean up taskToTurn mapping to prevent Map growth.
+  taskToTurn.delete(taskId)
   return true
 })
 ipcMain.handle("tasks:clearCompleted", () => {
@@ -1520,30 +1532,13 @@ ipcMain.handle("tasks:clearCompleted", () => {
   const current = memory().loadRuntimeState()
   const running = current.tasks.filter((task: any) => task.status === "running")
   memory().saveRuntimeState({ messages: current.messages, tasks: running })
+  // P2-2: Clean up taskToTurn mappings for all non-running tasks.
+  for (const task of current.tasks) {
+    if (task.status !== "running") taskToTurn.delete(task.id)
+  }
   return true
 })
-ipcMain.handle("git:status", (_event, workspaceId?: string | null) => gitStatus(workspaceId))
-ipcMain.handle("git:branches", (_event, workspaceId?: string | null) => gitBranches(workspaceId))
-ipcMain.handle("git:checkoutBranch", (_event, workspaceId: string | null, branch: string) => gitCheckoutBranch(workspaceId, branch))
-ipcMain.handle("git:createBranch", (_event, workspaceId: string | null, branch: string, checkout?: boolean) => gitCreateBranch(workspaceId, branch, checkout !== false))
-ipcMain.handle("git:renameBranch", (_event, workspaceId: string | null, oldName: string, newName: string) => gitRenameBranch(workspaceId, oldName, newName))
-ipcMain.handle("git:deleteBranch", (_event, workspaceId: string | null, branch: string, force?: boolean) => gitDeleteBranch(workspaceId, branch, !!force))
-ipcMain.handle("git:log", (_event, workspaceId?: string | null, limit?: number) => gitLog(workspaceId, limit))
-ipcMain.handle("git:diff", (_event, workspaceId?: string | null, filePath?: string) => gitDiff(workspaceId, filePath))
-ipcMain.handle("git:diffs", (_event, workspaceId?: string | null) => gitDiffs(workspaceId))
-ipcMain.handle("git:commitDetails", (_event, workspaceId: string | null, sha: string) => gitCommitDetails(workspaceId, sha))
-ipcMain.handle("git:commitDiff", (_event, workspaceId: string | null, sha: string, filePath?: string) => gitCommitDiff(workspaceId, sha, filePath))
-ipcMain.handle("git:stageFile", (_event, workspaceId: string | null, filePath: string) => gitStageFile(workspaceId, filePath))
-ipcMain.handle("git:stageAll", (_event, workspaceId: string | null) => gitStageAll(workspaceId))
-ipcMain.handle("git:unstageFile", (_event, workspaceId: string | null, filePath: string) => gitUnstageFile(workspaceId, filePath))
-ipcMain.handle("git:revertFile", (_event, workspaceId: string | null, filePath: string) => gitRevertFile(workspaceId, filePath))
-ipcMain.handle("git:revertAll", (_event, workspaceId: string | null) => gitRevertAll(workspaceId))
-ipcMain.handle("git:commit", (_event, workspaceId: string | null, message: string, filePaths?: string[]) => gitCommit(workspaceId, message, filePaths))
-ipcMain.handle("git:fetch", (_event, workspaceId: string | null, remote?: string) => gitFetch(workspaceId, remote))
-ipcMain.handle("git:pull", (_event, workspaceId: string | null, remote?: string, branch?: string) => gitPull(workspaceId, remote, branch))
-ipcMain.handle("git:push", (_event, workspaceId: string | null, remote?: string, branch?: string) => gitPush(workspaceId, remote, branch))
-ipcMain.handle("git:sync", (_event, workspaceId: string | null) => gitSync(workspaceId))
-ipcMain.handle("git:updateBranch", (_event, workspaceId: string | null, branch: string) => gitUpdateBranch(workspaceId, branch))
+// Git IPC handlers moved to src/main/ipc/git-ipc.ts (registered via registerAllIpcHandlers)
 ipcMain.handle("mcp:list", (_event, workspaceId?: string | null) => listMcpServers(workspaceId))
 ipcMain.handle("mcp:scanLocal", (_event, workspaceId?: string | null) => scanLocalMcpServers(workspaceId))
 ipcMain.handle("mcp:upsert", (_event, input: any) => upsertMcpServer(input))
@@ -1556,8 +1551,7 @@ ipcMain.handle("worktrees:create", (_event, input: { parentWorkspaceId: string; 
 ipcMain.handle("worktrees:remove", (_event, id: string, force?: boolean) => removeWorktree(id, !!force))
 ipcMain.handle("worktrees:sync", (_event, id: string) => syncWorktree(id))
 ipcMain.handle("worktrees:open", (_event, id: string) => openWorktree(id))
-ipcMain.handle("memory:search", (_event, query: string, category?: MemoryCategory) => memory().searchEntries(query, category))
-ipcMain.handle("memory:delete", (_event, id: string) => memory().deleteEntry(id))
+// memory:search, memory:delete moved to src/main/ipc/memory-ipc.ts
 ipcMain.handle("todos:list", (_event, threadId: string) => listThreadTodos(threadId))
 ipcMain.handle("todos:set", (_event, threadId: string, todos: any[]) => setThreadTodos(threadId, todos))
 ipcMain.handle("todos:upsert", (_event, input: { threadId: string; id?: string; content: string; status?: any; source?: any }) => upsertThreadTodo(input))
@@ -1604,23 +1598,38 @@ ipcMain.handle("hub:rescan", async () => {
 })
 
 ipcMain.handle("hub:cancel", async (_event, taskId: string) => dispatcher?.cancel(taskId))
-ipcMain.handle("store:get", async (_event, key: string) => store.get(key))
-ipcMain.handle("store:set", async (_event, key: string, value: any) => { store.set(key, value); return true })
-ipcMain.handle("memory:catalog", async () => memory().getCatalog())
-ipcMain.handle("memory:getSettings", async () => memory().getSettings())
-ipcMain.handle("memory:updateSettings", async (_event, patch: any) => memory().updateSettings(patch || {}))
-ipcMain.handle("memory:list", async (_event, category?: MemoryCategory) => memory().listEntries(category))
-ipcMain.handle("memory:addEntry", async (_event, entry) => memory().upsertEntry(entry))
-ipcMain.handle("memory:importConversation", async (_event, source: string, content: string) => {
-  const safeContent = String(content || "").slice(0, 1_000_000)
-  return memory().importConversation(source, safeContent)
+
+// P1-1: IPC store key whitelist — renderer may only access non-sensitive keys.
+// Sensitive keys (local.token, providers.config.v1, etc.) are never exposed via IPC.
+const IPC_STORE_ALLOWED_PREFIX = 'agenthub.'
+const IPC_STORE_DENIED_KEYS = new Set<string>([
+  'local.token',            // WebSocket auth token
+  'providers.config.v1',    // encrypted API keys
+  'appearance.preferences', // appearance settings (has separate controlled handler)
+  'minimizeToTray',         // window behavior flag
+])
+function isStoreKeyAllowed(key: unknown): boolean {
+  if (typeof key !== 'string' || !key) return false
+  if (IPC_STORE_DENIED_KEYS.has(key)) return false
+  return key.startsWith(IPC_STORE_ALLOWED_PREFIX)
+}
+
+ipcMain.handle("store:get", async (_event, key: string) => {
+  if (!isStoreKeyAllowed(key)) {
+    console.warn('[IPC] store:get denied for key:', key)
+    return undefined
+  }
+  return store.get(key)
 })
-ipcMain.handle("memory:listCandidates", async () => memory().listCandidates())
-ipcMain.handle("memory:approveCandidate", async (_event, id: string) => memory().approveCandidate(id))
-ipcMain.handle("memory:updateEntry", async (_event, id: string, patch: any) => memory().updateEntry(id, patch))
-ipcMain.handle("memory:disableEntry", async (_event, id: string) => memory().disableEntry(id))
-ipcMain.handle("memory:loadState", async () => memory().loadRuntimeState())
-ipcMain.handle("memory:saveState", async (_event, state) => memory().saveRuntimeState(state))
+ipcMain.handle("store:set", async (_event, key: string, value: any) => {
+  if (!isStoreKeyAllowed(key)) {
+    console.warn('[IPC] store:set denied for key:', key)
+    return false
+  }
+  store.set(key, value)
+  return true
+})
+// Memory IPC handlers moved to src/main/ipc/memory-ipc.ts (registered via registerAllIpcHandlers)
 
 // --- Prompt Library ---
 ipcMain.handle("prompts:list", (_e, category?: string) => listPrompts(category as any))
@@ -1707,9 +1716,7 @@ ipcMain.handle("conversation:importJson", (_e, json: string) => importConversati
 ipcMain.handle("conversation:branch", (_e, conversation: any, index: number) => branchFromCheckpoint(conversation, index))
 ipcMain.handle("conversation:summarize", (_e, conversation: any) => summarizeConversation(conversation))
 
-// --- Memory Graph ---
-ipcMain.handle("memory:graph", (_e, entries: any[]) => buildMemoryGraph(entries))
-ipcMain.handle("memory:cleanupSuggestions", (_e, graph: any) => suggestCleanup(graph))
+// memory:graph and memory:cleanupSuggestions moved to src/main/ipc/memory-ipc.ts
 
 // --- Plugin Manager ---
 ipcMain.handle("plugins:scan", (_e, workspaceRoot?: string) => scanPlugins(workspaceRoot))
@@ -1738,6 +1745,88 @@ ipcMain.handle("terminalAi:buildPrompt", (_e, userPrompt: string, context: any) 
 ipcMain.handle("terminalAi:suggestCommand", (_e, intent: string, context: any) => suggestCommandPrompt(intent, context))
 ipcMain.handle("terminalAi:explainOutput", (_e, context: any) => explainOutputPrompt(context))
 
+// --- AI Quick Complete (lightweight standalone LLM call) ---
+// Used by InlineEditAffordance, TerminalPanel, and other non-turn AI features
+// that need a single prompt→completion round without the full turn pipeline.
+ipcMain.handle("ai:quickComplete", async (_e, input: {
+  prompt: string
+  systemPrompt?: string
+  providerId?: string
+  modelId?: string
+  timeoutMs?: number
+}): Promise<{ content: string; error?: string }> => {
+  try {
+    const mgr = getProviderManager()
+    const config = mgr.getConfig()
+
+    // Resolve provider/model: prefer explicit override, else fall back to the
+    // active binding (same agentId the dispatcher would use for a turn).
+    let providerId = input.providerId
+    let modelId = input.modelId
+    const binding = providerId && modelId ? undefined : (config.activeBindingId ? mgr.resolveBinding(config.activeBindingId) : null)
+    if (!providerId || !modelId) {
+      if (!binding) {
+        return { content: '', error: 'No active model configured. Please select a model in Settings.' }
+      }
+      providerId = providerId || binding.provider.id
+      modelId = modelId || binding.model.id
+    }
+
+    const provider = mgr.getProvider(providerId)
+    const model = provider?.models.find(m => m.id === modelId)
+    if (!provider || !provider.enabled || !provider.apiKey) {
+      return { content: '', error: `Provider "${providerId}" is unavailable or has no API key.` }
+    }
+    if (!model) {
+      return { content: '', error: `Model "${modelId}" not found in provider "${providerId}".` }
+    }
+
+    // Build a minimal ResolvedCall (mirrors dispatchProviderDirect's construction).
+    const thinking: import("./providers/types").ThinkingConfig = { mode: "off", level: "minimal" }
+    const resolved = {
+      provider,
+      model,
+      binding: binding?.binding ?? {
+        agentId: `quick:${providerId}`,
+        providerId: provider.id,
+        modelId: model.id,
+        thinkingAllow: ["off", "auto", "enabled"] as import("./providers/types").ThinkingMode[],
+        thinking,
+        maxOutputTokens: 8192,
+        temperature: 0.2
+      },
+      thinking
+    }
+
+    const client = buildProviderClient(resolved)
+    let content = ''
+    const timeoutMs = input.timeoutMs || 30_000
+
+    await Promise.race([
+      new Promise<void>((resolve, reject) => {
+        client.stream(
+          {
+            messages: [{ role: "user", content: input.prompt }],
+            systemPrompt: input.systemPrompt || '',
+            thinkingOverride: thinking
+          },
+          {
+            onContent: (delta) => { content += delta },
+            onThinking: () => {},
+            onDone: () => resolve(),
+            onError: (err) => reject(new Error(typeof err === 'string' ? err : err?.message || 'Unknown model error'))
+          }
+        )
+      }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Model call timed out')), timeoutMs))
+    ])
+
+    return { content }
+  } catch (err: any) {
+    return { content: '', error: err?.message || String(err) }
+  }
+})
+
 // --- Browser Workspace ---
 ipcMain.handle("browser:summarize", (_e, snapshot: any) => summarizePageSnapshot(snapshot))
 ipcMain.handle("browser:extractText", (_e, html: string) => extractReadableText(html))
@@ -1750,36 +1839,7 @@ ipcMain.handle("inlineEdit:apply", (_e, content: string, startLine: number, endL
 
 ipcMain.handle("routes:explain", async (_event, turnId: string) => routeDecisionForTurn(turnId))
 
-ipcMain.handle("providers:get", async () => providerMgr.getConfig())
-ipcMain.handle("providers:upsert", async (_e, p) => { providerMgr.upsertProvider(p); registerAgentsFromBindings(); return providerMgr.getConfig() })
-ipcMain.handle("providers:delete", async (_e, id) => { const ok = providerMgr.deleteProvider(id); if (ok) registerAgentsFromBindings(); return ok })
-ipcMain.handle("providers:setEnabled", async (_e, id, enabled) => { providerMgr.setProviderEnabled(id, enabled); return providerMgr.getConfig() })
-ipcMain.handle("providers:setKey", async (_e, id, key) => {
-  providerMgr.setProviderApiKey(id, key)
-  if (key) await providerMgr.fetchModels(id).catch(() => null)
-  registerAgentsFromBindings()
-  // 配好 Key 后自动拉取模型列表（后台进行，不阻塞返回）
-  return providerMgr.getConfig()
-})
-ipcMain.handle("providers:fetchModels", async (_e, id) => {
-  const r = await providerMgr.fetchModels(id)
-  return { ...r, config: providerMgr.getConfig() }
-})
-ipcMain.handle("providers:health", async (_e, id) => providerMgr.checkProviderHealth(id))
-ipcMain.handle("providers:healthAll", async () => {
-  const results: any = {}
-  for (const p of providerMgr.getProviders()) {
-    results[p.id] = await providerMgr.checkProviderHealth(p.id)
-  }
-  return results
-})
-ipcMain.handle("routing:setBinding", async (_e, b) => { providerMgr.upsertBinding(b); registerAgentsFromBindings(); return providerMgr.getBindings() })
-ipcMain.handle("routing:removeBinding", async (_e, agentId) => { providerMgr.removeBinding(agentId); registerAgentsFromBindings(); return providerMgr.getBindings() })
-ipcMain.handle("routing:setFallback", async (_e, chain) => { providerMgr.setFallbackChain(chain); return providerMgr.getConfig().routing })
-ipcMain.handle("routing:setStrategy", async (_e, s) => { providerMgr.setStrategy(s); return providerMgr.getConfig().routing })
-ipcMain.handle("routing:setBindingThinking", async (_e, agentId, t) => { providerMgr.setBindingThinking(agentId, t); return providerMgr.getBindings() })
-ipcMain.handle("routing:setProviderThinking", async (_e, id, t) => { providerMgr.setProviderThinking(id, t); return providerMgr.getConfig() })
-ipcMain.handle("routing:activeBinding", async (_e, agentId) => { providerMgr.setActiveBinding(agentId); return providerMgr.getConfig().activeBindingId })
+// Provider & Routing IPC handlers moved to src/main/ipc/provider-ipc.ts (registered via registerAllIpcHandlers)
 ipcMain.handle("proxy:info", async () => ({
   url: proxy.getUrl(),
   openaiUrl: proxy.getUrl(),
@@ -1949,6 +2009,14 @@ app.whenReady().then(async () => {
   createWindow()
   createTray()
   await initHub()
+
+  // Register domain-specific IPC handlers (extracted from monolithic index.ts)
+  registerAllIpcHandlers({
+    memory: memory,
+    providerMgr: providerMgr,
+    registerAgentsFromBindings: registerAgentsFromBindings
+  })
+
   if (pendingDeepLink) {
     mainWindow?.webContents.once("did-finish-load", () => {
       mainWindow?.webContents.send("app:deep-link", pendingDeepLink)
@@ -1967,10 +2035,24 @@ app.on("activate", () => {
 
 // --- Execution Tracker IPC ---
 const executionTrackers = new Map<string, ReturnType<typeof createExecutionTracker>>()
+// P2-3: TTL-based auto-cleanup so trackers don't leak if the renderer
+// crashes or never calls execution:report.
+const EXECUTION_TRACKER_TTL_MS = 30 * 60 * 1000 // 30 minutes
+const executionTrackerTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+function clearExecutionTrackerTimer(sessionId: string): void {
+  const t = executionTrackerTimers.get(sessionId)
+  if (t) { clearTimeout(t); executionTrackerTimers.delete(sessionId) }
+}
 
 ipcMain.handle("execution:start", (_event, sessionId: string) => {
   const tracker = createExecutionTracker(sessionId)
   executionTrackers.set(sessionId, tracker)
+  clearExecutionTrackerTimer(sessionId)
+  executionTrackerTimers.set(sessionId, setTimeout(() => {
+    executionTrackers.delete(sessionId)
+    executionTrackerTimers.delete(sessionId)
+  }, EXECUTION_TRACKER_TTL_MS))
   return { sessionId, startTime: tracker.startTime }
 })
 
@@ -2003,6 +2085,7 @@ ipcMain.handle("execution:file-modified", (_event, sessionId: string, filePath: 
 
 ipcMain.handle("execution:report", (_event, sessionId: string) => {
   const tracker = executionTrackers.get(sessionId)
+  clearExecutionTrackerTimer(sessionId)
   if (tracker) {
     const stats = tracker.generateReport()
     tracker.persistReport()
@@ -2012,16 +2095,34 @@ ipcMain.handle("execution:report", (_event, sessionId: string) => {
   return null
 })
 
-app.on("before-quit", async () => {
+// P1-2: before-quit only flags quitting (sync, reliable); async cleanup moved
+// to will-quit which natively supports event.preventDefault() + manual exit.
+app.on("before-quit", () => {
   (app as any).isQuitting = true
-  // Kill any still-running terminal children so we don't orphan shell processes.
-  try { getTerminalRuntime().dispose() } catch { /* non-critical */ }
-  // registry.stopAll 可能卡在 stdio agent 不响应；加超时防止阻塞退出
+})
+
+let willQuitCleanupStarted = false
+app.on("will-quit", (event) => {
+  if (willQuitCleanupStarted) return
+  willQuitCleanupStarted = true
+  event.preventDefault()
+
   const STOP_TIMEOUT_MS = 5000
-  await Promise.race([
-    registry.stopAll(),
-    new Promise<void>(resolve => setTimeout(resolve, STOP_TIMEOUT_MS))
-  ]).catch(() => {})
-  hub?.stop()
-  proxy.stop()
+  const cleanup = async (): Promise<void> => {
+    // Kill any still-running terminal children so we don't orphan shell processes.
+    try { getTerminalRuntime().dispose() } catch { /* non-critical */ }
+    // P2-3: Clear all execution tracker timers and entries.
+    for (const t of executionTrackerTimers.values()) clearTimeout(t)
+    executionTrackerTimers.clear()
+    executionTrackers.clear()
+    // registry.stopAll 可能卡在 stdio agent 不响应；加超时防止阻塞退出
+    await Promise.race([
+      registry.stopAll().catch(() => {}),
+      new Promise<void>(resolve => setTimeout(resolve, STOP_TIMEOUT_MS))
+    ])
+    try { hub?.stop() } catch { /* noop */ }
+    try { proxy.stop() } catch { /* noop */ }
+  }
+
+  cleanup().finally(() => app.exit(0))
 })
