@@ -163,6 +163,9 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
         this.consumeActivityLine(this.lineBuf)
         this.lineBuf = ''
       }
+      // P0: Save structured exit code and full stderr for diagnostics
+      this.exitCode = code
+      this.lastStderr = this.decodeStderr()
       const failed = code !== 0 && code !== null
       // 关键顺序：失败时必须先标 error 再清 proc。否则 dispatcher 的 poll 会在
       // procGone（!proc）窗口里看到 status='idle'，误判为正常退出而 resolveP()，
@@ -170,7 +173,8 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
       this.status = failed ? 'error' : 'idle'
       this.proc = null
       if (failed) {
-        const detail = this.decodeStderr().trim().slice(-500)
+        const detail = this.lastStderr.trim().slice(-500)
+        log.error(`[${this.name}] exited with code ${code}${detail ? ': ' + detail : ''}`)
         this.handleError(new Error(this.formatExitError(code, detail)))
       }
     })
@@ -224,7 +228,14 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
   }
 
   protected formatExitError(code: number | null, detail: string): string {
-    return this.name + ' 退出码 ' + code + (detail ? '：' + detail : '')
+    // Provide structured, diagnostic-friendly error message for exit codes
+    const base = this.name + ' 退出码 ' + code
+    if (!detail) return base
+    // Extract common error patterns from stderr for better readability
+    const lines = detail.split('\n').filter(l => l.trim())
+    // Show last few meaningful lines (avoid repetitive/empty content)
+    const summary = lines.slice(-3).join(' | ')
+    return base + '：' + summary
   }
 
   supportsModelOverride(): boolean {

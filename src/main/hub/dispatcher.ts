@@ -346,7 +346,7 @@ export class Dispatcher extends EventEmitter {
       task.status = e === AGENT_CANCELLED || e?.code === "AGENT_CANCELLED" ? "cancelled" : "failed"
       task.error = err
       task.errors.set(agentId, err)
-      this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId: provider.id, modelId: model.id, error: err, code: e?.code })
+      this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId: provider.id, modelId: model.id, error: err, code: e?.code, durationMs: Date.now() - start })
     }
     this.streamMetaByTask.delete(task.id)
     return task
@@ -582,7 +582,7 @@ export class Dispatcher extends EventEmitter {
     } catch (e: any) {
       if (e === AGENT_CANCELLED || e?.code === "AGENT_CANCELLED") return { content, error: "已暂停该 Agent。" }
       task.errors.set(agentId, e.message)
-      this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId: effectiveResolved.provider.id, modelId: effectiveResolved.model.id, error: e.message, code: e?.code })
+      this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId: effectiveResolved.provider.id, modelId: effectiveResolved.model.id, error: e.message, code: e?.code, durationMs: Date.now() - start })
       return { content, error: e.message }
     } finally {
       this.registry.setStatus(agentId, "idle")
@@ -683,7 +683,7 @@ export class Dispatcher extends EventEmitter {
       tracker.persistReport()
       if (res.error) {
         task.errors.set(agentId, res.error)
-        this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId, modelId, error: res.error })
+        this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId, modelId, error: res.error, durationMs: Date.now() - start })
         return { content: res.content || "", error: res.error }
       }
       task.results.set(agentId, res.content)
@@ -692,7 +692,7 @@ export class Dispatcher extends EventEmitter {
       return { content: res.content }
     } catch (e: any) {
       task.errors.set(agentId, e.message)
-      this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId, modelId, error: e.message, code: e?.code })
+      this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId, modelId, error: e.message, code: e?.code, durationMs: Date.now() - start })
       return { content: "", error: e.message }
     } finally {
       this.registry.setStatus(agentId, "idle")
@@ -960,8 +960,12 @@ export class Dispatcher extends EventEmitter {
             // 进程退出但 adapter 报告 error（非零退出码）→ 必须 reject，
             // 否则竞态会让 poll 在 onErr 之前 resolveP() 吞掉退出码错误。
             if (procGone && adapter.status === 'error') {
-              // stderr 细节已由 formatExitError 写入 adapter 内部；这里用已收集 stderr 兜底
-              rejectP(new Error(`${agentId} 进程异常退出（status=error）。若已显示退出码请以此为准。${content ? '（已收集部分输出）' : ''}`))
+              // Include structured exit code and stderr for better diagnostics
+              const code = adapter.exitCode
+              const detail = adapter.lastStderr ? adapter.lastStderr.trim().slice(-300) : ''
+              const exitInfo = code !== null ? ` (exit code: ${code})` : ''
+              const errMsg = `${agentId} 进程异常退出${exitInfo}${detail ? '：' + detail : ''}${content ? '（已收集部分输出）' : ''}`
+              rejectP(Object.assign(new Error(errMsg), { exitCode: code }))
               return
             }
             resolveP()  // procGone(正常) / quietDone / cancelled → 用已收集内容完成
@@ -975,7 +979,21 @@ export class Dispatcher extends EventEmitter {
     } catch (e: any) {
       if (e === AGENT_CANCELLED || e?.code === "AGENT_CANCELLED") return { content: "", error: "已暂停该 Agent。" }
       task.errors.set(agentId, e.message)
-      this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId, modelId, error: e.message, code: e?.code })
+      // Include structured exit code from adapter (if available) for better diagnostics
+      const exitCode = adapter.exitCode ?? null
+      const fullStderr = adapter.lastStderr || undefined
+      this.emit("stream", {
+        kind: "error",
+        taskId: task.id,
+        agentId,
+        providerId,
+        modelId,
+        error: e.message,
+        code: e?.code,
+        exitCode,
+        fullStderr,
+        durationMs: Date.now() - start
+      })
       return { content, error: e.message }
     } finally {
       try { await adapter.stop() } catch { /* noop */ }
@@ -1032,7 +1050,7 @@ export class Dispatcher extends EventEmitter {
       if (stopReason === "refusal" && !content) {
         const err = "ACP agent 拒绝了本次请求（refusal）"
         task.errors.set(agentId, err)
-        this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId, modelId, error: err })
+        this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId, modelId, error: err, durationMs: Date.now() - start })
         return { content: "", error: err }
       }
       task.results.set(agentId, content)
@@ -1042,7 +1060,7 @@ export class Dispatcher extends EventEmitter {
       if (e === AGENT_CANCELLED || e?.code === "AGENT_CANCELLED") return { content, error: "已暂停该 Agent。" }
       const err = e?.message || String(e)
       task.errors.set(agentId, err)
-      this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId, modelId, error: err, code: e?.code })
+      this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId, modelId, error: err, code: e?.code, durationMs: Date.now() - start })
       return { content, error: err }
     } finally {
       clearInterval(cancelPoll)

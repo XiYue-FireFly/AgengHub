@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { buildCustomScheduleTemplate, customScheduleHasRunnableSteps, sanitizeCustomSchedule } from "../customSchedule"
+import { buildCustomScheduleTemplate, customScheduleHasRunnableSteps, normalizeStoredScheduleOverrides, sanitizeCustomSchedule } from "../customSchedule"
 
 const baseSchedule: SchedulePreview = {
   preset: "custom",
@@ -37,5 +37,21 @@ describe("custom schedule helpers", () => {
 
     expect(sanitized.steps.map(step => step.agentId)).toEqual(["auto", "auto"])
     expect(customScheduleHasRunnableSteps(sanitized)).toBe(false)
+  })
+
+  it("loads persisted schedule overrides for every non-legacy preset", () => {
+    const overrides = normalizeStoredScheduleOverrides({
+      "lead-workers": { ...baseSchedule, preset: "lead-workers" },
+      broadcast: { ...baseSchedule, preset: "broadcast" },
+      custom: baseSchedule,
+      "firefly-custom": { ...baseSchedule, preset: "firefly-custom" },
+      unknown: { ...baseSchedule, preset: "unknown" }
+    })
+
+    expect(overrides["lead-workers"]?.preset).toBe("lead-workers")
+    expect(overrides.broadcast?.preset).toBe("broadcast")
+    expect(overrides.custom).toBeUndefined()
+    expect(overrides["firefly-custom"]).toBeUndefined()
+    expect((overrides as any).unknown).toBeUndefined()
   })
 })

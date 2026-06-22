@@ -14,10 +14,8 @@ export function RunTimeline({
   schedules,
   mode,
   setMode,
-  customSchedule,
-  setCustomSchedule,
-  smartSchedule,
-  setSmartSchedule,
+  currentSchedule,
+  setScheduleForMode,
   openSetup,
   onClose,
   terminalRuns,
@@ -30,17 +28,14 @@ export function RunTimeline({
   schedules: SchedulePreview[]
   mode: DispatchPreset
   setMode: (mode: DispatchPreset) => void
-  customSchedule: SchedulePreview
-  setCustomSchedule: (schedule: SchedulePreview) => void
-  smartSchedule: SchedulePreview
-  setSmartSchedule: (schedule: SchedulePreview) => void
+  currentSchedule?: SchedulePreview
+  setScheduleForMode: (preset: DispatchPreset, schedule: SchedulePreview) => void
   openSetup: (tab?: SetupTab | 'appearance') => void
   onClose: () => void
   terminalRuns?: TerminalRun[]
   setTerminalRuns?: (runs: TerminalRun[]) => void
 }) {
-  const schedule = mode === 'custom' ? customSchedule : mode === 'firefly-custom' ? smartSchedule : schedules.find(s => s.preset === mode)
-  const editableSchedule = mode === 'custom' || mode === 'firefly-custom'
+  const schedule = currentSchedule || schedules.find(s => s.preset === mode)
   const timelineEvents = events.filter(event => event.kind !== 'memory:candidate')
   const recent = [...timelineEvents].slice(-14).reverse()
   const [detecting, setDetecting] = React.useState(false)
@@ -128,23 +123,14 @@ export function RunTimeline({
             </select>
           </div>
           <p>{scheduleDescription(schedule, mode)}</p>
-          {editableSchedule
-            ? <CustomScheduleEditor
-                schedule={mode === 'firefly-custom' ? smartSchedule : customSchedule}
-                setSchedule={mode === 'firefly-custom' ? setSmartSchedule : setCustomSchedule}
-                localAgents={localAgents}
-                lockedPreset={mode === 'firefly-custom' ? 'firefly-custom' : 'custom'}
-              />
-            : schedule?.steps.map((step, index) => (
-              <div key={step.id} className="wb-schedule-step">
-                <em>{index + 1}</em>
-                {AGENT_META[step.agentId] ? <AgentMark id={step.agentId} size={20} radius={5} /> : <Icon d={IC.broadcast} size={15} />}
-                <span>
-                  {localizedStepLabel(step)}
-                  <small>{roleLabel(step.role)}{dependencyLabel(step.dependsOn?.length || 0)}</small>
-                </span>
-              </div>
-            ))}
+          {schedule && (
+            <CustomScheduleEditor
+              schedule={schedule}
+              setSchedule={next => setScheduleForMode(mode, next)}
+              localAgents={localAgents}
+              lockedPreset={mode}
+            />
+          )}
         </div>
       </section>
 
@@ -307,6 +293,7 @@ function CustomScheduleEditor({
             <em>{index + 1}</em>
             {AGENT_META[step.agentId] ? <AgentMark id={step.agentId} size={22} radius={6} /> : <Icon d={IC.broadcast} size={15} />}
             <input value={step.label} onChange={event => updateStep(step.id, { label: event.target.value })} />
+            <small>{roleLabel(step.role)}{dependencyLabel(step.dependsOn?.length || 0)}</small>
             <button onClick={() => removeStep(step.id)} disabled={schedule.steps.length <= 1} title={tr('删除步骤', 'Delete step')}>
               <Icon d={IC.trash} size={13} />
             </button>

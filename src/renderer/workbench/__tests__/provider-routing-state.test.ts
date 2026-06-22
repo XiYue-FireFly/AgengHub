@@ -31,13 +31,28 @@ describe("Workbench provider/local routing state", () => {
     expect(source).toContain("const pickerTitle = pickerAvailable")
   })
 
-  it("blocks smart five-role scheduling before dispatch when no local agent is usable", () => {
+  it("blocks editable local-agent scheduling before dispatch when no local agent is usable", () => {
     const source = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
 
     expect(source).toContain("const usableLocalAgents = localAgentOptions(localAgents)")
-    expect(source).toContain("nextMode === 'firefly-custom'")
+    expect(source).toContain("dispatchScheduleForMode(nextMode)")
+    expect(source).toContain("safeCustomSchedule")
     expect(source).toContain("usableLocalAgents.length === 0")
     expect(source).toContain("智能/自定义调度需要至少一个可用本地 Agent")
+  })
+
+  it("persists and dispatches editable schedules for non-custom presets", () => {
+    const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const timeline = readFileSync(join(process.cwd(), "src/renderer/workbench/RunTimeline.tsx"), "utf8")
+
+    expect(layout).toContain("SCHEDULE_OVERRIDES_STORE_KEY")
+    expect(layout).toContain("normalizeStoredScheduleOverrides")
+    expect(layout).toContain("setScheduleForMode")
+    expect(layout).toContain("scheduleOverrides[preset]")
+    expect(layout).toContain("dispatchScheduleForMode(nextMode)")
+    expect(timeline).toContain("currentSchedule")
+    expect(timeline).toContain("setScheduleForMode(mode, next)")
+    expect(timeline).not.toContain("editableSchedule = mode === 'custom'")
   })
 
   it("clears direct routing selections when switching to a schedule", () => {

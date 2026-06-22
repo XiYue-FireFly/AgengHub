@@ -134,6 +134,26 @@ describe("ProviderManager.fetchModels", () => {
     ])
   })
 
+  it("continues to next candidate when first returns 200 with empty model list", async () => {
+    const { ProviderManager } = await import("../manager")
+    const manager = new ProviderManager()
+    manager.setProviderApiKey("openai", "key")
+    let callCount = 0
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      callCount++
+      if (callCount === 1) {
+        return { status: 200, json: async () => ({ data: [] }) }
+      }
+      return { status: 200, json: async () => ({ data: [{ id: "fallback-model" }] }) }
+    }))
+
+    const result = await manager.fetchModels("openai")
+
+    expect(result.ok).toBe(true)
+    expect(callCount).toBeGreaterThan(1)
+    expect(manager.getProvider("openai")!.models.some(m => m.id === "fallback-model")).toBe(true)
+  })
+
   it("keeps current Claude provider in its home index when reordering other providers", () => {
     expect(buildClaudeProviderReorderIds([
       { id: "a" },

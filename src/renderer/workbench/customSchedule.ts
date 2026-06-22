@@ -1,5 +1,16 @@
 export type CustomScheduleTemplateKind = 'five' | 'parallel' | 'executor'
 
+export const CUSTOMIZABLE_SCHEDULE_PRESETS: DispatchPreset[] = [
+  'auto',
+  'broadcast',
+  'chain',
+  'orchestrate',
+  'lead-workers',
+  'parallel-review',
+  'firefly-custom',
+  'custom'
+]
+
 const CORE_AGENT_PREFERENCES = ['claude', 'codex', 'minimax-code']
 const EXECUTOR_PREFERENCES = ['codex', 'minimax-code', 'claude']
 
@@ -81,6 +92,18 @@ export function isStoredSchedule(value: unknown, preset?: DispatchPreset): value
   const item = value as SchedulePreview
   if (preset && item.preset !== preset) return false
   return Array.isArray(item.steps) && item.steps.every(step => !!step && typeof step.id === 'string' && typeof step.agentId === 'string')
+}
+
+export function normalizeStoredScheduleOverrides(value: unknown): Partial<Record<DispatchPreset, SchedulePreview>> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const record = value as Partial<Record<DispatchPreset, unknown>>
+  const next: Partial<Record<DispatchPreset, SchedulePreview>> = {}
+  for (const preset of CUSTOMIZABLE_SCHEDULE_PRESETS) {
+    if (preset === 'custom' || preset === 'firefly-custom') continue
+    const schedule = record[preset]
+    if (isStoredSchedule(schedule, preset)) next[preset] = schedule
+  }
+  return next
 }
 
 export function buildCustomScheduleTemplate(

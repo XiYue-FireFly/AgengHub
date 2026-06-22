@@ -22,7 +22,7 @@ import { ErrorBoundary } from '../ErrorBoundary'
 import { styledConfirm } from '../lib/confirm'
 import { GitBranchControl } from './GitBranchControl'
 import { localAgentLabel, localAgentOptions } from './localAgentOptions'
-import { customScheduleHasRunnableSteps, defaultCustomSchedule, defaultSmartFiveRoleSchedule, isStoredSchedule, sanitizeCustomSchedule } from './customSchedule'
+import { customScheduleHasRunnableSteps, defaultCustomSchedule, defaultSmartFiveRoleSchedule, isStoredSchedule, normalizeStoredScheduleOverrides, sanitizeCustomSchedule } from './customSchedule'
 import { defaultDialogPath, readAppearanceLocal, rememberDialogPath } from '../appearance'
 import {
   findKeyboardShortcutCommand,
@@ -46,6 +46,7 @@ const INSPECTOR_WIDTH_STORE_KEY = 'agenthub.workbench.inspectorWidth.v1'
 const LAST_VIEW_STORE_KEY = 'agenthub.workbench.lastView.v1'
 const CUSTOM_SCHEDULE_STORE_KEY = 'agenthub.workbench.customSchedule.v1'
 const SMART_SCHEDULE_STORE_KEY = 'agenthub.workbench.smartFiveRoleSchedule.v1'
+const SCHEDULE_OVERRIDES_STORE_KEY = 'agenthub.workbench.scheduleOverrides.v1'
 const ANNOUNCEMENT_STORE_KEY = 'agenthub.workbench.announcement.v0.5.4'
 const DEFAULT_INSPECTOR_WIDTH = 460
 const MIN_INSPECTOR_WIDTH = 340
@@ -111,6 +112,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const [threadTodos, setThreadTodosState] = useState<ThreadTodo[]>([])
   const [customSchedule, setCustomScheduleState] = useState<SchedulePreview>(() => defaultCustomSchedule())
   const [smartSchedule, setSmartScheduleState] = useState<SchedulePreview>(() => defaultSmartFiveRoleSchedule())
+  const [scheduleOverrides, setScheduleOverridesState] = useState<Partial<Record<DispatchPreset, SchedulePreview>>>({})
   const [localAgents, setLocalAgents] = useState<LocalAgentStatus[]>([])
   const [sending, setSending] = useState(false)
   const [search, setSearch] = useState('')
@@ -157,6 +159,23 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     setSmartScheduleState(next)
     window.electronAPI.store.set(SMART_SCHEDULE_STORE_KEY, next).catch(() => {})
   }, [])
+
+  const setScheduleForMode = useCallback((preset: DispatchPreset, schedule: SchedulePreview) => {
+    const next = { ...schedule, preset }
+    if (preset === 'custom') {
+      setCustomSchedule(next)
+      return
+    }
+    if (preset === 'firefly-custom') {
+      setSmartSchedule(next)
+      return
+    }
+    setScheduleOverridesState(prev => {
+      const updated = { ...prev, [preset]: next }
+      window.electronAPI.store.set(SCHEDULE_OVERRIDES_STORE_KEY, updated).catch(() => {})
+      return updated
+    })
+  }, [setCustomSchedule, setSmartSchedule])
 
   const activeThreadId = snapshot.activeThreadId
 
@@ -296,6 +315,9 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         if (isStoredSchedule(value, 'firefly-custom')) setSmartScheduleState(value)
       })
       .catch(() => {})
+    window.electronAPI.store.get(SCHEDULE_OVERRIDES_STORE_KEY)
+      .then(value => setScheduleOverridesState(normalizeStoredScheduleOverrides(value)))
+      .catch(() => {})
     window.electronAPI.store.get(INSPECTOR_WIDTH_STORE_KEY)
       .then(value => {
         if (typeof value === 'number' && Number.isFinite(value)) {
@@ -378,6 +400,18 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     setSmartScheduleState(next)
     window.electronAPI.store.set(SMART_SCHEDULE_STORE_KEY, next).catch(() => {})
   }, [localAgents, smartSchedule])
+
+  const scheduleForMode = useCallback((preset: DispatchPreset): SchedulePreview | undefined => {
+    if (preset === 'custom') return customSchedule
+    if (preset === 'firefly-custom') return smartSchedule
+    return scheduleOverrides[preset] || schedules.find(schedule => schedule.preset === preset)
+  }, [customSchedule, smartSchedule, scheduleOverrides, schedules])
+
+  const dispatchScheduleForMode = useCallback((preset: DispatchPreset): SchedulePreview | undefined => {
+    if (preset === 'custom') return customSchedule
+    if (preset === 'firefly-custom') return smartSchedule
+    return scheduleOverrides[preset]
+  }, [customSchedule, smartSchedule, scheduleOverrides])
 
   const openSetup = (tab: SettingsTabKey = 'providers') => {
     setSettingsTab(tab)
@@ -680,16 +714,14 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     const nextMode = selectedProviderDirect ? 'auto' : (overrides.mode || mode)
     const rawCustomSchedule = selectedProviderDirect
       ? undefined
-      : (overrides.customSchedule || (!nextTargetAgent && (nextMode === 'custom' ? customSchedule : nextMode === 'firefly-custom' ? smartSchedule : undefined)))
+      : (overrides.customSchedule || (!nextTargetAgent ? dispatchScheduleForMode(nextMode) : undefined))
     const usableLocalAgents = localAgentOptions(localAgents)
     const safeCustomSchedule = rawCustomSchedule ? sanitizeCustomSchedule(rawCustomSchedule, usableLocalAgents) : undefined
-    const scheduleUnavailable = nextMode === 'custom'
-      ? safeCustomSchedule && !customScheduleHasRunnableSteps(safeCustomSchedule)
-      : nextMode === 'firefly-custom'
-      ? safeCustomSchedule
-        ? !customScheduleHasRunnableSteps(safeCustomSchedule)
-        : usableLocalAgents.length === 0
-      : false
+    const scheduleUnavailable = safeCustomSchedule
+      ? !customScheduleHasRunnableSteps(safeCustomSchedule)
+      : nextMode === 'custom' || nextMode === 'firefly-custom'
+        ? usableLocalAgents.length === 0
+        : false
     if (scheduleUnavailable && !nextTargetAgent && !selectedProviderDirect) {
       setSendError(tr('智能/自定义调度需要至少一个可用本地 Agent。请先在设置 > 路由里配置 CLI。', 'Smart and custom schedules need at least one usable local agent. Configure a CLI in Settings > Routing first.'))
       return
@@ -1206,10 +1238,8 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
                   schedules={schedules}
                   mode={mode}
                   setMode={setMode}
-                  customSchedule={customSchedule}
-                  setCustomSchedule={setCustomSchedule}
-                  smartSchedule={smartSchedule}
-                  setSmartSchedule={setSmartSchedule}
+                  currentSchedule={scheduleForMode(mode)}
+                  setScheduleForMode={setScheduleForMode}
                   openSetup={openSetup}
                   onClose={() => setRightPanel(null)}
                   terminalRuns={terminalRuns}

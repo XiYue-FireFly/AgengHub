@@ -3043,6 +3043,74 @@ button, input, textarea, select { letter-spacing: 0; }
   background: rgba(35, 43, 58, 0.18);
   backdrop-filter: blur(8px);
 }
+.wb-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(42, 50, 64, 0.28);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.wb-confirm-container {
+  width: min(440px, calc(100vw - 48px));
+  overflow: hidden;
+  border: 1px solid var(--wb-line);
+  border-radius: 16px;
+  background: var(--wb-panel);
+  color: var(--wb-text);
+  box-shadow: 0 26px 80px rgba(23, 31, 48, 0.22);
+}
+.wb-confirm-title {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--wb-line-soft);
+}
+.wb-confirm-title strong {
+  font-size: 15px;
+  color: var(--wb-text);
+}
+.wb-confirm-message {
+  padding: 18px 20px 16px;
+  color: var(--wb-text);
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+.wb-confirm-actions {
+  padding: 12px 16px 16px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  border-top: 1px solid var(--wb-line-soft);
+}
+.wb-confirm-container .ah-btn {
+  min-width: 76px;
+  height: 34px;
+  border-color: var(--wb-line);
+  background: color-mix(in srgb, var(--wb-panel) 88%, var(--wb-bg));
+  color: var(--wb-text);
+  box-shadow: none;
+}
+.wb-confirm-container .ah-btn:hover {
+  background: var(--wb-line-soft);
+  border-color: var(--wb-line);
+}
+.wb-confirm-container .ah-btn.primary {
+  background: var(--wb-accent);
+  border-color: var(--wb-accent);
+  color: #fff;
+}
+.wb-confirm-container .ah-btn.danger {
+  background: color-mix(in srgb, var(--wb-red) 10%, var(--wb-panel));
+  border-color: color-mix(in srgb, var(--wb-red) 34%, var(--wb-line));
+  color: var(--wb-red);
+}
+.wb-confirm-container .ah-btn.danger:hover {
+  background: color-mix(in srgb, var(--wb-red) 16%, var(--wb-panel));
+}
 .wb-project-modal {
   width: min(520px, calc(100vw - 36px));
   background: #fff;
@@ -8483,6 +8551,7 @@ button, input, textarea, select { letter-spacing: 0; }
   gap: 10px;
   flex: none;
   padding-bottom: 3px;
+  min-width: 0;
 }
 .wb-composer-input-actions .wb-icon-button,
 .wb-composer-input-actions .wb-send {
@@ -8514,6 +8583,56 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-composer-model-menu-host {
   position: relative;
   flex: none;
+}
+.wb-prompt-enhancer {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+.wb-prompt-enhancer-button {
+  height: 32px;
+  min-width: 70px;
+  max-width: 82px;
+  border: 1px solid #dce6f4;
+  border-radius: 999px;
+  background: #fff;
+  color: #52658d;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.wb-prompt-enhancer-button:hover:not(:disabled) {
+  background: #f4f7fc;
+  border-color: #cbd8ea;
+  color: var(--wb-accent);
+}
+.wb-prompt-enhancer-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.wb-prompt-enhancer-error {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: max-content;
+  max-width: min(260px, calc(100vw - 64px));
+  border: 1px solid color-mix(in srgb, var(--wb-red) 30%, var(--wb-line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--wb-panel) 94%, var(--wb-red));
+  color: var(--wb-red);
+  box-shadow: 0 14px 36px rgba(31, 44, 72, 0.14);
+  padding: 7px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: normal;
+  z-index: 3300;
 }
 .wb-agent-picker-trigger {
   height: 34px;
@@ -9781,6 +9900,7 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-empty-side button,
 .wb-wide-button,
 .wb-composer select,
+.wb-prompt-enhancer-button,
 .wb-reasoning-trigger,
 .wb-model-footer,
 .wb-model-footer button,
@@ -9899,6 +10019,7 @@ button, input, textarea, select { letter-spacing: 0; }
 
 .wb-composer-input-actions .wb-icon-button,
 .wb-composer-input-actions .wb-send,
+.wb-prompt-enhancer-button,
 .wb-agent-picker-trigger,
 .wb-model-picker-trigger-minimal {
   color: var(--wb-muted);
@@ -9906,6 +10027,7 @@ button, input, textarea, select { letter-spacing: 0; }
 
 .wb-composer-input-actions .wb-icon-button:hover,
 .wb-composer-input-actions .wb-send:hover:not(:disabled),
+.wb-prompt-enhancer-button:hover:not(:disabled),
 .wb-agent-picker-trigger:hover:not(:disabled),
 .wb-model-picker-trigger-minimal:hover:not(:disabled),
 .wb-reasoning-trigger:hover {
@@ -9964,6 +10086,11 @@ button, input, textarea, select { letter-spacing: 0; }
 :root[data-theme="dark"] .wb-add-section code {
   border-color: var(--wb-line);
   background: color-mix(in srgb, var(--wb-panel) 88%, var(--wb-bg));
+}
+
+:root[data-theme="dark"] .wb-prompt-enhancer-error {
+  background: color-mix(in srgb, var(--wb-panel) 92%, var(--wb-red));
+  box-shadow: 0 18px 42px color-mix(in srgb, #000 34%, transparent);
 }
 
 .wb-git-workbench-panel,
