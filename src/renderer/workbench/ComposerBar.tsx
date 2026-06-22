@@ -6,6 +6,7 @@ import type { AgentUIStatus, BindingDef, ProviderDef } from '../glass/meta'
 import { WorkspaceItem } from './types'
 import { localAgentLabel, localAgentOptions } from './localAgentOptions'
 import { formatContextWindow } from './contextCapacity'
+import { PromptEnhancer } from './PromptEnhancer'
 import { defaultDialogPath, rememberDialogPath } from '../appearance'
 
 type ComposerThinkingConfig = { mode: 'off' | 'auto' | 'enabled'; level: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; collapseInUI?: boolean; budgetTokens?: number }
@@ -20,6 +21,21 @@ type ComposerQuickCard =
   | { id: string; kind: 'quick-role'; role: 'reviewer' | 'executor' | 'gatekeeper'; title: string; detail: string; icon: React.ReactNode; tone: string }
   | { id: string; kind: 'workspace'; title: string; detail: string; icon: React.ReactNode; tone: string }
   | { id: string; kind: 'insert'; token: string; title: string; detail: string; icon: React.ReactNode; tone: string }
+
+type ComposerAddItem = {
+  id: string
+  section: 'add' | 'plugins'
+  kind: 'attachments' | 'goal' | 'schedule' | 'workspace' | 'plugin-skill' | 'plugin-prompt' | 'plugin-command'
+  title: string
+  detail: string
+  icon: React.ReactNode
+  token?: string
+  pluginId?: string
+  pluginName?: string
+  path?: string
+  body?: string
+}
+type AddPaletteMatch = { query: string; start: number; end: number }
 
 export function ComposerBar({
   mode,
@@ -83,6 +99,9 @@ export function ComposerBar({
   const [commands, setCommands] = useState<WorkbenchCommand[]>([])
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [activeCommandIndex, setActiveCommandIndex] = useState(0)
+  const [addPaletteOpen, setAddPaletteOpen] = useState(false)
+  const [activeAddIndex, setActiveAddIndex] = useState(0)
+  const [pluginAddItems, setPluginAddItems] = useState<ComposerAddItem[]>([])
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [modelQuery, setModelQuery] = useState('')
   const [activeProviderId, setActiveProviderId] = useState<string | null>(null)
@@ -91,6 +110,8 @@ export function ComposerBar({
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('full')
   const [quickRole, setQuickRole] = useState<'none' | 'reviewer' | 'executor' | 'gatekeeper'>('none')
   const [quickCardsCollapsed, setQuickCardsCollapsed] = useState(false)
+  const [queue, setQueue] = useState<Array<{ text: string; attachments: WorkbenchAttachment[]; overrides?: any }>>([])
+  const [cursorIndex, setCursorIndex] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const modelPickerRef = useRef<HTMLDivElement | null>(null)
   const workspacePickerRef = useRef<HTMLDivElement | null>(null)
@@ -144,6 +165,21 @@ export function ComposerBar({
   }, [])
 
   useEffect(() => {
+    let alive = true
+    const loadPlugins = async () => {
+      try {
+        const plugins = await window.electronAPI.plugins.scan(workspace?.rootPath)
+        const contributions = await window.electronAPI.plugins.contributions(plugins)
+        if (alive) setPluginAddItems(buildPluginAddItems(plugins, contributions))
+      } catch {
+        if (alive) setPluginAddItems([])
+      }
+    }
+    loadPlugins().catch(() => {})
+    return () => { alive = false }
+  }, [workspace?.rootPath])
+
+  useEffect(() => {
     if (!externalAttachments?.length) return
     addAttachments(externalAttachments)
     onExternalAttachmentsConsumed?.()
@@ -182,8 +218,17 @@ export function ComposerBar({
     return () => document.removeEventListener('pointerdown', onPointerDown)
   }, [approvalPickerOpen])
 
-  const slashQuery = slashCommandQuery(text)
+  const slashQuery = slashCommandQuery(text, commands)
   const commandMatches = slashQuery !== null ? rankCommandsForPalette(filterCommands(commands, slashQuery), slashQuery).slice(0, 12) : []
+  const addMention = addPaletteQuery(text, commands, cursorIndex)
+  const addQuery = addMention?.query ?? null
+  const addItems = useMemo(() => {
+    const base = buildBaseAddItems({
+      hasWorkspace: !!workspaceId,
+      hasAgents: readyAgentIds.length > 0
+    })
+    return filterComposerAddItems([...base, ...pluginAddItems], addQuery || '').slice(0, 12)
+  }, [addQuery, pluginAddItems, readyAgentIds.length, workspaceId])
   const quickCards = useMemo(() => buildComposerQuickCards({
     mode,
     readyAgentIds,
@@ -196,9 +241,37 @@ export function ComposerBar({
     setActiveCommandIndex(0)
   }, [slashQuery])
 
+  useEffect(() => {
+    setAddPaletteOpen(addQuery !== null)
+    setActiveAddIndex(0)
+  }, [addQuery])
+
+  // Process queue when sending becomes false
+  useEffect(() => {
+    if (sending || queue.length === 0) return
+    const next = queue[0]
+    setQueue(prev => prev.slice(1))
+    setText(next.text)
+    setAttachments(next.attachments)
+    // Defer to next tick so state updates propagate
+    setTimeout(() => {
+      if (next.text.trim()) {
+        onSend(next.text.trim(), next.attachments, next.overrides)
+      }
+    }, 50)
+  }, [sending, queue])
+
   const send = async () => {
     const prompt = text.trim() || (attachments.length ? tr('请分析我附加的内容。', 'Please analyze the attached content.') : '')
-    if (!prompt || sending) return
+    if (!prompt) return
+    // If currently sending, queue the message
+    if (sending) {
+      setQueue(prev => [...prev, { text: prompt, attachments: [...attachments], overrides: quickRoleSendOverrides(quickRole === 'none' ? undefined : quickRoleSchedule(quickRole, readyAgentIds)) }])
+      setText('')
+      setAttachments([])
+      setQuickRole('none')
+      return
+    }
     if (shouldRunComposerCommand(prompt, commands) && onRunCommand) {
       const handled = await onRunCommand({ text: prompt })
       if (handled) {
@@ -310,10 +383,32 @@ export function ComposerBar({
     addAttachments(await Promise.all(files.map(fileToAttachment)))
   }
 
+  const syncCursor = () => {
+    const next = textareaRef.current?.selectionStart
+    setCursorIndex(typeof next === 'number' ? next : text.length)
+  }
+
   const insertToken = (token: string) => {
     setText(current => {
       const prefix = current.trim() ? `${current.trimEnd()} ` : ''
       return `${prefix}${token} `
+    })
+  }
+
+  const openAddPalette = () => {
+    setText(current => {
+      const prefix = current.trim() ? `${current.trimEnd()} ` : ''
+      const next = `${prefix}@`
+      setCursorIndex(next.length)
+      return next
+    })
+    window.requestAnimationFrame(() => {
+      const el = textareaRef.current
+      if (!el) return
+      el.focus()
+      const end = el.value.length
+      el.setSelectionRange(end, end)
+      setCursorIndex(end)
     })
   }
 
@@ -438,6 +533,39 @@ export function ComposerBar({
     }
   }
 
+  const chooseAddItem = async (item: ComposerAddItem) => {
+    setAttachError(null)
+    setAddPaletteOpen(false)
+    if (item.kind === 'attachments') {
+      setText(current => replaceAddToken(current, addMention, ''))
+      await pickAttachments()
+      textareaRef.current?.focus()
+      return
+    }
+    if (item.kind === 'goal') {
+      setText(current => replaceAddToken(current, addMention, '/goal '))
+      textareaRef.current?.focus()
+      return
+    }
+    if (item.kind === 'schedule') {
+      selectScheduleMode('firefly-custom')
+      setText(current => replaceAddToken(current, addMention, ''))
+      textareaRef.current?.focus()
+      return
+    }
+    if (item.kind === 'workspace') {
+      setText(current => replaceAddToken(current, addMention, ''))
+      onCreateProject()
+      return
+    }
+    if (item.kind.startsWith('plugin-')) {
+      const token = item.token || `@plugin-${safeMentionToken(item.title)}`
+      setText(current => replaceAddToken(current, addMention, `${token} `))
+      addAttachments([pluginAddItemToAttachment(item)])
+      textareaRef.current?.focus()
+    }
+  }
+
   return (
     <div
       className={'wb-composer-wrap' + (attachments.length ? ' has-attachments' : '')}
@@ -468,7 +596,13 @@ export function ComposerBar({
           <textarea
             ref={textareaRef}
             value={text}
-            onChange={e => setText(e.target.value)}
+            onChange={e => {
+              setText(e.target.value)
+              setCursorIndex(e.target.selectionStart ?? e.target.value.length)
+            }}
+            onClick={syncCursor}
+            onKeyUp={syncCursor}
+            onSelect={syncCursor}
             onPaste={handlePaste}
             onCompositionStart={() => {
               composingRef.current = true
@@ -479,6 +613,28 @@ export function ComposerBar({
             }}
             onKeyDown={e => {
               if (e.key === 'Enter' && !e.shiftKey && isImeConfirming(e)) return
+              if (addPaletteOpen) {
+                if (e.key === 'ArrowDown' && addItems.length > 0) {
+                  e.preventDefault()
+                  setActiveAddIndex(index => (index + 1) % addItems.length)
+                  return
+                }
+                if (e.key === 'ArrowUp' && addItems.length > 0) {
+                  e.preventDefault()
+                  setActiveAddIndex(index => (index - 1 + addItems.length) % addItems.length)
+                  return
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  setAddPaletteOpen(false)
+                  return
+                }
+                if (e.key === 'Enter' && !e.shiftKey && addItems.length > 0) {
+                  e.preventDefault()
+                  chooseAddItem(addItems[activeAddIndex]).catch(() => {})
+                  return
+                }
+              }
               if (paletteOpen && commandMatches.length > 0) {
                 if (e.key === 'ArrowDown') {
                   e.preventDefault()
@@ -519,6 +675,16 @@ export function ComposerBar({
           />
 
           <div className="wb-composer-input-actions">
+            {/* Context capacity indicator */}
+            {modelSelection && (
+              <ContextCapacityIndicator
+                text={text}
+                attachments={attachments}
+                workspaceId={workspaceId}
+                modelSelection={modelSelection}
+                providers={providers}
+              />
+            )}
             <button className="wb-icon-button" title={tr('添加文件或图片', 'Attach file or image')} disabled={sending} onClick={pickAttachments}>
               <Icon d={IC.plus} size={17} />
             </button>
@@ -645,15 +811,25 @@ export function ComposerBar({
                       </div>
                     </section>
                   )}
-                  {false && (
-                    <div className="wb-agent-model-loading">{tr('正在读取本地模型配置...', 'Reading local model config...')}</div>
-                  )}
+                  {/* Local model config loading placeholder removed */}
                 </div>
               )}
             </div>
+            {!sending && text.trim() && (
+              <PromptEnhancer
+                text={text}
+                onEnhanced={enhanced => setText(enhanced)}
+                disabled={sending}
+              />
+            )}
+            {queue.length > 0 && (
+              <span style={{ fontSize: 11, color: 'var(--color-info)', padding: '2px 6px', borderRadius: 10, background: 'rgba(59,130,246,0.1)' }}>
+                {queue.length} {tr('排队', 'queued')}
+              </span>
+            )}
             {sending
               ? <button className="wb-send stop" onClick={onCancel} title={tr('停止', 'Stop')}><Icon d={IC.stop} size={15} /></button>
-              : <button className="wb-send" disabled={!text.trim() && attachments.length === 0} onClick={send} title={tr('发送', 'Send')}><Icon d={IC.send} size={15} /></button>}
+              : <button className="wb-send" disabled={!text.trim() && attachments.length === 0 && queue.length === 0} onClick={send} title={tr('发送', 'Send')}><Icon d={IC.send} size={15} /></button>}
           </div>
         </div>
 
@@ -674,6 +850,44 @@ export function ComposerBar({
                 </span>
               </button>
             ))}
+          </div>
+        )}
+
+        {addPaletteOpen && (
+          <div className="wb-add-palette" role="listbox" aria-label={tr('Add context or plugin', 'Add context or plugin')}>
+            <div className="wb-add-palette-head">
+              <strong>{tr('Add context', 'Add context')}</strong>
+              <span>{tr('Files, goals, schedules, workspace and plugins', 'Files, goals, schedules, workspace and plugins')}</span>
+            </div>
+            {addItems.length > 0 ? (
+              groupComposerAddItems(addItems).map(group => (
+                <div key={group.section} className="wb-add-section">
+                  <div className="wb-add-section-title">{composerAddSectionLabel(group.section)}</div>
+                  {group.items.map(item => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={addItems[activeAddIndex]?.id === item.id ? 'active' : ''}
+                      onMouseEnter={() => setActiveAddIndex(addItems.findIndex(candidate => candidate.id === item.id))}
+                      onMouseDown={event => event.preventDefault()}
+                      onClick={() => chooseAddItem(item).catch(() => {})}
+                    >
+                      <span className="wb-add-icon"><Icon d={item.icon} size={15} /></span>
+                      <span className="wb-add-copy">
+                        <strong>{item.title}</strong>
+                        <small>{item.detail}</small>
+                      </span>
+                      {item.token ? <code>{item.token}</code> : null}
+                    </button>
+                  ))}
+                </div>
+              ))
+            ) : (
+              <div className="wb-add-palette-empty">
+                <strong>{tr('No matching plugin or context item', 'No matching plugin or context item')}</strong>
+                <span>{tr('Try a different @ query or install plugins in Settings.', 'Try a different @ query or install plugins in Settings.')}</span>
+              </div>
+            )}
           </div>
         )}
 
@@ -765,6 +979,9 @@ export function ComposerBar({
           <button className="wb-command-open-hint" type="button" onClick={() => insertToken('/')} title={tr('输入 / 打开命令', 'Type / to open commands')}>
             {tr('输入 / 打开命令', 'Type / for commands')}
           </button>
+          <button className="wb-command-open-hint" type="button" onClick={openAddPalette} title={tr('Type @ to add plugins', 'Type @ to add plugins')}>
+            {tr('Type @ for plugins', 'Type @ for plugins')}
+          </button>
         </div>
       </div>
     </div>
@@ -811,6 +1028,203 @@ function formatBytes(size: number): string {
   return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
+function buildBaseAddItems(input: { hasWorkspace: boolean; hasAgents: boolean }): ComposerAddItem[] {
+  const items: ComposerAddItem[] = [
+    {
+      id: 'add:attachments',
+      section: 'add',
+      kind: 'attachments',
+      title: tr('Files and folders', 'Files and folders'),
+      detail: tr('Attach local files or images to this turn', 'Attach local files or images to this turn'),
+      icon: IC.file
+    },
+    {
+      id: 'add:goal',
+      section: 'add',
+      kind: 'goal',
+      title: tr('Goal', 'Goal'),
+      detail: tr('Start a structured /goal request', 'Start a structured /goal request'),
+      icon: IC.tasks
+    }
+  ]
+  if (input.hasAgents) {
+    items.push({
+      id: 'add:smart-five-role',
+      section: 'add',
+      kind: 'schedule',
+      title: tr('Smart five-role', 'Smart five-role'),
+      detail: tr('Use router, reviewer, executor, and gatekeeper agents', 'Use router, reviewer, executor, and gatekeeper agents'),
+      icon: IC.brain
+    })
+  }
+  if (!input.hasWorkspace) {
+    items.push({
+      id: 'add:workspace',
+      section: 'add',
+      kind: 'workspace',
+      title: tr('Working folder', 'Working folder'),
+      detail: tr('Bind a project folder before sending', 'Bind a project folder before sending'),
+      icon: IC.folder
+    })
+  }
+  return items
+}
+
+function buildPluginAddItems(plugins: any[], contributions: { commands?: any[]; skills?: any[]; prompts?: any[] }): ComposerAddItem[] {
+  const pluginById = new Map<string, any>()
+  for (const plugin of plugins || []) pluginById.set(plugin.id, plugin)
+  const items: ComposerAddItem[] = []
+  for (const skill of contributions.skills || []) {
+    const plugin = pluginById.get(skill.pluginId)
+    const pluginName = plugin?.manifest?.name || skill.pluginId || 'Plugin'
+    const title = skill.id || 'skill'
+    items.push({
+      id: `plugin-skill:${skill.pluginId}:${skill.id}`,
+      section: 'plugins',
+      kind: 'plugin-skill',
+      title,
+      detail: `${pluginName} - Skill`,
+      icon: IC.brain,
+      token: pluginMentionToken(pluginName, title),
+      pluginId: skill.pluginId,
+      pluginName,
+      path: skill.path,
+      body: skill.content
+    })
+  }
+  for (const prompt of contributions.prompts || []) {
+    const plugin = pluginById.get(prompt.pluginId)
+    const pluginName = plugin?.manifest?.name || prompt.pluginId || 'Plugin'
+    const title = prompt.name || prompt.id || 'prompt'
+    items.push({
+      id: `plugin-prompt:${prompt.pluginId}:${prompt.id}`,
+      section: 'plugins',
+      kind: 'plugin-prompt',
+      title,
+      detail: `${pluginName} - Prompt`,
+      icon: IC.pencil,
+      token: pluginMentionToken(pluginName, prompt.id || title),
+      pluginId: prompt.pluginId,
+      pluginName,
+      body: prompt.body
+    })
+  }
+  for (const command of contributions.commands || []) {
+    const plugin = pluginById.get(command.pluginId)
+    const pluginName = plugin?.manifest?.name || command.pluginId || 'Plugin'
+    const title = command.label || command.id || 'command'
+    items.push({
+      id: `plugin-command:${command.pluginId}:${command.id}`,
+      section: 'plugins',
+      kind: 'plugin-command',
+      title,
+      detail: `${pluginName} - Command`,
+      icon: IC.terminal,
+      token: pluginMentionToken(pluginName, command.id || title),
+      pluginId: command.pluginId,
+      pluginName
+    })
+  }
+  return items.sort((a, b) => a.title.localeCompare(b.title))
+}
+
+function filterComposerAddItems(items: ComposerAddItem[], query: string): ComposerAddItem[] {
+  const q = query.trim().replace(/^@+/, '').toLowerCase()
+  if (!q) return items
+  return items.filter(item => [
+    item.title,
+    item.detail,
+    item.token,
+    item.pluginId,
+    item.pluginName,
+    item.path
+  ].filter(Boolean).join(' ').toLowerCase().includes(q))
+}
+
+function pluginAddItemToAttachment(item: ComposerAddItem): WorkbenchAttachment {
+  return {
+    id: `plugin-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    kind: 'text',
+    name: `Plugin: ${item.title}`,
+    text: pluginAddItemContext(item),
+    createdAt: Date.now()
+  }
+}
+
+function pluginAddItemContext(item: ComposerAddItem): string {
+  const lines = [
+    `[AgentHub Plugin] ${item.title}`,
+    `Type: ${item.kind.replace(/^plugin-/, '')}`,
+    item.pluginName ? `Plugin: ${item.pluginName}` : '',
+    item.pluginId ? `Plugin ID: ${item.pluginId}` : '',
+    item.path ? `Source: ${item.path}` : '',
+    '',
+    'Use this plugin capability for the current user request. Follow its instructions when provided; if the instructions are insufficient, ask a focused clarification instead of inventing missing behavior.',
+    ''
+  ].filter(Boolean)
+  if (item.body?.trim()) {
+    lines.push('Instructions:')
+    lines.push(item.body.trim().slice(0, 24000))
+  } else {
+    lines.push('Instructions: No inline body was available. Use the plugin name, source path, and requested task as routing context.')
+  }
+  return lines.join('\n')
+}
+
+function replaceLeadingAddToken(current: string, replacement: string): string {
+  const match = current.match(/^(\s*)@\S*/)
+  if (!match) {
+    const prefix = current.trim() ? `${current.trimEnd()} ` : ''
+    return `${prefix}${replacement}`.trimStart()
+  }
+  const leading = match[1] || ''
+  const token = replacement.trim()
+  const rest = current.slice(match[0].length).replace(/^\s+/, '')
+  if (!token) return `${leading}${rest}`.trimStart()
+  return `${leading}${token}${rest ? ` ${rest}` : ' '}`.trimStart()
+}
+
+export function replaceAddToken(current: string, match: AddPaletteMatch | null, replacement: string): string {
+  if (!match) return replaceLeadingAddToken(current, replacement)
+  const start = Math.max(0, Math.min(match.start, current.length))
+  const end = Math.max(start, Math.min(match.end, current.length))
+  const before = current.slice(0, start)
+  const after = current.slice(end).replace(/^\s+/, '')
+  const token = replacement.trim()
+  if (!token) return `${before}${after}`.trimStart()
+  const next = `${before}${token}${after ? ` ${after}` : ' '}`
+  return before.trim() ? next : next.trimStart()
+}
+
+function pluginMentionToken(pluginName: string, id: string): string {
+  return `@plugin-${safeMentionToken(pluginName)}-${safeMentionToken(id)}`
+}
+
+function safeMentionToken(value: string): string {
+  return String(value || 'plugin')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || 'plugin'
+}
+
+function groupComposerAddItems(items: ComposerAddItem[]): Array<{ section: ComposerAddItem['section']; items: ComposerAddItem[] }> {
+  const groups: Array<{ section: ComposerAddItem['section']; items: ComposerAddItem[] }> = []
+  for (const item of items) {
+    let group = groups.find(entry => entry.section === item.section)
+    if (!group) {
+      group = { section: item.section, items: [] }
+      groups.push(group)
+    }
+    group.items.push(item)
+  }
+  return groups
+}
+
+function composerAddSectionLabel(section: ComposerAddItem['section']): string {
+  return section === 'plugins' ? tr('Plugins', 'Plugins') : tr('Add', 'Add')
+}
+
 function localAgentRows(agentIds: string[]): PickerAgentRow[] {
   return agentIds.map(agentId => ({
     source: 'local-agent',
@@ -852,6 +1266,52 @@ function providerModelRows(providers: ProviderDef[], onlyProviderId?: string | n
     }
   }
   return rows
+}
+
+function ContextCapacityIndicator({
+  text,
+  attachments,
+  workspaceId: _workspaceId,
+  modelSelection,
+  providers
+}: {
+  text: string
+  attachments: WorkbenchAttachment[]
+  workspaceId: string | null
+  modelSelection: ModelSelection
+  providers: ProviderDef[]
+}) {
+  const [capacity, setCapacity] = useState<{ usedRatio: number; tone: string } | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    const estimate = () => {
+      const provider = providers.find(p => p.id === modelSelection.providerId)
+      const model = provider?.models?.find(m => m.id === modelSelection.modelId)
+      const windowTokens = model?.contextWindow || 128_000
+      // Simple text-based estimation
+      const textTokens = Math.ceil((text.length + attachments.reduce((sum, a) => sum + (a.text?.length || 0), 0)) / 4)
+      const usedRatio = Math.min(1, textTokens / windowTokens)
+      const tone = usedRatio > 0.85 ? 'danger' : usedRatio > 0.7 ? 'warn' : 'ok'
+      if (alive) setCapacity({ usedRatio, tone })
+    }
+    estimate()
+    return () => { alive = false }
+  }, [text, attachments, modelSelection, providers])
+
+  if (!capacity) return null
+
+  const pct = Math.round(capacity.usedRatio * 100)
+  const color = capacity.tone === 'danger' ? 'var(--color-error)' : capacity.tone === 'warn' ? 'var(--color-warning)' : 'var(--tx-3)'
+
+  return (
+    <span
+      style={{ fontSize: 11, color, padding: '2px 6px', borderRadius: 4, background: 'var(--bg-input)' }}
+      title={tr(`上下文占用: ${pct}%`, `Context usage: ${pct}%`)}
+    >
+      {pct}%
+    </span>
+  )
 }
 
 export function quickRoleSchedule(role: 'reviewer' | 'executor' | 'gatekeeper', readyAgentIds: string[]): SchedulePreview | null {
@@ -1058,18 +1518,38 @@ function modelSelectionKey(selection: ModelSelection | null): string {
   return ''
 }
 
-function slashCommandQuery(value: string): string | null {
+function slashCommandQuery(value: string, commands: WorkbenchCommand[] = []): string | null {
   const trimmed = value.trimStart()
   if (!trimmed.startsWith('/') && !trimmed.startsWith('@')) return null
-  if (trimmed.startsWith('@') && !looksLikeAgentMentionCommand(trimmed)) return null
+  if (trimmed.startsWith('@') && !isKnownAgentMentionCommand(trimmed, commands)) return null
   return normalizeCommandToken(trimmed.split(/\s+/, 1)[0] || '').replace(/^\/+/, '').toLowerCase()
+}
+
+export function addPaletteQuery(value: string, commands: WorkbenchCommand[] = [], caret = value.length): AddPaletteMatch | null {
+  const safeCaret = Math.max(0, Math.min(caret, value.length))
+  const beforeCaret = value.slice(0, safeCaret)
+  const match = beforeCaret.match(/(^|\s)@([^\s]*)$/)
+  if (!match) return null
+  const query = (match[2] || '').toLowerCase()
+  const start = safeCaret - query.length - 1
+  const end = safeCaret
+  const token = value.slice(start, end)
+  const beforeToken = value.slice(0, start)
+  const atCommandPosition = beforeToken.trim().length === 0
+  if (/^@plugin-[a-z0-9_-]+$/i.test(token)) return null
+  if (atCommandPosition && isKnownAgentMentionCommand(token, commands)) return null
+  return { query, start, end }
 }
 
 export function shouldRunComposerCommand(value: string, commands: WorkbenchCommand[]): boolean {
   const trimmed = value.trimStart()
   if (trimmed.startsWith('/')) return true
-  if (!trimmed.startsWith('@') || !looksLikeAgentMentionCommand(trimmed)) return false
-  const token = normalizeCommandToken(trimmed.split(/\s+/, 1)[0] || '')
+  return isKnownAgentMentionCommand(trimmed, commands)
+}
+
+function isKnownAgentMentionCommand(value: string, commands: WorkbenchCommand[]): boolean {
+  if (!value.trimStart().startsWith('@') || !looksLikeAgentMentionCommand(value)) return false
+  const token = normalizeCommandToken(value.trimStart().split(/\s+/, 1)[0] || '')
   return commands.some(command => command.label.toLowerCase() === token)
 }
 

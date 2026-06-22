@@ -58,10 +58,10 @@ export function AgentMark({ id, size = 44, radius = 12 }: { id: string; size?: n
       width: size, height: size, borderRadius: radius, flex: 'none', overflow: 'hidden',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       background: m.tileLight
-        ? 'linear-gradient(140deg, rgba(235,239,245,0.88), rgba(210,218,229,0.62))'
+        ? `linear-gradient(140deg, var(--bg-agent-light), var(--bg-agent-dark))`
         : `linear-gradient(140deg, color-mix(in srgb, ${m.colorRaw} 24%, rgba(255,255,255,0.05)), rgba(255,255,255,0.03))`,
-      border: '1px solid rgba(255,255,255,0.1)',
-      boxShadow: `0 4px 14px -4px ${m.colorRaw}55, inset 0 1px 0 rgba(255,255,255,0.18)`
+      border: '1px solid var(--glass-border-hover)',
+      boxShadow: `0 4px 14px -4px ${m.colorRaw}55, inset 0 1px 0 var(--glass-border-strong)`
     }}>
       <img src={m.icon} alt={m.name} style={{
         width: m.tileLight ? '92%' : '76%', height: m.tileLight ? '92%' : '76%',

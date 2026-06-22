@@ -1,6 +1,6 @@
 import { app, BrowserWindow, Tray, Menu, nativeImage, Notification, ipcMain, shell, dialog, WebContents } from "electron"
 import { execFile } from "node:child_process"
-import { basename, extname, join, resolve } from "path"
+import { basename, extname, join, resolve, relative, isAbsolute } from "path"
 import { Dirent, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "fs"
 import { homedir } from "os"
 import { promisify } from "util"
@@ -12,12 +12,13 @@ import { Dispatcher, StreamEvent } from "./hub/dispatcher"
 import { store } from "./store"
 import { detectAgentsAsync } from "./hub/agent-detector"
 import { getProviderManager } from "./providers/manager"
+import { buildProviderClient } from "./providers/client"
 import { getLocalProxy } from "./routing/proxy"
 import { locateAgentCandidates } from "./hub/agent-locator"
 import { takeoverStatus, takeoverApply, takeoverRestore } from "./routing/takeover"
 import { syncRegistryFromBindings } from "./hub/agent-connections"
 import { routePreview } from "./hub/route-preview"
-import { MemoryCategory, MemoryLibrary } from "./memory-library"
+import { MemoryLibrary } from "./memory-library"
 import { getWorkspaceManager, WorkspaceNotFoundError, WorkspacePathInvalidError } from "./hub/workspace"
 // --- AgentHub skills + native agentic (Claude-B 新增) ---
 import { getSkillManager } from "./skills/manager"
@@ -28,43 +29,20 @@ import { getApprovalConfig, GuardedTool, ApprovalPolicy } from "./agentic/approv
 import { ChatCompletionMessage } from "./providers/types"
 // --- /AgentHub skills + native agentic ---
 import { getWorkbenchRuntimeStore } from "./runtime/store"
+import { createExecutionTracker } from "./runtime/execution-tracker"
 import { DispatchPreset, ModelSelection, SchedulePreview, ScheduleStep, WorkbenchAttachment, WorkbenchTurn } from "./runtime/types"
 import { fireflyFiveRoleTemplate, listSchedules, previewSchedule } from "./runtime/schedules"
-import { configureLocalAgent, detectLocalAgentStatuses, getCachedLocalAgentStatuses, refreshLocalAgentStatusCache } from "./runtime/local-agents"
+import { configureLocalAgent, getCachedLocalAgentStatuses, refreshLocalAgentStatusCache } from "./runtime/local-agents"
 import { readLocalModelConfig, scanLocalModels } from "./runtime/local-models"
 import { getRunTimeoutMs, setRunTimeoutMs, RUN_TIMEOUT_DEFAULTS } from "./runtime/run-preferences"
-import { explicitGuardVerdictFromText, guardShouldBlockExecutor, riskVerdictForText as sharedRiskVerdictForText } from "./runtime/guards"
+import { guardShouldBlockExecutor } from "./runtime/guards"
+import { evaluateGuardVerdict, emitGuardVerdict, executorVerdictNeedsApproval, requestGuardApproval, resolveGuardApproval, cancelGuardApprovalsForTurn } from "./runtime/guard-approval-service"
 import { clearWorkbenchGoal, getWorkbenchGoal, promptWithGoalContext, setWorkbenchGoal } from "./runtime/goals"
 import { buildAgentOptions } from "./runtime/agent-options"
 import { listWorkbenchCommands, runWorkbenchCommand } from "./runtime/commands"
 import { eccCommandStatus, updateEccCommands } from "./runtime/ecc-commands"
 import { getTerminalRuntime } from "./runtime/terminal"
-import {
-  gitBranches,
-  gitCheckoutBranch,
-  gitCommit,
-  gitCommitDetails,
-  gitCommitDiff,
-  gitCreateBranch,
-  gitDeleteBranch,
-  gitDiff,
-  gitDiffs,
-  gitFetch,
-  gitLog,
-  gitPull,
-  gitPush,
-  gitRenameBranch,
-  gitRevertAll,
-  gitRevertFile,
-  gitStageAll,
-  gitStageFile,
-  gitStatus,
-  gitSync,
-  gitUnstageFile,
-  gitUpdateBranch,
-  runGitQuery
-} from "./runtime/git"
-import { listMcpServers, removeMcpServer, scanLocalMcpServers, setMcpEnabled, testMcpServer, upsertMcpServer } from "./runtime/mcp"
+import { runGitQuery } from "./runtime/git"
 import { createWorktree, listWorktrees, openWorktree, removeWorktree, syncWorktree } from "./runtime/worktrees"
 import { clearThreadTodos, deleteThreadTodo, listThreadTodos, setThreadTodos, syncTodosFromMarkdown, upsertThreadTodo } from "./runtime/todos"
 import { checkUpdates, openUpdateDownload, setUpdateChannel, updateStatus } from "./runtime/updates"
@@ -77,7 +55,37 @@ import {
   usageStats
 } from "./runtime/usage-stats"
 import { buildContextProjection } from "./runtime/context-ledger"
+import { listPrompts, getPrompt, upsertPrompt, deletePrompt, searchPrompts, getSlashCommands, incrementUseCount, seedDefaultPrompts } from "./runtime/prompt-library"
+// keyboard-shortcuts imports moved to src/main/ipc/workflow-ipc.ts
+// diagnostics, backup imports moved to src/main/ipc/workflow-ipc.ts
+import { formatAsMarkdown, formatAsHtml, exportConversation } from "./runtime/conversation-export"
+// notifications, onboarding imports moved to src/main/ipc/workflow-ipc.ts
+import { listWorkspaceFiles, searchWorkspaceFiles, readFilePreview } from "./runtime/workspace-files"
+// github, slash-commands imports moved to src/main/ipc/workflow-ipc.ts
+import { importConversationFromFile, importConversationFromJson, branchFromCheckpoint, summarizeConversation } from "./runtime/conversation-import"
+// memory-graph imports no longer needed in index.ts
+import { scanPlugins, validateManifest, getPluginContributions, listPluginRepositories, importPluginRepository } from "./runtime/plugin-manager"
+import { runReleaseChecks } from "./runtime/release-workspace"
+// project-map imports moved to src/main/ipc/workflow-ipc.ts
+import { buildTerminalPrompt, suggestCommandPrompt, explainOutputPrompt } from "./runtime/terminal-ai"
+import { getBudgetConfig, checkBudget, updateBudgetConfig } from "./runtime/budget-center"
+import { buildModelList, toggleModelFavorite, toggleModelHidden, getModelFavorites, getModelHidden } from "./runtime/models-center"
+import { scoreMemoryQuality, detectMemoryConflicts } from "./runtime/memory-studio"
+import { substituteVariables, evaluateCondition, saveRunRecord, loadRunHistory, getWorkflowRunHistory } from "./runtime/workflow-center"
+import { listTeamPresets, saveTeamPreset, deleteTeamPreset, getDefaultFireflyTeam } from "./runtime/team-builder"
+import { detectTechStack, generateWorkspaceSummary } from "./runtime/project-knowledge-enhanced"
+import { installPlugin, uninstallPlugin, togglePlugin, listInstalledPlugins, getEnabledContributions } from "./runtime/plugin-manager-enhanced"
+import { runDiagnosticSuite } from "./runtime/diagnostics-suite"
+import { createFireflyState, completeRole, getRoleContext, isComplete, getFinalOutput } from "./runtime/firefly-state-machine"
+import { registerAllIpcHandlers } from "./ipc"
+import { hub as hubLog, window_ as windowLog, pipeline as pipelineLog, proxy as proxyLog, store as storeLog } from "./logger"
+import { summarizePageSnapshot, extractReadableText, buildPageAnalysisPrompt } from "./runtime/browser-workspace"
+import { buildInlineEditPrompt, validateEditResult, applyInlineEdit } from "./runtime/inline-edit"
 import { installAppMenu } from "./menu"
+
+function resolveAppVersionFromMain(): string {
+  try { return app.getVersion() } catch { return '1.0.0' }
+}
 
 const execFileAsync = promisify(execFile)
 
@@ -204,7 +212,7 @@ function attachmentContextBlock(attachments?: WorkbenchAttachment[]): string {
     if (att.path) lines.push(`Path: ${att.path}`)
     if (att.kind === "image") {
       lines.push("Use the local image path above as visual context. If the agent supports image input, inspect the image directly; otherwise reason from the filename/path and ask for clarification only if needed.")
-      if (att.dataUrl) lines.push(`Inline preview data URL: ${att.dataUrl.slice(0, 4096)}${att.dataUrl.length > 4096 ? "...[truncated]" : ""}`)
+      if (att.dataUrl) lines.push(`Inline preview data URL: ${att.dataUrl.slice(0, 8192)}${att.dataUrl.length > 8192 ? "...[truncated]" : ""}`)
     } else if (att.text) {
       lines.push("Content:")
       lines.push("```")
@@ -340,79 +348,9 @@ function routeDecisionForTurn(turnId: string): any[] {
     .map(event => event.payload)
 }
 
-type GuardResolution = "approved" | "denied" | "timeout"
-interface GuardDecision {
-  requestId: string
-  decision: GuardResolution
-}
-
-const pendingGuardApprovals = new Map<string, {
-  turnId: string
-  resolve: (value: GuardDecision) => void
-  timer: ReturnType<typeof setTimeout>
-}>()
-
-function evaluateGuardVerdict(reviewText: string, role: string) {
-  return explicitGuardVerdictFromText(reviewText) || sharedRiskVerdictForText(reviewText, role)
-}
-
-function emitGuardVerdict(threadId: string, turnId: string, agentId: string, role: string, reviewText: string, extra: Record<string, any> = {}) {
-  const verdict = evaluateGuardVerdict(reviewText, role)
-  runtimeStore.appendSystemEvent(threadId, turnId, "guard:verdict", agentId, {
-    role,
-    ...verdict,
-    ...extra,
-    checkedAt: Date.now()
-  })
-  return verdict
-}
-
-function executorVerdictNeedsApproval(verdict: ReturnType<typeof evaluateGuardVerdict>, role: string): boolean {
-  return role === "executor" && (verdict.level === "high" || verdict.status === "block")
-}
-
-function resolveGuardApproval(requestId: string, approved: boolean): boolean {
-  const pending = pendingGuardApprovals.get(requestId)
-  if (!pending) return false
-  clearTimeout(pending.timer)
-  pendingGuardApprovals.delete(requestId)
-  pending.resolve({ requestId, decision: approved ? "approved" : "denied" })
-  return true
-}
-
-function cancelGuardApprovalsForTurn(turnId: string): void {
-  for (const [requestId, pending] of pendingGuardApprovals.entries()) {
-    if (pending.turnId !== turnId) continue
-    clearTimeout(pending.timer)
-    pendingGuardApprovals.delete(requestId)
-    pending.resolve({ requestId, decision: "denied" })
-  }
-}
-
-function requestGuardApproval(input: {
-  threadId: string
-  turnId: string
-  agentId: string
-  role: string
-  verdict: ReturnType<typeof evaluateGuardVerdict>
-}): Promise<GuardDecision> {
-  const requestId = `guard-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
-  runtimeStore.appendSystemEvent(input.threadId, input.turnId, "guard:verdict", input.agentId, {
-    role: input.role,
-    ...input.verdict,
-    status: "needs-confirmation",
-    requestId,
-    requiresUserDecision: true,
-    checkedAt: Date.now()
-  })
-  return new Promise(resolve => {
-    const timer = setTimeout(() => {
-      if (!pendingGuardApprovals.delete(requestId)) return
-      resolve({ requestId, decision: "timeout" })
-    }, 5 * 60 * 1000)
-    pendingGuardApprovals.set(requestId, { turnId: input.turnId, resolve, timer })
-  })
-}
+// Guard-verdict lifecycle is now in runtime/guard-approval-service.ts.
+// Thin wrappers pass runtimeStore as the event store dependency.
+const guardStore = { appendSystemEvent: (tId: string, trId: string, kind: string, aId: string, p: Record<string, any>) => runtimeStore.appendSystemEvent(tId, trId, kind as any, aId, p) }
 
 function emitMemoryCandidates(threadId: string, turnId: string, prompt: string, content: string) {
   const candidates = memory().importConversation(`turn:${turnId}`, [`User: ${prompt}`, content ? `Assistant: ${content}` : ""].filter(Boolean).join("\n\n"), { includeRaw: false })
@@ -614,10 +552,13 @@ async function runCustomScheduleTurn(input: {
       const error = task.errors.get(step.agentId) || task.error
       if (!error && (step.role === "reviewer" || step.role === "gatekeeper" || step.role === "executor")) {
         const verdict = evaluateGuardVerdict(content, step.role)
-        if (guardShouldBlockExecutor(verdict, step.role) || executorVerdictNeedsApproval(verdict, step.role)) {
+        // 「完全访问」预设统管所有拦截：用户已明确表达完全信任，
+        // Guard 内容审查（含 high/block 危险命令判定）一并跳过，避免与 agentic approval 预设脱节造成"设了完全访问仍被拦"的困惑。
+        const guardBypassedByPreset = getApprovalConfig().getConfig().preset === "full-access"
+        if (!guardBypassedByPreset && (guardShouldBlockExecutor(verdict, step.role) || executorVerdictNeedsApproval(verdict, step.role))) {
           const reason = verdict.reasons.join("; ")
           if (verdict.level === "high" || verdict.status === "block") {
-            const guardDecision = await requestGuardApproval({
+            const guardDecision = await requestGuardApproval(guardStore, {
               threadId: input.threadId,
               turnId: input.turnId,
               agentId: step.agentId,
@@ -651,11 +592,33 @@ async function runCustomScheduleTurn(input: {
               blockedByGuard = deniedByGuard
             }
           } else {
-            emitGuardVerdict(input.threadId, input.turnId, step.agentId, step.role, content)
-            blockedByGuard = reason
+            // R6 fix: medium/revise should also go through approval instead of directly blocking.
+            // Previously: medium risk directly set blockedByGuard, blocking the executor.
+            // Now: medium risk sends to approval flow (same as high), giving user a choice.
+            emitGuardVerdict(guardStore, input.threadId, input.turnId, step.agentId, step.role, content)
+            const guardDecision = await requestGuardApproval(guardStore, {
+              threadId: input.threadId,
+              turnId: input.turnId,
+              agentId: step.agentId,
+              role: step.role,
+              verdict
+            })
+            const { decision } = guardDecision
+            if (decision === "approved") {
+              runtimeStore.appendSystemEvent(input.threadId, input.turnId, "guard:verdict", step.agentId, {
+                role: step.role,
+                level: verdict.level,
+                status: "warn",
+                reasons: ["User approved continuing after medium-risk guard warning.", ...verdict.reasons],
+                decision,
+                checkedAt: Date.now()
+              })
+            } else {
+              blockedByGuard = reason
+            }
           }
         } else {
-          emitGuardVerdict(input.threadId, input.turnId, step.agentId, step.role, content)
+          emitGuardVerdict(guardStore, input.threadId, input.turnId, step.agentId, step.role, content)
         }
       }
       return { step, content, error, status: task.status }
@@ -703,8 +666,19 @@ function finalScheduleRelease(outputs: Array<{ step: ScheduleStep; content: stri
 }
 
 function scheduleStepsWithRouteDecision(steps: ScheduleStep[], decision?: RouteDecision): ScheduleStep[] {
+  // Keep the decision object intentionally consumed here; router reasoning is
+  // recorded as route:decision metadata, not mixed into the visible answer.
   void decision
-  return steps
+  if (!decision || !decision.selectedAgentId) return steps
+  const selectedAgent = decision.selectedAgentId
+  // Route decision influences the lead/main step's agentId:
+  // if the router selected a specific agent, use it for the lead step
+  return steps.map(step => {
+    if (step.role === "lead" && step.agentId === "auto") {
+      return { ...step, agentId: selectedAgent }
+    }
+    return step
+  })
 }
 
 function streamMetaForScheduleStep(step: ScheduleStep, gatedCandidateIds = new Set<string>(), forceRunOnly = false): Record<string, any> {
@@ -846,10 +820,12 @@ function safeBrowserUrl(url: string): boolean {
   }
 }
 
-type OpenPathTarget = "antigravity" | "explorer" | "system"
+type OpenPathTarget = "antigravity" | "explorer" | "system" | "vscode" | "cursor" | "windsurf" | "zed" | "file-manager"
+
+const VALID_OPEN_TARGETS: ReadonlySet<string> = new Set(["antigravity", "explorer", "system", "vscode", "cursor", "windsurf", "zed", "file-manager"])
 
 function normalizeOpenPathTarget(value: unknown): OpenPathTarget {
-  return value === "antigravity" || value === "system" || value === "explorer" ? value : "explorer"
+  return VALID_OPEN_TARGETS.has(String(value)) ? value as OpenPathTarget : "explorer"
 }
 
 function safeLocalOpenPath(rawPath: unknown): string {
@@ -867,11 +843,17 @@ function resolveOpenPathCandidate(rawPath: unknown, workspaceRoot?: string | nul
   const root = workspaceRoot ? resolve(workspaceRoot) : ""
   if (!root || !existsSync(root) || !statSync(root).isDirectory()) return resolved
   const rootCandidate = resolve(root, raw)
-  if (rootCandidate.startsWith(root) && existsSync(rootCandidate)) return rootCandidate
+  // P2-5: Use relative() for safe path containment check instead of startsWith
+  // (startsWith would match "C:\foo" against "C:\foobar" — a path escape risk).
+  const isWithinRoot = (candidate: string): boolean => {
+    const rel = relative(root, candidate)
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  }
+  if (isWithinRoot(rootCandidate) && existsSync(rootCandidate)) return rootCandidate
   if (!raw.includes("/") && !raw.includes("\\") && /^[\w.-]+\.[a-z0-9]+$/i.test(raw)) {
     return findFileByName(root, raw) || rootCandidate
   }
-  return rootCandidate.startsWith(root) ? rootCandidate : resolved
+  return isWithinRoot(rootCandidate) ? rootCandidate : resolved
 }
 
 function findFileByName(root: string, fileName: string): string | null {
@@ -936,7 +918,7 @@ async function openLocalPath(input: { path: string; target?: OpenPathTarget; lin
   const targetPath = resolveOpenPathCandidate(input.path, input.workspaceRoot)
   if (!existsSync(targetPath)) return { ok: false, path: targetPath, target, error: "Path does not exist." }
   try {
-    if (target === "explorer") {
+    if (target === "explorer" || target === "file-manager") {
       if (statSync(targetPath).isDirectory()) {
         const result = await shell.openPath(targetPath)
         if (result) throw new Error(result)
@@ -945,6 +927,11 @@ async function openLocalPath(input: { path: string; target?: OpenPathTarget; lin
       }
     } else if (target === "antigravity") {
       await openPathInAntigravity(targetPath, input.line, input.column)
+    } else if (target === "vscode" || target === "cursor" || target === "windsurf" || target === "zed") {
+      // Use open-target module for named editors
+      const { openWithEditor } = require("./runtime/open-target")
+      const result = await openWithEditor(target, targetPath, input.line, input.column)
+      if (!result.ok) throw new Error(result.error || `Failed to open in ${target}`)
     } else {
       const result = await shell.openPath(targetPath)
       if (result) throw new Error(result)
@@ -1009,7 +996,7 @@ function showWindowsNotification(title: string, body: string): void {
 function createWindow(): void {
   const isDevRenderer = Boolean(process.env.ELECTRON_RENDERER_URL)
   const iconPath = appAssetPath(process.platform === "win32" ? "icon.ico" : "icon.png")
-  console.log(`[Window] create renderer=${process.env.ELECTRON_RENDERER_URL || "file"} dev=${isDevRenderer}`)
+  windowLog.info(`create renderer=${process.env.ELECTRON_RENDERER_URL || "file"} dev=${isDevRenderer}`)
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -1021,7 +1008,9 @@ function createWindow(): void {
       preload: join(__dirname, "../preload/index.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      // P2-4: Enable sandbox for defense-in-depth. Preload only uses
+      // contextBridge + ipcRenderer (both available in sandbox mode).
+      sandbox: true,
       webviewTag: true
     },
     show: isDevRenderer,
@@ -1037,23 +1026,23 @@ function createWindow(): void {
     mainWindow.show()
     mainWindow.focus()
     hasShownMainWindow = true
-    console.log(`[Window] reveal visible=${mainWindow.isVisible()} focused=${mainWindow.isFocused()} minimized=${mainWindow.isMinimized()}`)
+    windowLog.info(`reveal visible=${mainWindow.isVisible()} focused=${mainWindow.isFocused()} minimized=${mainWindow.isMinimized()}`)
   }
   mainWindow.on("ready-to-show", () => {
-    console.log("[Window] ready-to-show")
+    windowLog.info("ready-to-show")
     revealMainWindow()
   })
   mainWindow.webContents.once("did-finish-load", () => {
-    console.log("[Window] did-finish-load")
+    windowLog.info("did-finish-load")
     if (!hasShownMainWindow) revealMainWindow()
   })
   mainWindow.webContents.on("did-fail-load", (_event, code, description, url, isMainFrame) => {
     if (!isMainFrame) return
-    console.error(`[Window] Failed to load renderer ${url}: ${code} ${description}`)
+    windowLog.error(`Failed to load renderer ${url}: ${code} ${description}`)
     revealMainWindow()
   })
   mainWindow.webContents.on("render-process-gone", (_event, details) => {
-    console.error("[Window] Renderer process gone:", details)
+    windowLog.error("Renderer process gone:", details)
     revealMainWindow()
   })
   mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
@@ -1123,7 +1112,7 @@ async function initHub(): Promise<void> {
     name: "logger",
     type: "observe",
     handle: async (event) => {
-      console.log("[Pipeline] " + event.source + " -> " + event.target)
+      pipelineLog.debug(event.source + " -> " + event.target)
       return event
     }
   })
@@ -1184,16 +1173,16 @@ async function initHub(): Promise<void> {
 
   try {
     await detectAgentsAsync()
-    console.log("[Hub] Initial agent detection complete")
+    hubLog.info("Initial agent detection complete")
   } catch (e) {
-    console.error("[Hub] Initial detection failed:", e)
+    hubLog.error("Initial detection failed:", e)
   }
 
   try {
     await proxy.start()
-    console.log("[Proxy] Local Chat Completions:", proxy.getUrl())
+    proxyLog.info("Local Chat Completions:", proxy.getUrl())
   } catch (e) {
-    console.error("[Proxy] Failed to start:", e)
+    proxyLog.error("Failed to start:", e)
   }
 
   hub.start()
@@ -1241,6 +1230,17 @@ ipcMain.handle("threads:create", (_event, input: { workspaceId?: string | null; 
 ipcMain.handle("threads:rename", (_event, threadId: string, title: string) => runtimeStore.renameThread(threadId, title))
 ipcMain.handle("threads:delete", (_event, threadId: string) => runtimeStore.deleteThread(threadId))
 ipcMain.handle("threads:select", (_event, threadId: string | null) => runtimeStore.selectThread(threadId))
+ipcMain.handle("threads:fork", (_event, input: { sourceThreadId: string; sourceTurnId: string; message: string }) => {
+  // Create a new thread forked from the source turn
+  const newThread = runtimeStore.createThread({ title: `Fork: ${input.message.slice(0, 50)}` })
+  // Copy events up to the source turn into the new thread
+  const sourceEvents = runtimeStore.eventsSince(input.sourceThreadId, 0)
+  const turnEvents = sourceEvents.filter((e: any) => e.turnId === input.sourceTurnId)
+  for (const event of turnEvents) {
+    runtimeStore.appendStreamEvent(newThread.id, { ...event, turnId: newThread.id })
+  }
+  return newThread
+})
 ipcMain.handle("runtime:snapshot", (_event, workspaceId?: string | null) => runtimeStore.snapshot(workspaceId))
 ipcMain.handle("runtime:eventsSince", (_event, threadId: string, seq = 0) => runtimeStore.eventsSince(threadId, seq))
 ipcMain.handle("context:projection", (_event, input: { threadId?: string | null; workspaceId?: string | null; prompt?: string; attachments?: WorkbenchAttachment[]; writeDraft?: { title: string; content: string } | null; pinnedBlocks?: any[] }) => {
@@ -1522,6 +1522,8 @@ ipcMain.handle("schedules:list", () => listSchedules())
 ipcMain.handle("schedules:runPreview", (_event, preset: DispatchPreset) => previewSchedule(preset))
 ipcMain.handle("commands:list", () => listWorkbenchCommands())
 ipcMain.handle("commands:run", (_event, input: { id?: string; text?: string }) => runWorkbenchCommand(input))
+// Workflows, shortcuts, diagnostics, backup, notifications, onboarding,
+// slashCommands, projectMap, github IPC handlers moved to src/main/ipc/workflow-ipc.ts
 ipcMain.handle("ecc:status", () => eccCommandStatus())
 ipcMain.handle("ecc:update", () => updateEccCommands())
 ipcMain.handle("terminal:run", (_event, input: { workspaceId?: string | null; command: string }) => getTerminalRuntime().run(input))
@@ -1531,6 +1533,8 @@ ipcMain.handle("tasks:delete", (_event, taskId: string) => {
   runtimeStore.deleteTask(taskId)
   const current = memory().loadRuntimeState()
   memory().saveRuntimeState({ messages: current.messages, tasks: current.tasks.filter((task: any) => task.id !== taskId) })
+  // P2-2: Clean up taskToTurn mapping to prevent Map growth.
+  taskToTurn.delete(taskId)
   return true
 })
 ipcMain.handle("tasks:clearCompleted", () => {
@@ -1538,43 +1542,19 @@ ipcMain.handle("tasks:clearCompleted", () => {
   const current = memory().loadRuntimeState()
   const running = current.tasks.filter((task: any) => task.status === "running")
   memory().saveRuntimeState({ messages: current.messages, tasks: running })
+  // P2-2: Clean up taskToTurn mappings for all non-running tasks.
+  for (const task of current.tasks) {
+    if (task.status !== "running") taskToTurn.delete(task.id)
+  }
   return true
 })
-ipcMain.handle("git:status", (_event, workspaceId?: string | null) => gitStatus(workspaceId))
-ipcMain.handle("git:branches", (_event, workspaceId?: string | null) => gitBranches(workspaceId))
-ipcMain.handle("git:checkoutBranch", (_event, workspaceId: string | null, branch: string) => gitCheckoutBranch(workspaceId, branch))
-ipcMain.handle("git:createBranch", (_event, workspaceId: string | null, branch: string, checkout?: boolean) => gitCreateBranch(workspaceId, branch, checkout !== false))
-ipcMain.handle("git:renameBranch", (_event, workspaceId: string | null, oldName: string, newName: string) => gitRenameBranch(workspaceId, oldName, newName))
-ipcMain.handle("git:deleteBranch", (_event, workspaceId: string | null, branch: string, force?: boolean) => gitDeleteBranch(workspaceId, branch, !!force))
-ipcMain.handle("git:log", (_event, workspaceId?: string | null, limit?: number) => gitLog(workspaceId, limit))
-ipcMain.handle("git:diff", (_event, workspaceId?: string | null, filePath?: string) => gitDiff(workspaceId, filePath))
-ipcMain.handle("git:diffs", (_event, workspaceId?: string | null) => gitDiffs(workspaceId))
-ipcMain.handle("git:commitDetails", (_event, workspaceId: string | null, sha: string) => gitCommitDetails(workspaceId, sha))
-ipcMain.handle("git:commitDiff", (_event, workspaceId: string | null, sha: string, filePath?: string) => gitCommitDiff(workspaceId, sha, filePath))
-ipcMain.handle("git:stageFile", (_event, workspaceId: string | null, filePath: string) => gitStageFile(workspaceId, filePath))
-ipcMain.handle("git:stageAll", (_event, workspaceId: string | null) => gitStageAll(workspaceId))
-ipcMain.handle("git:unstageFile", (_event, workspaceId: string | null, filePath: string) => gitUnstageFile(workspaceId, filePath))
-ipcMain.handle("git:revertFile", (_event, workspaceId: string | null, filePath: string) => gitRevertFile(workspaceId, filePath))
-ipcMain.handle("git:revertAll", (_event, workspaceId: string | null) => gitRevertAll(workspaceId))
-ipcMain.handle("git:commit", (_event, workspaceId: string | null, message: string, filePaths?: string[]) => gitCommit(workspaceId, message, filePaths))
-ipcMain.handle("git:fetch", (_event, workspaceId: string | null, remote?: string) => gitFetch(workspaceId, remote))
-ipcMain.handle("git:pull", (_event, workspaceId: string | null, remote?: string, branch?: string) => gitPull(workspaceId, remote, branch))
-ipcMain.handle("git:push", (_event, workspaceId: string | null, remote?: string, branch?: string) => gitPush(workspaceId, remote, branch))
-ipcMain.handle("git:sync", (_event, workspaceId: string | null) => gitSync(workspaceId))
-ipcMain.handle("git:updateBranch", (_event, workspaceId: string | null, branch: string) => gitUpdateBranch(workspaceId, branch))
-ipcMain.handle("mcp:list", (_event, workspaceId?: string | null) => listMcpServers(workspaceId))
-ipcMain.handle("mcp:scanLocal", (_event, workspaceId?: string | null) => scanLocalMcpServers(workspaceId))
-ipcMain.handle("mcp:upsert", (_event, input: any) => upsertMcpServer(input))
-ipcMain.handle("mcp:remove", (_event, id: string) => removeMcpServer(id))
-ipcMain.handle("mcp:setEnabled", (_event, id: string, enabled: boolean, workspaceId?: string | null) => setMcpEnabled(id, enabled, workspaceId))
-ipcMain.handle("mcp:test", (_event, id: string, workspaceId?: string | null) => testMcpServer(id, workspaceId))
+// Git & MCP IPC handlers moved to src/main/ipc/ (registered via registerAllIpcHandlers)
 ipcMain.handle("worktrees:list", (_event, parentWorkspaceId?: string | null) => listWorktrees(parentWorkspaceId))
 ipcMain.handle("worktrees:create", (_event, input: { parentWorkspaceId: string; branch?: string; path?: string }) => createWorktree(input))
 ipcMain.handle("worktrees:remove", (_event, id: string, force?: boolean) => removeWorktree(id, !!force))
 ipcMain.handle("worktrees:sync", (_event, id: string) => syncWorktree(id))
 ipcMain.handle("worktrees:open", (_event, id: string) => openWorktree(id))
-ipcMain.handle("memory:search", (_event, query: string, category?: MemoryCategory) => memory().searchEntries(query, category))
-ipcMain.handle("memory:delete", (_event, id: string) => memory().deleteEntry(id))
+// memory:search, memory:delete moved to src/main/ipc/memory-ipc.ts
 ipcMain.handle("todos:list", (_event, threadId: string) => listThreadTodos(threadId))
 ipcMain.handle("todos:set", (_event, threadId: string, todos: any[]) => setThreadTodos(threadId, todos))
 ipcMain.handle("todos:upsert", (_event, input: { threadId: string; id?: string; content: string; status?: any; source?: any }) => upsertThreadTodo(input))
@@ -1621,55 +1601,287 @@ ipcMain.handle("hub:rescan", async () => {
 })
 
 ipcMain.handle("hub:cancel", async (_event, taskId: string) => dispatcher?.cancel(taskId))
-ipcMain.handle("store:get", async (_event, key: string) => store.get(key))
-ipcMain.handle("store:set", async (_event, key: string, value: any) => { store.set(key, value); return true })
-ipcMain.handle("memory:catalog", async () => memory().getCatalog())
-ipcMain.handle("memory:getSettings", async () => memory().getSettings())
-ipcMain.handle("memory:updateSettings", async (_event, patch: any) => memory().updateSettings(patch || {}))
-ipcMain.handle("memory:list", async (_event, category?: MemoryCategory) => memory().listEntries(category))
-ipcMain.handle("memory:addEntry", async (_event, entry) => memory().upsertEntry(entry))
-ipcMain.handle("memory:importConversation", async (_event, source: string, content: string) => {
-  const safeContent = String(content || "").slice(0, 1_000_000)
-  return memory().importConversation(source, safeContent)
+
+// P1-1: IPC store key whitelist — renderer may only access non-sensitive keys.
+// Sensitive keys (local.token, providers.config.v1, etc.) are never exposed via IPC.
+const IPC_STORE_ALLOWED_PREFIX = 'agenthub.'
+const IPC_STORE_DENIED_KEYS = new Set<string>([
+  'local.token',            // WebSocket auth token
+  'providers.config.v1',    // encrypted API keys
+  'appearance.preferences', // appearance settings (has separate controlled handler)
+  'minimizeToTray',         // window behavior flag
+])
+function isStoreKeyAllowed(key: unknown): boolean {
+  if (typeof key !== 'string' || !key) return false
+  if (IPC_STORE_DENIED_KEYS.has(key)) return false
+  return key.startsWith(IPC_STORE_ALLOWED_PREFIX)
+}
+
+ipcMain.handle("store:get", async (_event, key: string) => {
+  if (!isStoreKeyAllowed(key)) {
+    storeLog.warn('store:get denied for key: ' + key)
+    return undefined
+  }
+  return store.get(key)
 })
-ipcMain.handle("memory:listCandidates", async () => memory().listCandidates())
-ipcMain.handle("memory:approveCandidate", async (_event, id: string) => memory().approveCandidate(id))
-ipcMain.handle("memory:updateEntry", async (_event, id: string, patch: any) => memory().updateEntry(id, patch))
-ipcMain.handle("memory:disableEntry", async (_event, id: string) => memory().disableEntry(id))
-ipcMain.handle("memory:loadState", async () => memory().loadRuntimeState())
-ipcMain.handle("memory:saveState", async (_event, state) => memory().saveRuntimeState(state))
+ipcMain.handle("store:set", async (_event, key: string, value: any) => {
+  if (!isStoreKeyAllowed(key)) {
+    storeLog.warn('store:set denied for key: ' + key)
+    return false
+  }
+  store.set(key, value)
+  return true
+})
+// Memory IPC handlers moved to src/main/ipc/memory-ipc.ts (registered via registerAllIpcHandlers)
+
+// --- Prompt Library ---
+ipcMain.handle("prompts:list", (_e, category?: string) => listPrompts(category as any))
+ipcMain.handle("prompts:get", (_e, id: string) => getPrompt(id))
+ipcMain.handle("prompts:upsert", (_e, input: any) => upsertPrompt(input))
+ipcMain.handle("prompts:delete", (_e, id: string) => deletePrompt(id))
+ipcMain.handle("prompts:search", (_e, query: string) => searchPrompts(query))
+ipcMain.handle("prompts:slashCommands", () => getSlashCommands())
+ipcMain.handle("prompts:incrementUse", (_e, id: string) => incrementUseCount(id))
+ipcMain.handle("prompts:seedDefaults", () => seedDefaultPrompts())
+
+// Keyboard shortcuts, diagnostics, backup, notifications, onboarding,
+// slashCommands, projectMap, github — all moved to src/main/ipc/workflow-ipc.ts
+
+// Diagnostics, Backup — moved to src/main/ipc/workflow-ipc.ts
+
+// --- Conversation Export ---
+ipcMain.handle("conversation:exportMarkdown", (_e, data: any) => formatAsMarkdown(data))
+ipcMain.handle("conversation:exportHtml", (_e, data: any) => formatAsHtml(data))
+ipcMain.handle("conversation:exportFile", (_e, data: any, format: string, path: string) => exportConversation(data, format as any, path))
+
+// Notifications — moved to src/main/ipc/workflow-ipc.ts
+
+// Onboarding — moved to src/main/ipc/workflow-ipc.ts
+
+// --- Workspace Files ---
+ipcMain.handle("workspaceFiles:list", (_e, rootPath: string, max?: number) => listWorkspaceFiles(rootPath, max))
+ipcMain.handle("workspaceFiles:search", (_e, rootPath: string, query: string, max?: number) => searchWorkspaceFiles(rootPath, query, max))
+ipcMain.handle("workspaceFiles:preview", (_e, filePath: string, maxLines?: number) => readFilePreview(filePath, maxLines))
+
+// GitHub, Slash Commands — moved to src/main/ipc/workflow-ipc.ts
+
+// --- Conversation Import ---
+ipcMain.handle("conversation:importFile", (_e, filePath: string) => importConversationFromFile(filePath))
+ipcMain.handle("conversation:importJson", (_e, json: string) => importConversationFromJson(json))
+ipcMain.handle("conversation:branch", (_e, conversation: any, index: number) => branchFromCheckpoint(conversation, index))
+ipcMain.handle("conversation:summarize", (_e, conversation: any) => summarizeConversation(conversation))
+
+// memory:graph and memory:cleanupSuggestions moved to src/main/ipc/memory-ipc.ts
+
+// --- Plugin Manager ---
+ipcMain.handle("plugins:scan", (_e, workspaceRoot?: string) => scanPlugins(workspaceRoot))
+ipcMain.handle("plugins:validate", (_e, manifest: any) => validateManifest(manifest))
+ipcMain.handle("plugins:contributions", (_e, plugins: any[]) => getPluginContributions(plugins))
+ipcMain.handle("plugins:repositories", () => listPluginRepositories())
+ipcMain.handle("plugins:importRepository", (_e, input: any) => importPluginRepository(input))
+
+// --- Release Workspace ---
+// Project Map — moved to src/main/ipc/workflow-ipc.ts
+
+ipcMain.handle("release:checks", async () => {
+  // R7 fix: run real checks instead of hardcoded placeholders
+  const appVersion = resolveAppVersionFromMain()
+  let gitClean = false
+  let hasChangelog = false
+  let hasGitTag = false
+  try {
+    const { execSync } = require("child_process")
+    const cwd = join(__dirname, "..", "..")
+    // Check if working tree is clean
+    const status = execSync("git status --porcelain", { cwd, encoding: "utf-8", timeout: 10000 }).trim()
+    gitClean = status.length === 0
+    // Check for CHANGELOG.md
+    hasChangelog = existsSync(join(cwd, "CHANGELOG.md"))
+    // Check for version tag
+    try {
+      const tagOutput = execSync(`git tag -l v${appVersion}`, { cwd, encoding: "utf-8", timeout: 5000 }).trim()
+      hasGitTag = tagOutput.length > 0
+    } catch { hasGitTag = false }
+  } catch { /* git not available or not a git repo */ }
+  return runReleaseChecks({
+    appVersion,
+    typecheckPass: null as any, // null = not run yet — UI shows "Not run"
+    testPass: null as any,
+    buildPass: null as any,
+    hasChangelog,
+    hasGitTag,
+    gitClean
+  })
+})
+
+// --- Terminal AI ---
+ipcMain.handle("terminalAi:buildPrompt", (_e, userPrompt: string, context: any) => buildTerminalPrompt(userPrompt, context))
+ipcMain.handle("terminalAi:suggestCommand", (_e, intent: string, context: any) => suggestCommandPrompt(intent, context))
+ipcMain.handle("terminalAi:explainOutput", (_e, context: any) => explainOutputPrompt(context))
+
+// --- AI Quick Complete (lightweight standalone LLM call) ---
+// Used by InlineEditAffordance, TerminalPanel, and other non-turn AI features
+// that need a single prompt→completion round without the full turn pipeline.
+ipcMain.handle("ai:quickComplete", async (_e, input: {
+  prompt: string
+  systemPrompt?: string
+  providerId?: string
+  modelId?: string
+  timeoutMs?: number
+}): Promise<{ content: string; error?: string }> => {
+  try {
+    // P1-5: Budget check before making API call
+    const budget = getBudgetConfig()
+    // For quickComplete, we estimate tokens from prompt length
+    const estimatedTokens = Math.ceil((input.prompt.length + (input.systemPrompt?.length || 0)) / 4)
+    const budgetCheck = checkBudget(budget, 0, 0, estimatedTokens) // daily/monthly spent tracked separately
+    if (!budgetCheck.allowed) {
+      return { content: '', error: `Budget exceeded: ${budgetCheck.reason}` }
+    }
+
+    const mgr = getProviderManager()
+    const config = mgr.getConfig()
+
+    // Resolve provider/model: prefer explicit override, else fall back to the
+    // active binding (same agentId the dispatcher would use for a turn).
+    let providerId = input.providerId
+    let modelId = input.modelId
+    const binding = providerId && modelId ? undefined : (config.activeBindingId ? mgr.resolveBinding(config.activeBindingId) : null)
+    if (!providerId || !modelId) {
+      if (!binding) {
+        return { content: '', error: 'No active model configured. Please select a model in Settings.' }
+      }
+      providerId = providerId || binding.provider.id
+      modelId = modelId || binding.model.id
+    }
+
+    const provider = mgr.getProvider(providerId)
+    const model = provider?.models.find(m => m.id === modelId)
+    if (!provider || !provider.enabled || !provider.apiKey) {
+      return { content: '', error: `Provider "${providerId}" is unavailable or has no API key.` }
+    }
+    if (!model) {
+      return { content: '', error: `Model "${modelId}" not found in provider "${providerId}".` }
+    }
+
+    // Build a minimal ResolvedCall (mirrors dispatchProviderDirect's construction).
+    const thinking: import("./providers/types").ThinkingConfig = { mode: "off", level: "minimal" }
+    const resolved = {
+      provider,
+      model,
+      binding: binding?.binding ?? {
+        agentId: `quick:${providerId}`,
+        providerId: provider.id,
+        modelId: model.id,
+        thinkingAllow: ["off", "auto", "enabled"] as import("./providers/types").ThinkingMode[],
+        thinking,
+        maxOutputTokens: 8192,
+        temperature: 0.2
+      },
+      thinking
+    }
+
+    const client = buildProviderClient(resolved)
+    let content = ''
+    const timeoutMs = input.timeoutMs || 30_000
+
+    await Promise.race([
+      new Promise<void>((resolve, reject) => {
+        client.stream(
+          {
+            messages: [{ role: "user", content: input.prompt }],
+            systemPrompt: input.systemPrompt || '',
+            thinkingOverride: thinking
+          },
+          {
+            onContent: (delta) => { content += delta },
+            onThinking: () => {},
+            onDone: () => resolve(),
+            onError: (err) => reject(new Error(typeof err === 'string' ? err : err?.message || 'Unknown model error'))
+          }
+        )
+      }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Model call timed out')), timeoutMs))
+    ])
+
+    return { content }
+  } catch (err: any) {
+    return { content: '', error: err?.message || String(err) }
+  }
+})
+
+// --- Browser Workspace ---
+ipcMain.handle("browser:summarize", (_e, snapshot: any) => summarizePageSnapshot(snapshot))
+ipcMain.handle("browser:extractText", (_e, html: string) => extractReadableText(html))
+ipcMain.handle("browser:analyzePrompt", (_e, snapshot: any, request?: string) => buildPageAnalysisPrompt(snapshot, request))
+
+// --- Inline Edit ---
+ipcMain.handle("inlineEdit:buildPrompt", (_e, request: any) => buildInlineEditPrompt(request))
+ipcMain.handle("inlineEdit:validate", (_e, original: string, replacement: string) => validateEditResult(original, replacement))
+ipcMain.handle("inlineEdit:apply", (_e, content: string, startLine: number, endLine: number, replacement: string) => applyInlineEdit(content, startLine, endLine, replacement))
+
 ipcMain.handle("routes:explain", async (_event, turnId: string) => routeDecisionForTurn(turnId))
 
-ipcMain.handle("providers:get", async () => providerMgr.getConfig())
-ipcMain.handle("providers:upsert", async (_e, p) => { providerMgr.upsertProvider(p); registerAgentsFromBindings(); return providerMgr.getConfig() })
-ipcMain.handle("providers:delete", async (_e, id) => { const ok = providerMgr.deleteProvider(id); if (ok) registerAgentsFromBindings(); return ok })
-ipcMain.handle("providers:setEnabled", async (_e, id, enabled) => { providerMgr.setProviderEnabled(id, enabled); return providerMgr.getConfig() })
-ipcMain.handle("providers:setKey", async (_e, id, key) => {
-  providerMgr.setProviderApiKey(id, key)
-  if (key) await providerMgr.fetchModels(id).catch(() => null)
-  registerAgentsFromBindings()
-  // 配好 Key 后自动拉取模型列表（后台进行，不阻塞返回）
-  return providerMgr.getConfig()
+// --- P4-F1: Models Center ---
+ipcMain.handle("models:list", (_e, providers: any[]) => buildModelList(providers))
+ipcMain.handle("models:toggleFavorite", (_e, providerId: string, modelId: string) => toggleModelFavorite(providerId, modelId))
+ipcMain.handle("models:toggleHidden", (_e, providerId: string, modelId: string) => toggleModelHidden(providerId, modelId))
+ipcMain.handle("models:favorites", () => [...getModelFavorites()])
+ipcMain.handle("models:hidden", () => [...getModelHidden()])
+
+// --- P4-F2: Budget Center ---
+ipcMain.handle("budget:get", () => getBudgetConfig())
+ipcMain.handle("budget:update", (_e, patch: any) => updateBudgetConfig(patch))
+ipcMain.handle("budget:check", (_e, dailySpent: number, monthlySpent: number, requestTokens: number) => checkBudget(getBudgetConfig(), dailySpent, monthlySpent, requestTokens))
+
+// --- P4-F3: Memory Studio ---
+ipcMain.handle("memory:scoreQuality", (_e, entry: any) => scoreMemoryQuality(entry))
+ipcMain.handle("memory:detectConflicts", (_e, entries: any[]) => detectMemoryConflicts(entries))
+
+// --- P4-F4: Workflow Center ---
+ipcMain.handle("workflow:substituteVars", (_e, template: string, vars: any[]) => substituteVariables(template, vars))
+ipcMain.handle("workflow:evaluateCondition", (_e, condition: string, vars: any[]) => evaluateCondition(condition, vars))
+ipcMain.handle("workflow:saveRun", (_e, record: any) => { saveRunRecord(record); return true })
+ipcMain.handle("workflow:runHistory", () => loadRunHistory())
+ipcMain.handle("workflow:runHistoryFor", (_e, workflowId: string) => getWorkflowRunHistory(workflowId))
+
+// --- P4-F5: Team Builder ---
+ipcMain.handle("teams:list", () => listTeamPresets())
+ipcMain.handle("teams:save", (_e, input: any) => saveTeamPreset(input))
+ipcMain.handle("teams:delete", (_e, id: string) => deleteTeamPreset(id))
+ipcMain.handle("teams:defaultFirefly", (_e, agentIds: string[]) => getDefaultFireflyTeam(agentIds))
+
+// --- P4-F6: Project Knowledge Enhanced ---
+ipcMain.handle("knowledge:detectTechStack", (_e, rootPath: string) => detectTechStack(rootPath))
+ipcMain.handle("knowledge:generateSummary", (_e, rootPath: string, entries: any[]) => generateWorkspaceSummary(rootPath, entries))
+
+// --- P4-F7: Plugin Manager Enhanced ---
+ipcMain.handle("plugins:install", (_e, manifest: any) => installPlugin(manifest))
+ipcMain.handle("plugins:uninstall", (_e, id: string) => uninstallPlugin(id))
+ipcMain.handle("plugins:toggle", (_e, id: string) => togglePlugin(id))
+ipcMain.handle("plugins:listInstalled", () => listInstalledPlugins())
+ipcMain.handle("plugins:enabledContributions", () => getEnabledContributions())
+
+// --- P4-F8: Diagnostics Suite ---
+ipcMain.handle("diagnostics:runSuite", async () => {
+  return runDiagnosticSuite({
+    appVersion: resolveAppVersionFromMain(),
+    hasProviders: (registry.getAll().length > 0),
+    hasAgents: (registry.getAll().length > 0),
+    hasMcpServers: (await import("./runtime/mcp")).listMcpServers().length > 0,
+    hasMemoryEntries: false,
+    hasWorkspace: !!getWorkspaceManager()?.getActive()
+  })
 })
-ipcMain.handle("providers:fetchModels", async (_e, id) => {
-  const r = await providerMgr.fetchModels(id)
-  return { ...r, config: providerMgr.getConfig() }
-})
-ipcMain.handle("providers:health", async (_e, id) => providerMgr.checkProviderHealth(id))
-ipcMain.handle("providers:healthAll", async () => {
-  const results: any = {}
-  for (const p of providerMgr.getProviders()) {
-    results[p.id] = await providerMgr.checkProviderHealth(p.id)
-  }
-  return results
-})
-ipcMain.handle("routing:setBinding", async (_e, b) => { providerMgr.upsertBinding(b); registerAgentsFromBindings(); return providerMgr.getBindings() })
-ipcMain.handle("routing:removeBinding", async (_e, agentId) => { providerMgr.removeBinding(agentId); registerAgentsFromBindings(); return providerMgr.getBindings() })
-ipcMain.handle("routing:setFallback", async (_e, chain) => { providerMgr.setFallbackChain(chain); return providerMgr.getConfig().routing })
-ipcMain.handle("routing:setStrategy", async (_e, s) => { providerMgr.setStrategy(s); return providerMgr.getConfig().routing })
-ipcMain.handle("routing:setBindingThinking", async (_e, agentId, t) => { providerMgr.setBindingThinking(agentId, t); return providerMgr.getBindings() })
-ipcMain.handle("routing:setProviderThinking", async (_e, id, t) => { providerMgr.setProviderThinking(id, t); return providerMgr.getConfig() })
-ipcMain.handle("routing:activeBinding", async (_e, agentId) => { providerMgr.setActiveBinding(agentId); return providerMgr.getConfig().activeBindingId })
+
+// --- P1-2: Firefly State Machine ---
+ipcMain.handle("firefly:createState", () => createFireflyState())
+ipcMain.handle("firefly:completeRole", (_e, state: any, role: string, output: string) => completeRole(state, role as any, output))
+ipcMain.handle("firefly:getRoleContext", (_e, state: any, role: string, prompt: string, memory?: string, project?: string) => getRoleContext(state, role as any, prompt, memory, project))
+ipcMain.handle("firefly:isComplete", (_e, state: any) => isComplete(state))
+ipcMain.handle("firefly:getOutput", (_e, state: any) => getFinalOutput(state))
+
+// Provider & Routing IPC handlers moved to src/main/ipc/provider-ipc.ts (registered via registerAllIpcHandlers)
 ipcMain.handle("proxy:info", async () => ({
   url: proxy.getUrl(),
   openaiUrl: proxy.getUrl(),
@@ -1754,6 +1966,7 @@ ipcMain.handle("agentic:getMode", () => getAgenticConfig().getMode())
 ipcMain.handle("agentic:setMode", (_e, mode: 'all' | 'selected') => getAgenticConfig().setMode(mode))
 // 写/执行审批门禁：策略读写 + 运行时决策回传
 ipcMain.handle("agentic:getApprovalConfig", () => getApprovalConfig().getConfig())
+ipcMain.handle("agentic:setApprovalPreset", (_e, preset: string) => getApprovalConfig().setPreset(preset as any))
 ipcMain.handle("agentic:setApprovalDefault", (_e, tool: GuardedTool, policy: ApprovalPolicy) => getApprovalConfig().setDefault(tool, policy))
 ipcMain.handle("agentic:setApprovalOverride", (_e, agentId: string, tool: GuardedTool, policy: ApprovalPolicy | null) => getApprovalConfig().setOverride(agentId, tool, policy))
 ipcMain.handle("agentic:resolveApproval", (_e, requestId: string, approved: boolean) => dispatcher?.resolveApproval(requestId, approved) ?? false)
@@ -1838,6 +2051,18 @@ app.whenReady().then(async () => {
   createWindow()
   createTray()
   await initHub()
+
+  // Register domain-specific IPC handlers (extracted from monolithic index.ts)
+  registerAllIpcHandlers({
+    memory: memory,
+    providerMgr: providerMgr,
+    registerAgentsFromBindings: registerAgentsFromBindings,
+    resolveAppVersionFromMain,
+    getWorkspaceManager,
+    store,
+    registry
+  })
+
   if (pendingDeepLink) {
     mainWindow?.webContents.once("did-finish-load", () => {
       mainWindow?.webContents.send("app:deep-link", pendingDeepLink)
@@ -1854,9 +2079,96 @@ app.on("activate", () => {
   ensureWindowVisible()
 })
 
-app.on("before-quit", async () => {
+// --- Execution Tracker IPC ---
+const executionTrackers = new Map<string, ReturnType<typeof createExecutionTracker>>()
+// P2-3: TTL-based auto-cleanup so trackers don't leak if the renderer
+// crashes or never calls execution:report.
+const EXECUTION_TRACKER_TTL_MS = 30 * 60 * 1000 // 30 minutes
+const executionTrackerTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+function clearExecutionTrackerTimer(sessionId: string): void {
+  const t = executionTrackerTimers.get(sessionId)
+  if (t) { clearTimeout(t); executionTrackerTimers.delete(sessionId) }
+}
+
+ipcMain.handle("execution:start", (_event, sessionId: string) => {
+  const tracker = createExecutionTracker(sessionId)
+  executionTrackers.set(sessionId, tracker)
+  clearExecutionTrackerTimer(sessionId)
+  executionTrackerTimers.set(sessionId, setTimeout(() => {
+    executionTrackers.delete(sessionId)
+    executionTrackerTimers.delete(sessionId)
+  }, EXECUTION_TRACKER_TTL_MS))
+  return { sessionId, startTime: tracker.startTime }
+})
+
+ipcMain.handle("execution:tool-start", (_event, sessionId: string, toolId: string, toolName: string, input?: string) => {
+  const tracker = executionTrackers.get(sessionId)
+  if (tracker) {
+    tracker.startTool(toolId, toolName, input)
+    return true
+  }
+  return false
+})
+
+ipcMain.handle("execution:tool-end", (_event, sessionId: string, toolId: string, status: 'succeeded' | 'failed' | 'declined', output?: string, error?: string) => {
+  const tracker = executionTrackers.get(sessionId)
+  if (tracker) {
+    tracker.endTool(toolId, status, output, error)
+    return true
+  }
+  return false
+})
+
+ipcMain.handle("execution:file-modified", (_event, sessionId: string, filePath: string) => {
+  const tracker = executionTrackers.get(sessionId)
+  if (tracker) {
+    tracker.recordFileModification(filePath)
+    return true
+  }
+  return false
+})
+
+ipcMain.handle("execution:report", (_event, sessionId: string) => {
+  const tracker = executionTrackers.get(sessionId)
+  clearExecutionTrackerTimer(sessionId)
+  if (tracker) {
+    const stats = tracker.generateReport()
+    tracker.persistReport()
+    executionTrackers.delete(sessionId)
+    return stats
+  }
+  return null
+})
+
+// P1-2: before-quit only flags quitting (sync, reliable); async cleanup moved
+// to will-quit which natively supports event.preventDefault() + manual exit.
+app.on("before-quit", () => {
   (app as any).isQuitting = true
-  await registry.stopAll()
-  hub?.stop()
-  proxy.stop()
+})
+
+let willQuitCleanupStarted = false
+app.on("will-quit", (event) => {
+  if (willQuitCleanupStarted) return
+  willQuitCleanupStarted = true
+  event.preventDefault()
+
+  const STOP_TIMEOUT_MS = 5000
+  const cleanup = async (): Promise<void> => {
+    // Kill any still-running terminal children so we don't orphan shell processes.
+    try { getTerminalRuntime().dispose() } catch { /* non-critical */ }
+    // P2-3: Clear all execution tracker timers and entries.
+    for (const t of executionTrackerTimers.values()) clearTimeout(t)
+    executionTrackerTimers.clear()
+    executionTrackers.clear()
+    // registry.stopAll 可能卡在 stdio agent 不响应；加超时防止阻塞退出
+    await Promise.race([
+      registry.stopAll().catch(() => {}),
+      new Promise<void>(resolve => setTimeout(resolve, STOP_TIMEOUT_MS))
+    ])
+    try { hub?.stop() } catch { /* noop */ }
+    try { proxy.stop() } catch { /* noop */ }
+  }
+
+  cleanup().finally(() => app.exit(0))
 })

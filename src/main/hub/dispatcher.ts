@@ -16,9 +16,11 @@ import { acpMcpServersForWorkspace } from "../runtime/mcp"
 import { getSkillManager } from "../skills/manager"
 import { buildSkillBlock } from "../skills/inject"
 import { runAgenticHttp } from "../agentic/executor"
+import { createExecutionTracker } from "../runtime/execution-tracker"
 import { isHttpAgenticEnabled } from "../agentic/capabilities"
-import { getApprovalConfig, ApprovalRequest, GuardedTool } from "../agentic/approval"
+import { getApprovalConfig, ApprovalRequest, GuardedTool, savePendingApproval, resolvePendingApproval, expireStalePendingApprovals, assessApprovalRisk, approvalReason, type PersistedPendingApproval } from "../agentic/approval"
 import { getRunTimeoutMs } from "../runtime/run-preferences"
+import { pushNotification } from "../runtime/notifications"
 // --- /AgentHub skills + native agentic ---
 
 export type DispatchMode = "auto" | "broadcast" | "chain" | "orchestrate"
@@ -110,7 +112,12 @@ export type StreamEvent =
   // agentic 活动步骤（stdio stream-json / 未来 HTTP act-observe 解析所得）；UI 按 step.id upsert
   | { kind: "activity"; taskId: string; agentId: string; step: { id: string; kind?: string; tool?: string; label?: string; detail?: string; output?: string; status: string } }
   // 写/执行审批请求（'ask' 策略命中时发出）；渲染层弹窗 → agentic:resolveApproval 回传决策
-  | { kind: "approval"; taskId: string; agentId: string; request: { id: string; tool: GuardedTool; toolName: string; label?: string; detail?: string } }
+  | { kind: "approval"; taskId: string; agentId: string; request: {
+      id: string; tool: GuardedTool; toolName: string;
+      label?: string; detail?: string;
+      action?: 'write_file' | 'run_command'; target?: string;
+      risk?: string; reason?: string; preview?: string
+    } }
   // 编排模式（Orchestrator）
   | { kind: "orchestrate:plan"; taskId: string; leadAgentId?: string; subtasks: Array<{ id: string; title: string; detail?: string; agentId?: string }> }
   | { kind: "orchestrate:subtask"; taskId: string; subtaskId: string; agentId?: string; status: "pending" | "running" | "done" | "error"; content?: string }
@@ -134,6 +141,19 @@ export class Dispatcher extends EventEmitter {
     private memoryProvider: (taskText?: string) => RuntimeMemoryEntry[] = () => []
   ) {
     super()
+    // On startup, mark any leftover pending approvals from previous session as stale.
+    // If any were recovered, surface a notification so the user knows their prior
+    // turn was interrupted (the agent loop is gone, so they can retry manually).
+    try {
+      const expired = expireStalePendingApprovals()
+      if (expired > 0) {
+        pushNotification({
+          title: '审批请求已失效',
+          body: `上次会话有 ${expired} 个未决审批因重启而失效，相关任务已停止。可重新发起以继续。`,
+          category: 'approval'
+        })
+      }
+    } catch { /* non-critical */ }
   }
 
   emit(event: string | symbol, ...args: any[]): boolean {
@@ -641,6 +661,7 @@ export class Dispatcher extends EventEmitter {
     }
     const start = Date.now()
     this.emit("stream", { kind: "start", taskId: task.id, agentId, providerId, modelId, mode: "content" })
+    const tracker = createExecutionTracker(task.id)
     try {
       const res = await this.withAgentTimeout(task, agentId, () => runAgenticHttp({
         userText,
@@ -650,14 +671,16 @@ export class Dispatcher extends EventEmitter {
         thinking,
         root,
         agentId,
-        policyFor: (tool) => getApprovalConfig().policyFor(agentId, tool),
+        policyFor: (tool, risk) => getApprovalConfig().policyForWithRisk(agentId, tool, risk ?? 'low'),
         requestApproval: (req) => this.requestApprovalFor(task, agentId, req),
         isCancelled: () => (task as any).status === "cancelled",
+        tracker,
         emit: {
           delta: (channel, textDelta) => this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId, modelId, channel, text: textDelta }),
           activity: (step) => this.emit("stream", { kind: "activity", taskId: task.id, agentId, step })
         }
       }))
+      tracker.persistReport()
       if (res.error) {
         task.errors.set(agentId, res.error)
         this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId, modelId, error: res.error })
@@ -702,6 +725,7 @@ export class Dispatcher extends EventEmitter {
         if (id.startsWith(`appr-${taskId}-`)) {
           clearTimeout(p.timer)
           this.pendingApprovals.delete(id)
+          resolvePendingApproval(id, 'denied')
           p.resolve(false)
         }
       }
@@ -758,21 +782,39 @@ export class Dispatcher extends EventEmitter {
     if (!p) return false
     clearTimeout(p.timer)
     this.pendingApprovals.delete(requestId)
+    resolvePendingApproval(requestId, approved ? 'approved' : 'denied')
     p.resolve(approved)
     return true
   }
 
-  /** 发起一次写/执行审批：emit approval 事件 + 注册待决 Promise（超时自动拒绝）。 */
+  /** 发起一次写/执行审批：emit approval 事件 + 注册待决 Promise（超时自动拒绝）+ 持久化。 */
   private requestApprovalFor(task: DispatchTask, agentId: string, req: ApprovalRequest): Promise<boolean> {
     const requestId = `appr-${task.id}-${++this.approvalSeq}`
     return new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => {
-        if (this.pendingApprovals.delete(requestId)) resolve(false)
+        if (this.pendingApprovals.delete(requestId)) {
+          resolvePendingApproval(requestId, 'denied')
+          resolve(false)
+        }
       }, APPROVAL_TIMEOUT_MS)
       this.pendingApprovals.set(requestId, { resolve, timer })
+      // Persist pending approval for cross-restart recovery
+      const persisted: PersistedPendingApproval = {
+        id: requestId,
+        request: req,
+        agentId,
+        createdAt: new Date().toISOString(),
+        status: 'pending'
+      }
+      savePendingApproval(persisted)
       this.emit("stream", {
         kind: "approval", taskId: task.id, agentId,
-        request: { id: requestId, tool: req.tool, toolName: req.toolName, label: req.label, detail: req.detail }
+        request: {
+          id: requestId, tool: req.tool, toolName: req.toolName,
+          label: req.label, detail: req.detail,
+          action: req.action, target: req.target,
+          risk: req.risk, reason: req.reason, preview: req.preview
+        }
       })
     })
   }
@@ -782,9 +824,24 @@ export class Dispatcher extends EventEmitter {
   }
 
   getRecentTasks(limit = 20): DispatchTask[] {
+    this.pruneTasks()
     return Array.from(this.tasks.values())
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
       .slice(0, limit)
+  }
+
+  /** P2-1: Prune completed/cancelled/failed tasks when the map exceeds the cap. */
+  private pruneTasks(maxTasks = 100): void {
+    if (this.tasks.size <= maxTasks) return
+    const entries = Array.from(this.tasks.entries())
+      .sort((a, b) => a[1].createdAt.getTime() - b[1].createdAt.getTime())
+    // Remove oldest terminal tasks first
+    for (const [id, task] of entries) {
+      if (this.tasks.size <= maxTasks) break
+      if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'failed') {
+        this.tasks.delete(id)
+      }
+    }
   }
 
   /** Stdio路径: 通过本地 CLI 子进程向 agent 发 prompt, 收集 stdout 作为 stream 内容.
@@ -900,7 +957,14 @@ export class Dispatcher extends EventEmitter {
               rejectP(Object.assign(new Error(`已超过超时限制（${Math.round(TIMEOUT_MS / 1000)} 秒）` + (hasOutput ? "，仅收到部分输出" : "")), { code: "AGENT_TIMEOUT" }))
               return
             }
-            resolveP()  // procGone / quietDone / cancelled → 用已收集内容完成
+            // 进程退出但 adapter 报告 error（非零退出码）→ 必须 reject，
+            // 否则竞态会让 poll 在 onErr 之前 resolveP() 吞掉退出码错误。
+            if (procGone && adapter.status === 'error') {
+              // stderr 细节已由 formatExitError 写入 adapter 内部；这里用已收集 stderr 兜底
+              rejectP(new Error(`${agentId} 进程异常退出（status=error）。若已显示退出码请以此为准。${content ? '（已收集部分输出）' : ''}`))
+              return
+            }
+            resolveP()  // procGone(正常) / quietDone / cancelled → 用已收集内容完成
           }
         }, POLL_MS)
       }), () => { try { adapter.stop() } catch { /* noop */ } })
@@ -1026,7 +1090,15 @@ export class Dispatcher extends EventEmitter {
       agentId,
       step: { id: stepId, kind: "tool", tool: toolName, label, detail, status: "awaiting" }
     })
-    const approved = await this.requestApprovalFor(task, agentId, { stepId, agentId, tool, toolName, label, detail })
+    const action: 'write_file' | 'run_command' = tool === 'exec' ? 'run_command' : 'write_file'
+    const target = detail || label || toolName
+    const risk = assessApprovalRisk(toolName, req.raw || {})
+    const reason = approvalReason(toolName, risk, target)
+    const preview = detail || ''
+    const approved = await this.requestApprovalFor(task, agentId, {
+      stepId, agentId, tool, toolName, label, detail,
+      action, target, risk, reason, preview
+    })
     if (!approved) {
       this.emit("stream", {
         kind: "activity",

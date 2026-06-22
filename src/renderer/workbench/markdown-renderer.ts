@@ -167,6 +167,7 @@ function inlineMarkdown(value: string): string {
   text = text.replace(/__([^_]+)__/g, '<strong>$1</strong>')
   text = text.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
   text = text.replace(/(^|[^_])_([^_\n]+)_/g, '$1<em>$2</em>')
+  // eslint-disable-next-line no-control-regex
   text = text.replace(/\u0000AGENTHUBTOKEN(\d+)\u0000/g, (_m, index) => tokens[Number(index)] ?? '')
   return text
 }

@@ -8,6 +8,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { Icon, IC, Enter, AgentMark, Switch, Seg } from '../glass/ui'
 import { AGENT_META } from '../glass/meta'
 import { tr } from '../glass/i18n'
+import { styledConfirm } from '../lib/confirm'
 
 type Pol = 'allow' | 'ask' | 'deny'
 interface ApprovalCfg {
@@ -181,7 +182,8 @@ export function SkillsTab() {
     } catch (e: any) { setErr(e?.message || 'failed') }
   }
   const removeSkill = async (id: string, name: string) => {
-    if (!window.confirm(tr(`删除技能「${name}」？已安装的 agent 会一并卸载。`, `Delete skill "${name}"? It will be uninstalled from all agents.`))) return
+    const ok = await styledConfirm({ message: tr(`删除技能「${name}」？已安装的 agent 会一并卸载。`, `Delete skill "${name}"? It will be uninstalled from all agents.`), danger: true })
+    if (!ok) return
     try { await api()?.skills?.remove?.(id); await refresh() } catch (e: any) { setErr(e?.message || 'failed') }
   }
 
@@ -209,7 +211,7 @@ export function SkillsTab() {
   )
 }
 
-function LocalSkillImport({ skills, localSkills, onChanged }: {
+function _LocalSkillImport({ skills, localSkills, onChanged }: {
   skills: SkillDef[]
   localSkills: LocalSkillCandidate[]
   onChanged: () => void
@@ -398,7 +400,7 @@ function ApprovalPolicyPanel({ caps }: { caps: CapState[] }) {
   return (
     <Enter className="glass" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }} delay={90}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-        <Icon d={IC.bolt} size={17} style={{ color: '#f5b45a' }} />
+        <Icon d={IC.bolt} size={17} style={{ color: 'var(--st-busy)' }} />
         <div style={{ fontWeight: 700 }}>{tr('审批策略', 'Approval policy')}</div>
         <span className="ah-hint">{tr('agentic 写文件 / 执行命令前的放行规则', 'gate writes & command execution in the agentic loop')}</span>
       </div>
@@ -459,7 +461,7 @@ function ApprovalPolicyPanel({ caps }: { caps: CapState[] }) {
 }
 
 /* ---------- 技能目录 + 添加 ---------- */
-function LegacySkillCatalog({ skills, onChanged, onRemove, onEdit, onInstallAll, installs, agentIds }: {
+function _LegacySkillCatalog({ skills, onChanged, onRemove, onEdit, onInstallAll, installs, agentIds }: {
   skills: SkillDef[]; onChanged: () => void; onRemove: (id: string, name: string) => void
   onEdit: (id: string, patch: { name: string; description: string; instructions: string; tags: string[] }) => void
   onInstallAll: (skillId: string, on: boolean) => void; installs: Installs; agentIds: string[]

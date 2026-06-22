@@ -31,14 +31,15 @@ describe("settings MCP and Skills polish", () => {
   })
 
   it("labels MCP servers discovered from common local client configs", () => {
-    const settings = readFileSync(join(process.cwd(), "src/renderer/screens/Settings.tsx"), "utf8")
+    readFileSync(join(process.cwd(), "src/renderer/screens/Settings.tsx"), "utf8")
     const mcp = readFileSync(join(process.cwd(), "src/main/runtime/mcp.ts"), "utf8")
 
     expect(mcp).toContain('join(home, ".claude.json")')
     expect(mcp).toContain('join(home, ".ccgui", "config.json")')
     expect(mcp).toContain('join(home, ".gemini", "settings.json")')
     expect(mcp).toContain("disabledMcpServers")
-    expect(settings).toContain("claude: 'Claude'")
-    expect(settings).toContain("ccgui: tr('全局配置', 'Global config')")
+    const mcpTab = readFileSync(join(process.cwd(), "src/renderer/screens/McpSettingsTab.tsx"), "utf8")
+    expect(mcpTab).toContain("claude: 'Claude'")
+    expect(mcpTab).toContain("ccgui: tr('全局配置', 'Global config')")
   })
 })

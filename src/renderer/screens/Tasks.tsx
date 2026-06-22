@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import { Icon, IC, AgentMark, Enter, Seg, Collapse } from '../glass/ui'
 import { TaskItem, sumTokens, fmtTokens, usageTotal, sumCost, costOf, fmtCost } from '../glass/meta'
 import { SetupTab, firstRunActionForError } from '../glass/connection-status'
@@ -49,6 +49,10 @@ function StatusBadge({ status }: { status: TaskItem['status'] }) {
 
 function CopyBtn({ text }: { text: string }) {
   const [done, setDone] = useState(false)
+  // P2-10: Track timer in ref and clean up on unmount to prevent
+  // setState on unmounted component.
+  const timerRef = useRef<ReturnType<typeof setTimeout>>()
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
   return (
     <button
       className="ah-btn sm"
@@ -59,7 +63,8 @@ function CopyBtn({ text }: { text: string }) {
         try {
           navigator.clipboard?.writeText(text)
           setDone(true)
-          setTimeout(() => setDone(false), 1200)
+          if (timerRef.current) clearTimeout(timerRef.current)
+          timerRef.current = setTimeout(() => setDone(false), 1200)
         } catch {
           // noop
         }
@@ -169,7 +174,7 @@ export function TasksScreen({ tasks, search, onCancelTask, onDeleteTask, onClear
                       <AgentMark id={agentId} size={24} radius={7} />
                       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
                         {task.steps?.[agentId]?.length ? <ActivityTrail steps={task.steps[agentId]} running={task.status === 'running'} /> : null}
-                        <div style={{ fontSize: 13, color: 'var(--tx-2)', background: 'rgba(0,0,0,0.18)', borderRadius: 10, padding: '9px 13px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{content}</div>
+                        <div style={{ fontSize: 13, color: 'var(--tx-2)', background: 'var(--bg-task-content)', borderRadius: 10, padding: '9px 13px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{content}</div>
                       </div>
                       {content && <CopyBtn text={content} />}
                     </div>
@@ -181,7 +186,7 @@ export function TasksScreen({ tasks, search, onCancelTask, onDeleteTask, onClear
                         <AgentMark id={agentId} size={24} radius={7} />
                         <div style={{ flex: 1, minWidth: 220, display: 'flex', flexDirection: 'column', gap: 6 }}>
                           {task.steps?.[agentId]?.length ? <ActivityTrail steps={task.steps[agentId]} running={false} /> : null}
-                          <div style={{ fontSize: 12.5, color: 'var(--st-error)', background: 'rgba(232,112,106,0.08)', border: '1px solid rgba(232,112,106,0.2)', borderRadius: 10, padding: '9px 13px', fontFamily: 'var(--font-mono)' }}>{error}</div>
+                          <div style={{ fontSize: 12.5, color: 'var(--st-error)', background: 'var(--bg-error-subtle)', border: '1px solid var(--border-error-subtle)', borderRadius: 10, padding: '9px 13px', fontFamily: 'var(--font-mono)' }}>{error}</div>
                         </div>
                         {action && <button className="ah-btn sm primary" onClick={() => openSetup(action.tab)}>去设置</button>}
                         {error && <CopyBtn text={error} />}

@@ -6,7 +6,7 @@ import {
   upsertStep
 } from "./chat-transcript"
 import type { ActivityStep, ReplyState } from "./meta"
-import type { OrchestrateState } from "./orchestrate-view"
+import type { OrchestrateState } from "./orchestrate-types"
 
 const reply = (patch: Partial<ReplyState>): ReplyState => ({
   agentId: "codex",

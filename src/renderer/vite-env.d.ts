@@ -1,22 +1,26 @@
 /// <reference types="vite/client" />
 
+// Shared type contracts from src/shared/ipc-types.ts
+// Renderer-side reference: these types mirror the main process definitions.
+
 interface ElectronAPI {
   hub: {
     getStatus: () => Promise<any>
     dispatch: (text: string, mode?: string, targetAgent?: string, opts?: { thinking?: any; modelSelection?: ModelSelection; workspaceId?: string | null }) => Promise<any>
     cancel: (taskId: string) => Promise<boolean>
-    onStatus: (callback: (data: any) => void) => () => void
+    onStatus: (callback: (data: { running: boolean }) => void) => () => void
     onStream: (callback: (data: any) => void) => () => void
   }
   providers: {
-    get: () => Promise<any>
+    get: () => Promise<any> // ProvidersConfig — typed in shared/ipc-types.ts
     upsert: (p: any) => Promise<any>
     delete: (id: string) => Promise<boolean>
     setEnabled: (id: string, enabled: boolean) => Promise<any>
     setKey: (id: string, key: string) => Promise<any>
     health: (id: string) => Promise<any>
     healthAll: () => Promise<any>
-    fetchModels: (id: string) => Promise<{ ok: boolean; count?: number; error?: string; config?: any }>
+    fetchModels: (id: string, override?: { baseUrl?: string; apiKey?: string; kind?: string }) => Promise<{ ok: boolean; count?: number; error?: string; config?: any }>
+    reorderForClaude: (orderedIds: string[]) => Promise<any>
   }
   takeover: {
     status: () => Promise<Record<string, {
@@ -71,7 +75,7 @@ interface ElectronAPI {
   }
   app: {
     openExternal: (url: string) => Promise<void>
-    openPath: (input: { path: string; target?: 'antigravity' | 'explorer' | 'system'; line?: number; column?: number; workspaceRoot?: string | null }) => Promise<{ ok: boolean; path: string; target: 'antigravity' | 'explorer' | 'system'; error?: string }>
+    openPath: (input: { path: string; target?: 'antigravity' | 'explorer' | 'system' | 'vscode' | 'cursor' | 'windsurf' | 'zed' | 'file-manager'; line?: number; column?: number; workspaceRoot?: string | null }) => Promise<{ ok: boolean; path: string; target: string; error?: string }>
     resolvePath: (input: { path: string; workspaceRoot?: string | null }) => Promise<{ ok: boolean; path: string; error?: string }>
     readTextFile: (input: { path: string; workspaceRoot?: string | null }) => Promise<{ ok: boolean; path: string; content?: string; error?: string }>
     pickFolder: (options?: { defaultPath?: string }) => Promise<string | null>
@@ -93,6 +97,7 @@ interface ElectronAPI {
     rename: (threadId: string, title: string) => Promise<WorkbenchThread>
     delete: (threadId: string) => Promise<boolean>
     select: (threadId: string | null) => Promise<string | null>
+    fork: (input: { sourceThreadId: string; sourceTurnId: string; message: string }) => Promise<WorkbenchThread>
   }
   turns: {
     create: (input: { threadId?: string | null; workspaceId?: string | null; prompt: string; mode?: DispatchPreset; targetAgent?: string | null; thinking?: any; modelSelection?: ModelSelection; attachments?: WorkbenchAttachment[]; customSchedule?: SchedulePreview }) => Promise<any>
@@ -179,6 +184,7 @@ interface ElectronAPI {
     remove: (id: string) => Promise<boolean>
     setEnabled: (id: string, enabled: boolean, workspaceId?: string | null) => Promise<McpServerConfig | null>
     test: (id: string, workspaceId?: string | null) => Promise<McpServerConfig>
+    listTools: (id: string, workspaceId?: string | null) => Promise<{ ok: boolean; tools: { name: string; description?: string }[]; error?: string }>
   }
   worktrees: {
     list: (parentWorkspaceId?: string | null) => Promise<WorktreeItem[]>
@@ -204,6 +210,9 @@ interface ElectronAPI {
   browser: {
     open: (input: { workspaceId?: string | null; url?: string }) => Promise<BrowserSession>
     capture: (attachment: BrowserContextAttachment) => Promise<BrowserContextAttachment>
+    summarize: (snapshot: any) => Promise<string>
+    extractText: (html: string) => Promise<string>
+    analyzePrompt: (snapshot: any, request?: string) => Promise<string>
   }
   usage: {
     stats: (range?: UsageRange, view?: UsageView) => Promise<UsageStats>
@@ -238,10 +247,115 @@ interface ElectronAPI {
     setEnabled: (agentId: string, on: boolean) => Promise<string[]>
     getMode: () => Promise<'all' | 'selected'>
     setMode: (mode: 'all' | 'selected') => Promise<'all' | 'selected'>
-    getApprovalConfig: () => Promise<{ version: 1; default: { write: 'allow' | 'ask' | 'deny'; exec: 'allow' | 'ask' | 'deny' }; overrides: Record<string, { write?: 'allow' | 'ask' | 'deny'; exec?: 'allow' | 'ask' | 'deny' }> }>
+    getApprovalConfig: () => Promise<{ version: 1; preset?: 'read-only' | 'auto' | 'full-access' | 'ask-all' | 'custom'; default: { write: 'allow' | 'ask' | 'deny'; exec: 'allow' | 'ask' | 'deny' }; overrides: Record<string, { write?: 'allow' | 'ask' | 'deny'; exec?: 'allow' | 'ask' | 'deny' }> }>
+    setApprovalPreset: (preset: 'read-only' | 'auto' | 'full-access' | 'ask-all' | 'custom') => Promise<any>
     setApprovalDefault: (tool: 'write' | 'exec', policy: 'allow' | 'ask' | 'deny') => Promise<any>
     setApprovalOverride: (agentId: string, tool: 'write' | 'exec', policy: 'allow' | 'ask' | 'deny' | null) => Promise<any>
     resolveApproval: (requestId: string, approved: boolean) => Promise<boolean>
+  }
+  prompts: {
+    list: (category?: string) => Promise<any[]>
+    get: (id: string) => Promise<any | null>
+    upsert: (input: any) => Promise<any>
+    delete: (id: string) => Promise<boolean>
+    search: (query: string) => Promise<any[]>
+    slashCommands: () => Promise<any[]>
+    incrementUse: (id: string) => Promise<void>
+    seedDefaults: () => Promise<void>
+  }
+  shortcuts: {
+    list: (category?: string) => Promise<any[]>
+    get: (id: string) => Promise<any | null>
+    update: (id: string, key: string) => Promise<any | null>
+    reset: (id: string) => Promise<any | null>
+    resetAll: () => Promise<void>
+    conflicts: () => Promise<Array<{ key: string; ids: string[] }>>
+  }
+  diagnostics: {
+    run: () => Promise<{ timestamp: string; results: Array<{ id: string; name: string; status: string; message: string }>; summary: { pass: number; warn: number; fail: number; skip: number; total: number } }>
+  }
+  backup: {
+    create: () => Promise<{ id: string; filename: string; createdAt: string; sizeBytes: number; keys: string[] }>
+    list: () => Promise<Array<{ id: string; filename: string; createdAt: string; sizeBytes: number; keys: string[] }>>
+    restore: (filename: string) => Promise<{ restored: string[]; error?: string }>
+    delete: (filename: string) => Promise<boolean>
+  }
+  conversation: {
+    exportMarkdown: (data: any) => Promise<string>
+    exportHtml: (data: any) => Promise<string>
+    exportFile: (data: any, format: string, path: string) => Promise<{ ok: boolean; path: string; error?: string }>
+  }
+  notifications: {
+    list: (unreadOnly?: boolean) => Promise<Array<{ id: string; title: string; body: string; category: string; read: boolean; createdAt: string; action?: any }>>
+    unreadCount: () => Promise<number>
+    push: (input: any) => Promise<any>
+    markRead: (id: string) => Promise<boolean>
+    markAllRead: () => Promise<number>
+    delete: (id: string) => Promise<boolean>
+    clearAll: () => Promise<void>
+  }
+  onboarding: {
+    getState: () => Promise<{ version: number; completed: boolean; completedAt?: string; completedSteps: string[]; skippedSteps: string[] }>
+    shouldShow: () => Promise<boolean>
+    completeStep: (step: string, skipped?: boolean) => Promise<any>
+    skipAll: () => Promise<void>
+    reset: () => Promise<void>
+    nextStep: () => Promise<string | null>
+  }
+  workspaceFiles: {
+    list: (rootPath: string, max?: number) => Promise<Array<{ path: string; relativePath: string; name: string; extension: string; isDirectory: boolean; sizeBytes: number }>>
+    search: (rootPath: string, query: string, max?: number) => Promise<Array<{ path: string; relativePath: string; name: string; extension: string; isDirectory: boolean; sizeBytes: number }>>
+    preview: (filePath: string, maxLines?: number) => Promise<{ ok: boolean; content?: string; error?: string }>
+  }
+  github: {
+    checkCli: () => Promise<{ available: boolean; authenticated: boolean; version?: string; error?: string }>
+    listPrs: (state?: string, limit?: number) => Promise<Array<{ number: number; title: string; state: string; author: string; url: string; branch: string; createdAt: string; labels: string[] }>>
+    listIssues: (state?: string, limit?: number) => Promise<Array<{ number: number; title: string; state: string; author: string; url: string; labels: string[]; createdAt: string }>>
+    currentBranchPr: () => Promise<{ branch: string; pr?: any }>
+  }
+  workflows: {
+    list: (category?: string) => Promise<WorkflowDefinition[]>
+    get: (id: string) => Promise<WorkflowDefinition | null>
+    upsert: (input: Partial<WorkflowDefinition> & { name: string; steps: WorkflowStep[] }) => Promise<WorkflowDefinition>
+    delete: (id: string) => Promise<boolean>
+    search: (query: string) => Promise<WorkflowDefinition[]>
+    seed: () => Promise<WorkflowDefinition[]>
+  }
+  inlineEdit: {
+    buildPrompt: (request: any) => Promise<string>
+    validate: (original: string, replacement: string) => Promise<{ valid: boolean; warnings?: string[] }>
+    apply: (content: string, startLine: number, endLine: number, replacement: string) => Promise<{ ok: boolean; content?: string; error?: string }>
+  }
+  terminalAi: {
+    buildPrompt: (userPrompt: string, context: any) => Promise<string>
+    suggestCommand: (intent: string, context: any) => Promise<string>
+    explainOutput: (context: any) => Promise<string>
+  }
+  ai: {
+    quickComplete: (input: { prompt: string; systemPrompt?: string; providerId?: string; modelId?: string; timeoutMs?: number }) =>
+      Promise<{ content: string; error?: string }>
+  }
+  memoryGraph: {
+    build: (entries: any[]) => Promise<any>
+    cleanupSuggestions: (graph: any) => Promise<any[]>
+  }
+  plugins: {
+    scan: (workspaceRoot?: string) => Promise<any[]>
+    validate: (manifest: any) => Promise<{ valid: boolean; errors?: string[] }>
+    contributions: (plugins: any[]) => Promise<{
+      commands: Array<{ pluginId: string; id: string; label: string }>
+      skills: Array<{ pluginId: string; id: string; path: string; content?: string }>
+      prompts: Array<{ pluginId: string; id: string; name: string; body: string }>
+    }>
+    repositories: () => Promise<Array<{ id: string; name: string; url: string; description?: string; source: 'builtin' }>>
+    importRepository: (input: { url: string; id?: string; name?: string; branch?: string }) => Promise<{ ok: boolean; plugin?: any; plugins?: any[]; path?: string; error?: string; diagnostics?: string[] }>
+  }
+  projectMap: {
+    build: (rootPath: string, maxDepth?: number) => Promise<any>
+    search: (map: any, query: string) => Promise<any[]>
+  }
+  release: {
+    checks: () => Promise<any>
   }
   platform: string
 }
@@ -312,7 +426,7 @@ interface ModelSelection {
 
 interface LocalModelConfig {
   agentId: string
-  source: 'codex' | 'gemini'
+  source: 'codex' | 'gemini' | 'claude'
   modelId?: string
   authMode?: 'api-key' | 'oauth' | 'unknown' | 'missing'
   baseUrl?: string
@@ -803,6 +917,32 @@ interface LocalAgentStatus {
   candidates: Array<{ source: 'desktop' | 'terminal'; label: string; path: string }>
   workspaceSession: 'per-dispatch' | 'persistent'
   error?: string
+}
+
+type WorkflowStepType = 'prompt' | 'agent' | 'skill' | 'review' | 'gate'
+
+interface WorkflowStep {
+  id: string
+  type: WorkflowStepType
+  label: string
+  agentId?: string
+  prompt?: string
+  skillId?: string
+  dependsOn?: string[]
+  requiresApproval?: boolean
+}
+
+interface WorkflowDefinition {
+  id: string
+  name: string
+  description: string
+  category: 'development' | 'review' | 'research' | 'deployment' | 'custom'
+  steps: WorkflowStep[]
+  tags: string[]
+  createdAt: string
+  updatedAt: string
+  useCount: number
+  pinned?: boolean
 }
 
 interface Window {

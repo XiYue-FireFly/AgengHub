@@ -2,7 +2,11 @@
 import { Icon, IC, AgentMark } from '../glass/ui'
 import { BindingDef, ProviderDef, TaskItem } from '../glass/meta'
 import { ApprovalDialog, ApprovalItem } from '../glass/approval-dialog'
-import { SettingsScreen, MotionLevel } from '../screens/Settings'
+// Phase 3.2 lazy loading: heavy views loaded on demand
+const SettingsScreen = React.lazy(() => import('../screens/Settings').then(m => ({ default: m.SettingsScreen })))
+type MotionLevel = 'off' | 'subtle' | 'rich'
+const WorkflowsPanel = React.lazy(() => import('./WorkflowsPanel').then(m => ({ default: m.WorkflowsPanel })))
+import { TerminalPanel } from './TerminalPanel'
 import { TasksScreen } from '../screens/Tasks'
 import { SetupTab, summarizeAgentConnections } from '../glass/connection-status'
 import { tr } from '../glass/i18n'
@@ -13,6 +17,10 @@ import { RunTimeline } from './RunTimeline'
 import { WriteWorkspace } from './WriteWorkspace'
 import { GitWorkbenchPanel } from './GitWorkbenchPanel'
 import { WorkspaceItem, AgentMap } from './types'
+import { CommandPalette, PaletteCommand } from './CommandPalette'
+import { ErrorBoundary } from '../ErrorBoundary'
+import { styledConfirm } from '../lib/confirm'
+import { GitBranchControl } from './GitBranchControl'
 import { localAgentLabel, localAgentOptions } from './localAgentOptions'
 import { customScheduleHasRunnableSteps, defaultCustomSchedule, defaultSmartFiveRoleSchedule, isStoredSchedule, sanitizeCustomSchedule } from './customSchedule'
 import { defaultDialogPath, readAppearanceLocal, rememberDialogPath } from '../appearance'
@@ -20,15 +28,16 @@ import {
   findKeyboardShortcutCommand,
   keyboardEventToShortcut,
   KEYBOARD_SHORTCUT_STORE_KEY,
+  KEYBOARD_SHORTCUT_COMMANDS,
   KEYBOARD_SHORTCUTS_CHANGED,
   KeyboardShortcutsConfigV1,
   resolveKeyboardShortcutBindings,
   shortcutDisplay
 } from '../keyboard-shortcuts'
 
-type ViewMode = 'chat' | 'write' | 'tasks' | 'settings'
-type SettingsTabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts'
-type RightPanel = 'runs' | 'git' | 'worktrees' | 'browser' | null
+type ViewMode = 'chat' | 'write' | 'tasks' | 'settings' | 'workflows'
+type SettingsTabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models' | 'plugins' | 'usage'
+type RightPanel = 'runs' | 'git' | 'worktrees' | 'browser' | 'terminal' | null
 type ThinkingLevelChoice = 'low' | 'medium' | 'high' | 'xhigh'
 type WorkbenchThinking = { mode: 'off' | 'auto' | 'enabled'; level: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; collapseInUI?: boolean; budgetTokens?: number }
 
@@ -79,6 +88,7 @@ interface WorkbenchLayoutProps {
     onReload: () => void
     onUpsertProvider: (p: any) => void
     onDeleteProvider: (id: string) => void
+    onReorderProvidersForClaude: (orderedIds: string[]) => void
   }
   motion: MotionLevel
   setMotion: (m: MotionLevel) => void
@@ -109,7 +119,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const [projectError, setProjectError] = useState<string | null>(null)
   const [rightPanel, setRightPanel] = useState<RightPanel>(null)
   const [sendError, setSendError] = useState<string | null>(null)
-  const [agentSlots, setAgentSlots] = useState<string[]>([])
+  const [_agentSlots, setAgentSlots] = useState<string[]>([])
   const [inspectorWidth, setInspectorWidth] = useState(DEFAULT_INSPECTOR_WIDTH)
   const [viewportWidth, setViewportWidth] = useState(typeof window === 'undefined' ? 1280 : window.innerWidth)
   const [terminalRuns, setTerminalRuns] = useState<TerminalRun[]>([])
@@ -521,7 +531,11 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     }
   }, [])
 
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+
   const runShortcutCommand = useCallback((commandId: string) => {
+    if (commandId === 'command-palette') { setCommandPaletteOpen(prev => !prev); return }
+    if (commandId === 'focus-composer') { document.querySelector<HTMLTextAreaElement>('.wb-composer-input')?.focus(); return }
     if (commandId === 'new-chat') void createThread()
     else if (commandId === 'choose-workspace') openCreateProject()
     else if (commandId === 'view-chat') setView('chat')
@@ -531,9 +545,69 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     else if (commandId === 'panel-runs') setRightPanel('runs')
     else if (commandId === 'panel-git') setRightPanel('git')
     else if (commandId === 'panel-browser') setRightPanel('browser')
+    else if (commandId === 'panel-terminal') setRightPanel('terminal')
     else if (commandId === 'settings-shortcuts') openSetup('shortcuts')
     else if (commandId === 'settings-mcp') openSetup('mcp')
+    else if (commandId === 'open-workflows') setView('workflows')
   }, [createThread, openCreateProject, setView, openSetup])
+
+  const paletteCommands: PaletteCommand[] = useMemo(() => {
+    const cmds = KEYBOARD_SHORTCUT_COMMANDS as readonly { id: string; labelZh: string; labelEn: string; descriptionZh: string; descriptionEn: string; defaultBindings: readonly string[] }[]
+    const fromShortcuts: PaletteCommand[] = cmds.map(cmd => ({
+      id: cmd.id,
+      label: cmd.labelEn || cmd.id,
+      labelZh: cmd.labelZh,
+      labelEn: cmd.labelEn,
+      descriptionZh: cmd.descriptionZh,
+      descriptionEn: cmd.descriptionEn,
+      category: 'keyboard'
+    }))
+    const extra: PaletteCommand[] = [
+      { id: 'open-memory', label: 'Open Memory', labelZh: '打开记忆', category: 'navigation' },
+      { id: 'open-skills', label: 'Open Skills', labelZh: '打开技能', category: 'navigation' },
+      { id: 'open-prompts', label: 'Open Prompts', labelZh: '打开提示词库', category: 'navigation' },
+      { id: 'open-plugins', label: 'Open Plugins', labelZh: '打开插件管理', category: 'navigation' },
+      { id: 'open-usage', label: 'Open Usage Stats', labelZh: '打开用量统计', category: 'navigation' },
+      { id: 'open-models', label: 'Open Models', labelZh: '打开模型列表', category: 'navigation' },
+      { id: 'open-diagnostics', label: 'Run Diagnostics', labelZh: '运行诊断', category: 'system' },
+      { id: 'open-backup', label: 'Create Backup', labelZh: '创建备份', category: 'system' },
+      { id: 'seed-workflows', label: 'Seed Default Workflows', labelZh: '加载默认工作流', category: 'system' },
+      // Agent switching commands
+      ...localAgentOptions(localAgents).map(id => ({
+        id: `switch-agent:${id}`,
+        label: `Switch to ${id}`,
+        labelZh: `切换到 ${id}`,
+        category: 'agent' as const
+      }))
+    ]
+    return [...fromShortcuts, ...extra]
+  }, [])
+
+  const executePaletteCommand = useCallback((id: string) => {
+    // Try shortcut handler first
+    runShortcutCommand(id)
+    // Handle extra commands
+    if (id === 'open-memory') openSetup('memory')
+    else if (id === 'open-skills') openSetup('skills')
+    else if (id === 'open-plugins') openSetup('plugins')
+    else if (id === 'open-usage') openSetup('usage')
+    else if (id === 'open-models') openSetup('models')
+    else if (id === 'open-prompts') openSetup('shortcuts') // prompts go in shortcuts for now
+    else if (id === 'open-diagnostics') openSetup('appearance')
+    else if (id === 'open-backup') openSetup('appearance')
+    else if (id === 'seed-workflows') {
+      window.electronAPI.workflows.seed().catch(() => {})
+    }
+    // Agent switching
+    else if (id.startsWith('switch-agent:')) {
+      const agentId = id.split(':')[1]
+      const usable = localAgentOptions(localAgents)
+      if (agentId && usable.includes(agentId)) {
+        setTargetAgent(agentId)
+        setView('chat')
+      }
+    }
+  }, [runShortcutCommand, openSetup, localAgents, setTargetAgent, setView])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -674,21 +748,21 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const title = activeThread?.title || (workspaceId ? tr('新对话', 'New chat') : tr('个人会话', 'Personal chat'))
   const activeWorkspace = workspaceId ? workspaces.find(w => w.id === workspaceId) ?? null : null
   const workspaceName = activeWorkspace?.name || (workspaceId ? tr('工作目录', 'Working folder') : tr('未绑定工作目录', 'No folder bound'))
-  const currentSchedule = schedules.find(schedule => schedule.preset === mode)
+  const _currentSchedule = schedules.find(schedule => schedule.preset === mode)
   const usableAgentIds = localAgentOptions(localAgents)
   const selectedAgentId = targetAgent && usableAgentIds.includes(targetAgent) ? targetAgent : null
   const visibleAgentIds = selectedAgentId
     ? [selectedAgentId, ...usableAgentIds.filter(id => id !== selectedAgentId)].slice(0, 3)
     : usableAgentIds.slice(0, 3)
-  const overflowAgentIds = usableAgentIds.filter(id => !visibleAgentIds.includes(id))
+  const _overflowAgentIds = usableAgentIds.filter(id => !visibleAgentIds.includes(id))
   const readyLocalAgents = usableAgentIds.length
-  const selectedAgentName = selectedAgentId ? agentShortName(selectedAgentId) : null
+  const _selectedAgentName = selectedAgentId ? agentShortName(selectedAgentId) : null
 
   useEffect(() => {
     if (targetAgent && !usableAgentIds.includes(targetAgent)) setTargetAgent(null)
   }, [targetAgent, usableAgentIds.join('|')])
 
-  const persistAgentSlots = useCallback((slots: string[]) => {
+  const _persistAgentSlots = useCallback((slots: string[]) => {
     const clean = normalizeAgentSlots(slots, usableAgentIds)
     setAgentSlots(clean)
     window.electronAPI.store.set(AGENT_SLOT_STORE_KEY, clean).catch(() => {})
@@ -966,6 +1040,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
           )}
 
           {view === 'chat' && (
+            <ErrorBoundary label="Chat">
             <>
               <div className="wb-chat-head">
                 <WorkbenchChatTopBar
@@ -1058,6 +1133,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
                 events={events}
               />
             </>
+            </ErrorBoundary>
           )}
 
           {view === 'tasks' && (
@@ -1075,6 +1151,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
 
           {view === 'settings' && (
             <div className="wb-scroll-surface wb-settings-surface">
+              <React.Suspense fallback={<div className="wb-muted-box">{tr('加载设置...', 'Loading settings...')}</div>}>
               <SettingsScreen
                 providers={props.providers}
                 bindings={props.bindings}
@@ -1086,6 +1163,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
                 onReload={props.providerActions.onReload}
                 onUpsertProvider={props.providerActions.onUpsertProvider}
                 onDeleteProvider={props.providerActions.onDeleteProvider}
+                onReorderProvidersForClaude={props.providerActions.onReorderProvidersForClaude}
                 motion={props.motion}
                 setMotion={props.setMotion}
                 initialTab={settingsTab}
@@ -1094,6 +1172,14 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
                 goChat={(agentId) => { selectTargetAgent(agentId); setView('chat') }}
                 openSetup={openSetup}
               />
+              </React.Suspense>
+            </div>
+          )}
+          {view === 'workflows' && (
+            <div className="wb-scroll-surface wb-settings-surface">
+              <React.Suspense fallback={<div className="wb-muted-box">{tr('加载工作流...', 'Loading workflows...')}</div>}>
+              <WorkflowsPanel onClose={() => setView('chat')} />
+              </React.Suspense>
             </div>
           )}
         </main>
@@ -1128,6 +1214,11 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
                   onClose={() => setRightPanel(null)}
                   terminalRuns={terminalRuns}
                   setTerminalRuns={setTerminalRuns}
+                />
+              ) : rightPanel === 'terminal' ? (
+                <TerminalPanel
+                  workspaceRoot={workspaceId ? activeWorkspace?.rootPath : undefined}
+                  onClose={() => setRightPanel(null)}
                 />
               ) : (
                 <WorkbenchToolPanel
@@ -1234,6 +1325,13 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       )}
 
       <ApprovalDialog items={props.approvals} onDecide={props.onApprovalDecide} />
+      {commandPaletteOpen && (
+        <CommandPalette
+          commands={paletteCommands}
+          onExecute={executePaletteCommand}
+          onClose={() => setCommandPaletteOpen(false)}
+        />
+      )}
     </div>
   )
 }
@@ -1338,7 +1436,7 @@ function NativeTitlebar({
   )
 }
 
-function AgentSlotBar({
+function _AgentSlotBar({
   usableAgentIds,
   slots,
   persistSlots,
@@ -1588,6 +1686,10 @@ function WorkbenchInspector({
   children: React.ReactNode
 }) {
   const drag = useRef<{ startX: number; startWidth: number } | null>(null)
+  // P2-11: Keep width in a ref so the drag effect doesn't re-bind listeners
+  // on every width change (which happens every mousemove during drag).
+  const widthRef = useRef(width)
+  widthRef.current = width
 
   useEffect(() => {
     const move = (event: MouseEvent) => {
@@ -1595,7 +1697,7 @@ function WorkbenchInspector({
       setWidth(drag.current.startWidth + (drag.current.startX - event.clientX))
     }
     const up = () => {
-      if (drag.current) commitWidth(width)
+      if (drag.current) commitWidth(widthRef.current)
       drag.current = null
     }
     window.addEventListener('mousemove', move)
@@ -1604,7 +1706,7 @@ function WorkbenchInspector({
       window.removeEventListener('mousemove', move)
       window.removeEventListener('mouseup', up)
     }
-  }, [setWidth, commitWidth, width])
+  }, [setWidth, commitWidth])
 
   return (
     <aside className="wb-right wb-inspector" style={viewportWidth > 820 ? { width: clampInspectorWidth(width, viewportWidth) } : undefined}>
@@ -1747,176 +1849,7 @@ function TitlebarMenu({
   )
 }
 
-function GitBranchControl({ workspaceId, onOpenGit, compact = false }: { workspaceId: string | null; onOpenGit: () => void; compact?: boolean }) {
-  const [status, setStatus] = useState<GitStatus | null>(null)
-  const [branches, setBranches] = useState<GitBranch[]>([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [open, setOpen] = useState(false)
-  const [query, setQuery] = useState('')
-  const popoverRef = useRef<HTMLDivElement | null>(null)
-  const branchInputRef = useRef<HTMLInputElement | null>(null)
-
-  const refresh = useCallback(async () => {
-    if (!workspaceId) {
-      setStatus(null)
-      setBranches([])
-      setError(null)
-      return
-    }
-    setLoading(true)
-    try {
-      const nextStatus = await window.electronAPI.git.status(workspaceId)
-      setStatus(nextStatus)
-      if (open && nextStatus.isRepo) {
-        const branchResponse = await window.electronAPI.git.branches(workspaceId).catch(() => null)
-        setBranches(branchResponse?.localBranches || [])
-      } else if (!open) {
-        setBranches([])
-      }
-      setError(nextStatus.isRepo ? null : (nextStatus.error || tr('未检测到 Git 仓库。', 'No Git repository detected.')))
-    } catch (e: any) {
-      setError(e?.message || tr('读取 Git 状态失败。', 'Failed to read Git status.'))
-    } finally {
-      setLoading(false)
-    }
-  }, [workspaceId, open])
-
-  useEffect(() => {
-    refresh().catch(() => {})
-  }, [refresh])
-
-  useEffect(() => {
-    if (!open) return
-    window.setTimeout(() => branchInputRef.current?.focus(), 0)
-    const onPointerDown = (event: MouseEvent) => {
-      if (!popoverRef.current?.contains(event.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onPointerDown)
-    return () => document.removeEventListener('mousedown', onPointerDown)
-  }, [open])
-
-  if (!workspaceId || !status?.isRepo) {
-    const label = !workspaceId
-      ? tr('未绑定目录', 'No workspace')
-      : tr('不是 Git 仓库', 'Not a Git repo')
-    return (
-      <div className={'wb-git-branch-control empty' + (compact ? ' compact' : '')} title={error || label}>
-        <button type="button" className="wb-git-branch-summary" onClick={onOpenGit}>
-          <Icon d={IC.git} size={13} />
-          <span>{label}</span>
-          <small>Git</small>
-        </button>
-        <button type="button" className="wb-git-branch-add" onClick={onOpenGit} title={tr('打开 Git 面板', 'Open Git panel')}>
-          <Icon d={IC.plus} size={13} />
-        </button>
-      </div>
-    )
-  }
-
-  const dirty = status.files.length > 0
-  const syncLabel = status.ahead || status.behind ? `↑${status.ahead} ↓${status.behind}` : tr('同步', 'synced')
-
-  const checkout = async (branch: string) => {
-    if (!branch || branch === status.branch) return
-    try {
-      setError(null)
-      await window.electronAPI.git.checkoutBranch(workspaceId, branch)
-      await refresh()
-      setOpen(false)
-    } catch (e: any) {
-      setError(e?.message || tr('切换分支失败。', 'Failed to checkout branch.'))
-      onOpenGit()
-    }
-  }
-
-  const create = async (branch = query) => {
-    if (!branch.trim()) return
-    try {
-      setError(null)
-      await window.electronAPI.git.createBranch(workspaceId, branch.trim(), true)
-      await refresh()
-      setQuery('')
-      setOpen(false)
-    } catch (e: any) {
-      setError(e?.message || tr('创建分支失败。', 'Failed to create branch.'))
-      onOpenGit()
-    }
-  }
-
-  const filteredBranches = branches.filter(branch => branch.name.toLowerCase().includes(query.trim().toLowerCase()))
-  const canCreate = !!query.trim() && !branches.some(branch => branch.name.toLowerCase() === query.trim().toLowerCase())
-  const dirtyLabel = dirty ? tr(`未提交：${status.files.length} 个文件`, `Uncommitted: ${status.files.length} files`) : syncLabel
-
-  return (
-    <div className={'wb-git-branch-control' + (compact ? ' compact' : '')} title={error || `${status.branch} · ${syncLabel}`} ref={popoverRef}>
-      <button type="button" className="wb-git-branch-summary" onClick={() => setOpen(value => !value)}>
-        <Icon d={IC.git} size={13} />
-        <span>{status.branch || 'HEAD'}</span>
-        <small>{dirty ? `${status.files.length} ${tr('变更', 'changes')}` : syncLabel}</small>
-      </button>
-      <button
-        type="button"
-        className="wb-git-branch-add"
-        onClick={() => {
-          setOpen(true)
-          window.setTimeout(() => branchInputRef.current?.focus(), 0)
-        }}
-        disabled={loading}
-        title={tr('新建或切换分支', 'Create or switch branch')}
-      >
-        <Icon d={IC.plus} size={13} />
-      </button>
-      {open && (
-        <div className="wb-git-branch-popover">
-          <div className="wb-git-branch-search">
-            <Icon d={IC.search} size={14} />
-            <input
-              ref={branchInputRef}
-              value={query}
-              onChange={event => setQuery(event.target.value)}
-              onKeyDown={event => {
-                if (event.key === 'Enter') {
-                  if (canCreate && !dirty) create().catch(() => {})
-                  else if (filteredBranches[0] && !dirty) checkout(filteredBranches[0].name).catch(() => {})
-                }
-              }}
-              placeholder={tr('搜索或输入新分支名', 'Search or type a new branch')}
-              autoFocus
-            />
-          </div>
-          <div className="wb-git-branch-popover-title">{tr('分支', 'Branches')}</div>
-          {dirty && <div className="wb-git-branch-warning">{tr('有未提交变更时暂不切换或创建分支。', 'Commit or save changes before switching or creating branches.')}</div>}
-          <div className="wb-git-branch-list">
-            {filteredBranches.map(branch => (
-              <button
-                key={branch.name}
-                type="button"
-                className={branch.current ? 'active' : ''}
-                onClick={() => checkout(branch.name).catch(() => {})}
-                disabled={loading || dirty || branch.current}
-              >
-                <Icon d={IC.broadcast} size={15} />
-                <span>
-                  <strong>{branch.name}</strong>
-                  {branch.current && <small>{dirtyLabel}</small>}
-                </span>
-                {branch.current && <Icon d={IC.check} size={15} />}
-              </button>
-            ))}
-            {filteredBranches.length === 0 && <div className="wb-muted-box">{tr('没有匹配的分支。', 'No matching branches.')}</div>}
-          </div>
-          <div className="wb-git-branch-footer">
-            <button type="button" onClick={onOpenGit}>{tr('Git 面板', 'Git panel')}</button>
-            <button type="button" onClick={() => create().catch(() => {})} disabled={!canCreate || loading || dirty}>
-              {canCreate ? `${tr('创建并检出', 'Create and checkout')} ${query.trim()}` : tr('创建并检出新分支...', 'Create and checkout new branch...')}
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
+// GitBranchControl moved to GitBranchControl.tsx (registered via import)
 
 function WorkbenchToolPanel({
   panel,
@@ -1999,7 +1932,8 @@ function WorktreePanel({ workspaceId, onClose }: { workspaceId: string | null; o
     const message = force
       ? tr('这个工作树有未提交变更。确认强制删除并移除记录？', 'This worktree has uncommitted changes. Force remove it?')
       : tr('删除这个工作树并移除记录？', 'Remove this worktree and its record?')
-    if (!window.confirm(message)) return
+    const ok = await styledConfirm({ message, danger: force })
+    if (!ok) return
     try {
       setError(null)
       await window.electronAPI.worktrees.remove(item.id, force)
@@ -2145,7 +2079,7 @@ function BrowserPanelV2({
 
   return (
     <div className="wb-tool-panel wb-browser-panel">
-      <PanelTitle title={tr('浏览器', 'Browser')} subtitle={session?.title || session?.url || tr('空白预览', 'Blank preview')} onClose={onClose} />
+      <PanelTitle title={tr('页面捕获', 'Page Capture')} subtitle={session?.title || session?.url || tr('输入网址载入页面', 'Enter a URL to load')} onClose={onClose} />
       <div className="wb-browser-toolbar">
         <button onClick={() => webviewRef.current?.goBack?.()} disabled={!session || !navState.canGoBack}><Icon d={IC.chev} size={13} style={{ transform: 'rotate(180deg)' }} /></button>
         <button onClick={() => webviewRef.current?.goForward?.()} disabled={!session || !navState.canGoForward}><Icon d={IC.chev} size={13} /></button>
@@ -2153,6 +2087,50 @@ function BrowserPanelV2({
         <input value={url} onChange={e => setUrl(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') open().catch(err => setLoadError(err?.message || tr('打开网页失败。', 'Failed to open page.'))) }} placeholder={tr('输入网址', 'Enter URL')} />
         <button onClick={() => open().catch(err => setLoadError(err?.message || tr('打开网页失败。', 'Failed to open page.')))} disabled={!url.trim()}>{loading ? tr('载入中', 'Loading') : tr('打开', 'Open')}</button>
         <button onClick={capture} disabled={!session || loading}>{tr('捕获', 'Capture')}</button>
+        {captured && (
+          <>
+            <button onClick={async () => {
+              if (!captured) return
+              // Get structured text snapshot, then ask the LLM to summarize it.
+              const snapshotText = await window.electronAPI.browser.summarize(captured)
+              const res = await window.electronAPI.ai.quickComplete({
+                prompt: snapshotText,
+                systemPrompt: 'Summarize the following web page snapshot concisely: key topic, main points, and notable links. Reply in the user\'s language.'
+              })
+              const summary = res.content || snapshotText
+              // Add summary to composer or show in panel
+              const attachment: WorkbenchAttachment = {
+                id: `browser-summary-${Date.now()}`,
+                kind: 'text',
+                name: `Summary: ${captured.title || captured.url}`,
+                text: res.error ? `${snapshotText}\n\n[AI summary failed: ${res.error}]` : summary,
+                createdAt: Date.now()
+              }
+              onAttach(attachment)
+              setAttached(true)
+            }} disabled={!captured}>{tr('AI 总结', 'AI Summary')}</button>
+            <button onClick={async () => {
+              if (!captured) return
+              const prompt = await window.electronAPI.browser.analyzePrompt(captured, tr('分析这个页面的主要内容和结构', 'Analyze the main content and structure of this page'))
+              // Run the analysis prompt through the LLM instead of just attaching the prompt text.
+              const res = await window.electronAPI.ai.quickComplete({
+                prompt,
+                systemPrompt: 'You analyze web pages. Provide a structured analysis: purpose, key sections, content type, and any notable patterns. Reply in the user\'s language.'
+              })
+              const analysis = res.content || prompt
+              // Add analysis to composer
+              const attachment: WorkbenchAttachment = {
+                id: `browser-analysis-${Date.now()}`,
+                kind: 'text',
+                name: `Analysis: ${captured.title || captured.url}`,
+                text: res.error ? `${prompt}\n\n[AI analysis failed: ${res.error}]` : analysis,
+                createdAt: Date.now()
+              }
+              onAttach(attachment)
+              setAttached(true)
+            }} disabled={!captured}>{tr('AI 分析', 'AI Analyze')}</button>
+          </>
+        )}
         <button onClick={() => session?.url && window.electronAPI.app.openExternal(session.url)} disabled={!session}><Icon d={IC.link} size={13} /></button>
       </div>
       {loadError && <div className="wb-send-error">{loadError}</div>}
@@ -2347,7 +2325,7 @@ async function watchTerminalRun(runId: string, setRuns: React.Dispatch<React.Set
   }
 }
 
-function modeLabel(mode: DispatchPreset): string {
+function _modeLabel(mode: DispatchPreset): string {
   return ({
     auto: tr('自动路由', 'Auto route'),
     broadcast: tr('广播', 'Broadcast'),

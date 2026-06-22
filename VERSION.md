@@ -187,3 +187,87 @@
 - 当前稳定版本：`1.0.0`；后续小修复使用 `1.0.x`，较大功能版本使用 `1.1.0`。
 - 适用范围：ACP 增强（terminal handler / server 复用）、session/prompt 联机验证、后续 agentic / 工作区 / 技能流程修复与小增强。
 - 登记要求：完成后补充改动摘要、验证命令、提交哈希或发布 tag。
+
+### 1.0.1（待验证）
+
+- 状态：待验证，暂不发版。
+- 摘要：稳定化迭代第一轮 — 修复 MCP 测试误报、长期记忆中文召回、mojibake 静态守卫、审批系统增强。
+- 主要改动：
+  - **P0-1 mojibake 体检**：全仓扫描确认无真实乱码，新增 `mojibake-guard.test.ts`（4 tests）静态回归守卫。
+  - **P0-2 MCP 测试误报修复**：`src/main/runtime/mcp.ts` probeStdioServer 重写 — 提取 `validateInitializeResult` 纯函数（JSON 解析 + result vs error 校验）；stderr 不再作为成功条件；`clientInfo.version` 从 `package.json` 读取（不再硬编码/不用 cwd）；发送合法 JSON-RPC initialize 请求。新增 `mcp-validate.test.ts`（10 tests）。原有 7 个 MCP 测试全绿。
+  - **P0-3 长期记忆修复**：`src/main/memory-library.ts` — CJK 检索改为 bigram（滑动窗口 2-char），解决整段 CJK 子串匹配导致的零召回；噪声过滤从白名单门控改为黑名单 + 价值信号加权，允许无关键词的自由事实进入记忆；迭代噪声剥离 + 角色前缀清除防止多词噪声绕过。`memory-library.test.ts` 新增 5 个 P0-3 测试。
+  - **P0-4 审批系统增强**：`src/main/agentic/approval.ts` — `ApprovalRequest` 新增结构化字段 `action`/`target`/`risk`/`reason`/`preview`（借鉴 codex `ExecApprovalRequestEvent` + `GuardianRiskLevel`）；新增 `assessApprovalRisk` 纯函数（critical/high/medium/low 四级风险评估）+ `approvalReason` 人类可读原因生成；新增 `PersistedPendingApproval` 类型与持久化（save/load/remove/resolve/expireStale），跨重启可恢复待审批请求。`executor.ts` 创建审批请求时填充全部结构化字段。`dispatcher.ts` 事件携带新字段、持久化落盘、启动时过期遗留 pending。新增 `approval-risk.test.ts`（12 tests）。
+  - **P0-5 Usage 统计持久化**：`src/main/runtime/usage-stats.ts` — 新增 `usage.ledger.v1` append-only 持久化 ledger，`buildUsageRecords()` 改为 write-through cache（ledger 优先 + 新事件追加 + eventId 去重），runtime events 裁剪后历史 usage 不丢。CJK token 估算改进（`estimateTokens` 从 `chars/4` 改为 CJK ~1.5 token/char + ASCII ~4 char/token）。`usage-stats.test.ts` 新增 2 个 P0-5 测试（ledger 持久化 + CJK 估算）。
+- 主要文件：`src/main/runtime/mcp.ts`、`src/main/memory-library.ts`、`src/main/runtime/__tests__/mcp-validate.test.ts`（新）、`src/main/__tests__/mojibake-guard.test.ts`（新）、`src/main/memory-library.test.ts`（补 5 测试）、`src/main/runtime/mcp.ts.bak`（备份，可删）。
+- 验证：
+  - `npm.cmd run typecheck`（exit 0）
+  - `npm.cmd run test`（353 passed / 70 files，exit 0）
+  - `npm.cmd run build`（exit 0）
+  - `git diff --check`（exit 0）
+- 未覆盖（记入后续）：
+  - P0-4 审批系统增强（请求持久化 + 结构化 action/risk/preview，已实现）
+  - P0-5 Usage 统计持久化（append-only ledger，已实现）
+  - P1-6 拆分 index.ts（guard-verdict service 已提取，index.ts 从 1862→1793 行，其余模块待后续）
+  - P1-7 五角色 GuardVerdict 结构化（已实现：structuredVerdictFromText JSON 优先 + regex 兜底）
+  - P1-8 Provider direct 隔离测试（已有 provider-direct.test.ts 覆盖三项场景）
+  - P1-9 本地 CLI 能力检测（已实现：kind 字段 + GUI 二进制标记 desktop-candidate）
+  - P2-10~13 Skills inventory / MCP inventory / UI 优化 / 文件编辑器
+
+#### 新功能（claude-goal.md 第一批基础设施）
+
+  - model-capabilities.ts：统一模型能力查询（context window / tools / vision / thinking），15 tests
+  - MCP tool listing：`mcp:listTools` IPC，连接 MCP server 并列出工具，4 tests
+  - open-target.ts：编辑器检测与文件打开（VS Code / Cursor / Windsurf / Zed / Antigravity / 系统默认 / 文件管理器），9 tests
+  - Models tab：Settings 页面新增模型能力网格（搜索、context window、tools/vision/thinking badge）
+
+#### 新功能（claude-goal.md 第二批基础设施）
+
+  - prompt-library.ts：可复用提示词库（CRUD / 搜索 / 分类 / slash 命令 / 使用计数 / 默认种子），7 tests
+  - agent-capability-profile.ts：Agent 能力画像（协议 / 状态 / 工具/文件/执行支持 / 审批风险等级），6 tests
+  - workflows.ts：工作流定义（多步骤 prompt/agent/skill/review/gate / 分类 / 搜索 / 默认种子），5 tests
+  - diagnostics.ts：系统健康检查（store / version / platform / providers / agents / MCP / memory / workspace），2 tests
+  - backup.ts：配置备份/恢复（时间戳 JSON / 选择性 key / 列表/恢复/删除），1 test
+
+#### 新功能（claude-goal.md 第三~四批基础设施）
+
+  - project-knowledge.ts：项目知识库（架构决策 / 约定 / 构建命令，工作区作用域 + 全局回退），4 tests
+  - keyboard-shortcuts.ts：快捷键系统（14 个默认快捷键 / 自定义绑定 / 冲突检测 / 重置默认），5 tests
+
+#### P0 Bug 修复
+
+  - Bug-3：MCP probe 超时可配置（AGENTHUB_MCP_PROBE_TIMEOUT_MS 环境变量 / server.timeoutMs / 默认 5s，钳位 2.5-30s）
+
+#### IPC 集成（最后一公里）
+
+  - prompts: list/get/upsert/delete/search/slashCommands/incrementUse/seedDefaults — 8 个 IPC + preload
+  - shortcuts: list/get/update/reset/resetAll/conflicts — 6 个 IPC + preload
+  - diagnostics: run — 1 个 IPC + preload
+  - backup: create/list/restore/delete — 4 个 IPC + preload
+
+#### 新功能（New 系列）
+
+  - New-1 全局命令面板（CommandPalette.tsx，Ctrl+Shift+P，模糊搜索，键盘导航）
+  - New-2 会话导出（MD/HTML/JSON，工具调用折叠，thinking 折叠，XSS 安全）
+  - New-3 会话导入与回放（JSON schema 校验，legacy 迁移，checkpoint 分支，摘要）
+  - New-6 工作区文件（@ 提及，fuzzy 搜索，文件预览，binary 拒绝）
+  - New-9 Slash 命令构建器（{{param}} 提取，冲突检测，参数替换）
+  - New-11 GitHub 集成（gh CLI，PR/Issue 列表，当前分支 PR 检测）
+  - New-12 Plugin Manager（manifest 扫描，验证，贡献聚合，安全模型）
+  - New-13 Release Workspace（pre-release 检查，ready 判定）
+  - New-14 Onboarding（8 步引导流，跳过/完成/重置）
+  - New-15 通知中心（push/markRead/markAllRead，7 天自动清理，未读计数）
+
+#### 新功能（深度集成）
+
+  - New-4 Inline Edit（代码选区 + 指令 → AI diff，验证 + 应用）
+  - New-5 Terminal AI（终端上下文 → AI prompt，命令建议，输出解释）
+  - New-10 Browser Workspace（页面快照摘要，HTML 可读文本提取，分析 prompt）
+
+#### 基础设施
+
+  - Memory Graph（节点-边图谱，cleanup 建议）
+  - DX-1 CI workflow 更新（支持 sync/* 分支触发）
+  - DX-2 E2E 测试基线（Playwright config + 3 个基础 E2E 测试）
+  - DX-3 性能基线（bundle size check script，预算 JS 900KB / CSS 300KB）
+  - DX-4 Error Boundary（React 错误边界组件，chat 视图包裹）
+  - DX-5 i18n（zh-CN/en-US locale 文件，t() 函数，60+ 翻译 key）

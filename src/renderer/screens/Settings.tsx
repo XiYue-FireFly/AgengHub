@@ -1,9 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { Icon, IC, AgentMark, Seg, Switch } from '../glass/ui'
-import { AGENT_META, AGENT_IDS, BindingDef, DEFAULT_STDIO_ARGS, ProviderDef } from '../glass/meta'
-import { agentDesc, getLang, setLang, Lang, tr } from '../glass/i18n'
+import { AGENT_META, BindingDef, DEFAULT_STDIO_ARGS, ProviderDef } from '../glass/meta'
+import { getLang, setLang, Lang, tr } from '../glass/i18n'
+import { styledConfirm } from '../lib/confirm'
+import { ProvidersTab } from './ProvidersTab'
+import { RoutingTab } from './RoutingTab'
+import { ApprovalsTab } from './ApprovalsTab'
+import { WorkspacesTab } from './WorkspacesTab'
+import { McpSettingsTab } from './McpSettingsTab'
+import { ShortcutsSettingsTab } from './ShortcutsSettingsTab'
 import { ConnectionSummary, SetupTab } from '../glass/connection-status'
-import { SkillsTab } from './Skills'
+// Phase 4 lazy loading: SkillsTab loaded on demand
+const SkillsTab = React.lazy(() => import('./Skills').then(m => ({ default: m.SkillsTab })))
 import {
   AppearancePreferences,
   DEFAULT_APPEARANCE,
@@ -20,22 +28,13 @@ import {
   rememberDialogPath,
   saveAppearance
 } from '../appearance'
-import {
-  findKeyboardShortcutConflict,
-  KEYBOARD_SHORTCUT_COMMANDS,
-  KEYBOARD_SHORTCUT_STORE_KEY,
-  KEYBOARD_SHORTCUTS_CHANGED,
-  KeyboardShortcutCommandId,
-  KeyboardShortcutsConfigV1,
-  keyboardEventToShortcut,
-  normalizeKeyboardShortcuts,
-  resolveKeyboardShortcutBindings,
-  shortcutDisplay
-} from '../keyboard-shortcuts'
+// keyboard-shortcuts imports moved to ShortcutsSettingsTab
+// Phase 4 lazy loading: UsageStatsDashboard loaded on demand
+const UsageStatsTabFull = React.lazy(() => import('./UsageStatsDashboard').then(m => ({ default: m.UsageStatsDashboard })))
 
 export type MotionLevel = 'off' | 'subtle' | 'rich'
 
-type TabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts'
+type TabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models' | 'plugins' | 'usage'
 const MEMORY_CATEGORIES: MemoryCategory[] = ['preference', 'project', 'style', 'decision', 'correction', 'imported_conversation', 'conversation', 'task', 'skill', 'file', 'system']
 const MEMORY_SCOPES = ['all', 'user', 'workspace', 'project'] as const
 type MemoryScopeFilter = typeof MEMORY_SCOPES[number]
@@ -51,6 +50,7 @@ interface SettingsScreenProps {
   onReload: () => void
   onUpsertProvider: (provider: any) => void
   onDeleteProvider: (id: string) => void
+  onReorderProvidersForClaude: (orderedIds: string[]) => void
   motion: MotionLevel
   setMotion: (motion: MotionLevel) => void
   initialTab: TabKey
@@ -59,14 +59,6 @@ interface SettingsScreenProps {
   goChat: (agentId: string | null) => void
   openSetup: (tab?: TabKey) => void
 }
-
-interface BinaryCandidate {
-  source: 'desktop' | 'terminal'
-  label: string
-  path: string
-}
-
-type ApprovalPolicy = 'allow' | 'ask' | 'deny'
 
 const NAV_ITEMS: Array<{ value: TabKey; label: string; labelEn: string; description: string; descriptionEn: string; icon: React.ReactNode }> = [
   { value: 'appearance', label: '外观', labelEn: 'Appearance', description: '主题、字体、动效和界面显示偏好。', descriptionEn: 'Theme, fonts, motion, and display preferences.', icon: IC.gear },
@@ -77,6 +69,8 @@ const NAV_ITEMS: Array<{ value: TabKey; label: string; labelEn: string; descript
   { value: 'workspaces', label: '工作目录', labelEn: 'Workspaces', description: '管理绑定到会话的本地目录。', descriptionEn: 'Manage local folders bound to sessions.', icon: IC.folder },
   { value: 'skills', label: '技能', labelEn: 'Skills', description: '导入和管理本地 Agent 技能。', descriptionEn: 'Import and manage local Agent skills.', icon: IC.bolt },
   { value: 'mcp', label: 'MCP', labelEn: 'MCP', description: '管理本地和工作目录 MCP 服务。', descriptionEn: 'Manage local and workspace MCP services.', icon: IC.link },
+  { value: 'plugins', label: '插件', labelEn: 'Plugins', description: '扫描和管理本地插件。', descriptionEn: 'Scan and manage local plugins.', icon: IC.bolt },
+  { value: 'usage', label: '用量统计', labelEn: 'Usage', description: '查看 API 用量、Token 消耗和成本统计。', descriptionEn: 'View API usage, token consumption and cost statistics.', icon: IC.pulse },
   { value: 'updates', label: '版本与更新', labelEn: 'Version & Updates', description: '检查当前版本、渠道和下载入口。', descriptionEn: 'Check version, channel, and download entry.', icon: IC.refresh }
 ]
 
@@ -100,7 +94,17 @@ NAV_ITEMS.splice(shortcutsNavInsertIndex >= 0 ? shortcutsNavInsertIndex : NAV_IT
   icon: IC.terminal
 })
 
-const VISIBLE_NAV_ITEMS = NAV_ITEMS.filter(item => item.value !== 'usage')
+const modelsNavInsertIndex = NAV_ITEMS.findIndex(item => item.value === 'providers')
+NAV_ITEMS.splice(modelsNavInsertIndex >= 0 ? modelsNavInsertIndex + 1 : NAV_ITEMS.length, 0, {
+  value: 'models',
+  label: '\u6a21\u578b',
+  labelEn: 'Models',
+  description: '\u67e5\u770b\u6240\u6709\u4f9b\u5e94\u5546\u6a21\u578b\u7684\u80fd\u529b\u548c\u4e0a\u4e0b\u6587\u7a97\u53e3\u3002',
+  descriptionEn: 'View model capabilities and context windows across providers.',
+  icon: IC.pulse
+})
+
+const VISIBLE_NAV_ITEMS = NAV_ITEMS
 
 function settingsNavLabel(item: typeof NAV_ITEMS[number]): string {
   return getLang() === 'en' ? item.labelEn : item.label
@@ -114,7 +118,7 @@ export function SettingsScreen(props: SettingsScreenProps) {
   const [tab, setTab] = useState<TabKey>(props.initialTab || 'appearance')
   useEffect(() => setTab(props.initialTab || 'appearance'), [props.initialTab])
 
-  const visibleTab = tab === 'usage' ? 'appearance' : tab
+  const visibleTab = tab
   const active = VISIBLE_NAV_ITEMS.find(item => item.value === visibleTab) ?? VISIBLE_NAV_ITEMS[0]
   const showSetupNext = visibleTab === 'providers' || visibleTab === 'local-agents' || visibleTab === 'routing' || visibleTab === 'workspaces'
 
@@ -147,14 +151,17 @@ export function SettingsScreen(props: SettingsScreenProps) {
         {visibleTab === 'providers' && (
           <ProvidersTab
             providers={props.providers}
+            bindings={props.bindings}
             onSetEnabled={props.onSetEnabled}
             onSetKey={props.onSetKey}
             onReload={props.onReload}
             onUpsert={props.onUpsertProvider}
             onDelete={props.onDeleteProvider}
+            onReorderForClaude={props.onReorderProvidersForClaude}
           />
         )}
         {visibleTab === 'local-agents' && <LocalAgentsTab />}
+        {visibleTab === 'models' && <ModelsTab providers={props.providers} />}
         {visibleTab === 'routing' && (
           <RoutingTab
             providers={props.providers}
@@ -162,13 +169,15 @@ export function SettingsScreen(props: SettingsScreenProps) {
             fallbackChain={props.fallbackChain}
             onSetBinding={props.onSetBinding}
             onSetFallback={props.onSetFallback}
-            onTab={setTab}
+            onTab={(tab: string) => setTab(tab as TabKey)}
           />
         )}
         {visibleTab === 'approvals' && <ApprovalsTab />}
         {visibleTab === 'workspaces' && <WorkspacesTab />}
-        {visibleTab === 'skills' && <SkillsTab />}
+        {visibleTab === 'skills' && <React.Suspense fallback={<div className="wb-muted-box">{tr('加载技能...', 'Loading skills...')}</div>}><SkillsTab /></React.Suspense>}
         {visibleTab === 'mcp' && <McpSettingsTab workspaceId={props.workspaceId ?? null} />}
+        {visibleTab === 'plugins' && <PluginSettingsTab workspaceId={props.workspaceId ?? null} />}
+        {visibleTab === 'usage' && <React.Suspense fallback={<div className="wb-muted-box">{tr('加载用量统计...', 'Loading usage stats...')}</div>}><UsageStatsTabFull /></React.Suspense>}
         {visibleTab === 'shortcuts' && <ShortcutsSettingsTab />}
         {visibleTab === 'memory' && <MemorySettingsTab />}
         {visibleTab === 'updates' && <UpdatesSettingsTab />}
@@ -206,162 +215,6 @@ function SetupNextStep({ summary, onTab, goChat }: {
   )
 }
 
-function ProvidersTab({ providers, onSetEnabled, onSetKey, onReload, onUpsert, onDelete }: {
-  providers: ProviderDef[]
-  onSetEnabled: (id: string, enabled: boolean) => void
-  onSetKey: (id: string, key: string) => void
-  onReload: () => void
-  onUpsert: (provider: any) => void
-  onDelete: (id: string) => void
-}) {
-  const [keys, setKeys] = useState<Record<string, string>>({})
-  const [urls, setUrls] = useState<Record<string, string>>({})
-  const [checking, setChecking] = useState<Record<string, boolean>>({})
-  const [message, setMessage] = useState<Record<string, string>>({})
-  const [adding, setAdding] = useState(false)
-  const [draft, setDraft] = useState({ name: '', baseUrl: 'https://', apiKey: '', kind: 'openai-compatible' })
-
-  const healthCheck = async (providerId: string) => {
-    setChecking(current => ({ ...current, [providerId]: true }))
-    try {
-      const result = await window.electronAPI.providers.health(providerId)
-      setMessage(current => ({
-        ...current,
-        [providerId]: result?.reachable ? `${tr('可用', 'Reachable')}, ${result.latencyMs ?? '-'}ms` : (result?.error || tr('不可用', 'Unavailable'))
-      }))
-    } catch (error: any) {
-      setMessage(current => ({ ...current, [providerId]: error?.message || tr('健康检查失败', 'Health check failed') }))
-    } finally {
-      setChecking(current => ({ ...current, [providerId]: false }))
-    }
-  }
-
-  const fetchModels = async (providerId: string) => {
-    setChecking(current => ({ ...current, [providerId]: true }))
-    try {
-      const result = await window.electronAPI.providers.fetchModels(providerId)
-      setMessage(current => ({ ...current, [providerId]: result.ok ? tr(`已更新 ${result.count ?? 0} 个模型`, `Updated ${result.count ?? 0} models`) : (result.error || tr('获取模型失败', 'Failed to fetch models')) }))
-      if (result.ok) onReload()
-    } catch (error: any) {
-      setMessage(current => ({ ...current, [providerId]: error?.message || tr('获取模型失败', 'Failed to fetch models') }))
-    } finally {
-      setChecking(current => ({ ...current, [providerId]: false }))
-    }
-  }
-
-  const saveCustomProvider = () => {
-    if (!draft.name.trim() || !draft.baseUrl.trim()) return
-    onUpsert({
-      id: `custom-${Date.now()}`,
-      name: draft.name.trim(),
-      kind: draft.kind,
-      baseUrl: draft.baseUrl.trim().replace(/\/$/, ''),
-      apiKey: draft.apiKey.trim(),
-      enabled: !!draft.apiKey.trim(),
-      builtIn: false,
-      models: [],
-      capabilities: ['chat'],
-      defaultThinking: { mode: 'auto', level: 'medium', collapseInUI: true }
-    })
-    setDraft({ name: '', baseUrl: 'https://', apiKey: '', kind: 'openai-compatible' })
-    setAdding(false)
-  }
-
-  return (
-    <div className="wb-settings-stack">
-      <div className="wb-settings-grid">
-        {providers.map(provider => (
-          <div key={provider.id} className="glass wb-provider-card">
-            <div className="wb-card-head">
-              <div>
-                <strong>{provider.name}</strong>
-                <span>{provider.builtIn ? tr('内置', 'Built-in') : tr('自定义', 'Custom')}</span>
-              </div>
-              <Switch on={provider.enabled} onChange={value => onSetEnabled(provider.id, value)} />
-            </div>
-
-            <label className="wb-field">
-              <span>{tr('接口地址', 'Base URL')}</span>
-              <input
-                className="ah-input mono"
-                value={urls[provider.id] ?? provider.baseUrl}
-                disabled={provider.builtIn}
-                onChange={event => setUrls(current => ({ ...current, [provider.id]: event.target.value }))}
-                onBlur={() => {
-                  const next = urls[provider.id]
-                  if (next && next !== provider.baseUrl) onUpsert({ ...provider, baseUrl: next.trim().replace(/\/$/, '') })
-                }}
-              />
-            </label>
-
-            <label className="wb-field">
-              <span>API Key</span>
-              <input
-                className="ah-input mono"
-                value={keys[provider.id] ?? provider.apiKey ?? ''}
-                placeholder={tr('粘贴 API Key', 'Paste API key')}
-                onChange={event => setKeys(current => ({ ...current, [provider.id]: event.target.value }))}
-                onBlur={() => onSetKey(provider.id, keys[provider.id] ?? provider.apiKey ?? '')}
-                onKeyDown={event => { if (event.key === 'Enter') onSetKey(provider.id, keys[provider.id] ?? provider.apiKey ?? '') }}
-              />
-            </label>
-
-            <div className="wb-chip-row">
-              {provider.models.slice(0, 8).map(model => <span key={model.id} className="ah-chip">{model.label}</span>)}
-              {provider.models.length > 8 && <span className="ah-chip">+{provider.models.length - 8}</span>}
-              {provider.models.length === 0 && <span className="ah-hint">{tr('暂无模型列表', 'No model list yet')}</span>}
-            </div>
-            <div className="ah-hint">
-              {tr(`已有模型 ${provider.models.length} 个`, `${provider.models.length} models saved`)}
-              {provider.modelFetch?.lastSuccessCount != null ? tr(` · 上次成功 ${provider.modelFetch.lastSuccessCount} 个`, ` · last success ${provider.modelFetch.lastSuccessCount}`) : ''}
-              {provider.modelFetch?.status === 'error' ? tr(` · 获取失败：${provider.modelFetch.error || '未知错误'}，已保留现有模型`, ` · fetch failed: ${provider.modelFetch.error || 'unknown error'}; existing models kept`) : ''}
-            </div>
-
-            <div className="wb-card-actions">
-              <button className="ah-btn sm" disabled={!!checking[provider.id]} onClick={() => healthCheck(provider.id)}>
-                <Icon d={IC.pulse} size={13} /> {tr('健康检查', 'Health check')}
-              </button>
-              <button className="ah-btn sm" disabled={!!checking[provider.id] || !(keys[provider.id] ?? provider.apiKey)} onClick={() => fetchModels(provider.id)}>
-                <Icon d={IC.refresh} size={13} /> {tr('获取模型', 'Fetch models')}
-              </button>
-              {!provider.builtIn && (
-                <button className="ah-btn sm danger" onClick={() => window.confirm(tr(`删除供应商「${provider.name}」？`, `Delete provider "${provider.name}"?`)) && onDelete(provider.id)}>
-                  {tr('删除', 'Delete')}
-                </button>
-              )}
-            </div>
-            {message[provider.id] && <div className="ah-hint">{message[provider.id]}</div>}
-          </div>
-        ))}
-      </div>
-
-      {adding ? (
-        <div className="glass wb-provider-card">
-          <div className="wb-card-head"><strong>{tr('添加供应商', 'Add provider')}</strong></div>
-          <div className="wb-form-grid">
-            <input className="ah-input" placeholder={tr('供应商名称', 'Provider name')} value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} />
-            <select className="ah-select" value={draft.kind} onChange={event => setDraft({ ...draft, kind: event.target.value })}>
-              <option value="openai-compatible">{tr('OpenAI 兼容', 'OpenAI compatible')}</option>
-              <option value="anthropic">Anthropic</option>
-              <option value="gemini">Gemini</option>
-            </select>
-            <input className="ah-input mono" placeholder={tr('接口地址', 'Base URL')} value={draft.baseUrl} onChange={event => setDraft({ ...draft, baseUrl: event.target.value })} />
-            <input className="ah-input mono" placeholder="API Key" value={draft.apiKey} onChange={event => setDraft({ ...draft, apiKey: event.target.value })} />
-          </div>
-          <div className="wb-card-actions">
-            <button className="ah-btn sm" onClick={() => setAdding(false)}>{tr('取消', 'Cancel')}</button>
-            <button className="ah-btn sm primary" onClick={saveCustomProvider}>{tr('保存', 'Save')}</button>
-          </div>
-        </div>
-      ) : (
-        <button className="glass wb-add-card" onClick={() => setAdding(true)}>
-          <Icon d={IC.plus} size={16} />
-          {tr('添加自定义供应商', 'Add custom provider')}
-        </button>
-      )}
-    </div>
-  )
-}
 
 function LocalAgentsTab() {
   const [agents, setAgents] = useState<LocalAgentStatus[]>([])
@@ -439,7 +292,7 @@ function LocalAgentsTab() {
           <div className="wb-local-model-grid">
             {localModels.map(config => (
               <div key={config.agentId} className="wb-local-model-item">
-                <strong>{config.agentId === 'codex' ? 'Codex' : 'Gemini'}</strong>
+                <strong>{localModelAgentLabel(config)}</strong>
                 <span>{localModelStatusLabel(config)} · {config.authMode || 'unknown'}</span>
                 <small>{config.modelId || config.models?.[0]?.id || tr('未读取到模型', 'No model found')}</small>
                 <code>{config.configPath}</code>
@@ -549,6 +402,13 @@ function localModelStatusLabel(config: LocalModelConfig): string {
   return tr('读取失败', 'Read failed')
 }
 
+function localModelAgentLabel(config: LocalModelConfig): string {
+  if (config.source === 'claude' || config.agentId === 'claude' || config.agentId === 'claude-cli') return 'Claude'
+  if (config.source === 'codex' || config.agentId === 'codex') return 'Codex'
+  if (config.source === 'gemini' || config.agentId === 'gemini') return 'Gemini'
+  return config.agentId
+}
+
 function localAgentStatusLabel(agent: LocalAgentStatus, needsPromptArg: boolean): string {
   if (agent.configured) return tr('可使用', 'Usable')
   if (agent.installed) return tr('已检测', 'Detected')
@@ -563,7 +423,7 @@ function localAgentDisplayLabel(agent: LocalAgentStatus): string {
   return agent.label.replace(/\s*\/\s*反重力/g, '')
 }
 
-function stdioArgsHint(agentId: string): string {
+function _stdioArgsHint(agentId: string): string {
   if (getLang() === 'zh') return DEFAULT_STDIO_ARGS[agentId] || tr('留空使用默认参数', 'Leave blank to use defaults')
   const englishHints: Record<string, string> = {
     hermes: 'No args; prompt is sent through stdin',
@@ -578,858 +438,70 @@ function stdioArgsHint(agentId: string): string {
   return englishHints[agentId] || DEFAULT_STDIO_ARGS[agentId] || 'Leave blank to use defaults'
 }
 
-function RoutingTab({ providers, bindings, fallbackChain, onSetBinding, onSetFallback, onTab }: {
-  providers: ProviderDef[]
-  bindings: BindingDef[]
-  fallbackChain: string[]
-  onSetBinding: (binding: BindingDef) => void
-  onSetFallback: (chain: string[]) => void
-  onTab: (tab: TabKey) => void
-}) {
-  const [located, setLocated] = useState<Record<string, BinaryCandidate[]>>({})
-  useEffect(() => { window.electronAPI.agents.locate().then(setLocated).catch(() => {}) }, [])
-
-  const configuredProviders = providers.filter(provider => provider.enabled && provider.apiKey && provider.models.length > 0)
-  const toggleFallback = (providerId: string) => {
-    onSetFallback(fallbackChain.includes(providerId) ? fallbackChain.filter(id => id !== providerId) : [...fallbackChain, providerId])
-  }
-
-  return (
-    <div className="wb-settings-stack">
-      <div className="glass wb-inline-panel">
-        <div>
-          <strong>{tr('Agent 路由', 'Agent routing')}</strong>
-          <span>{tr('指定单个 Agent 时只走该 Agent 绑定；调度模式只在未指定 Agent 时展开。', 'A chosen Agent uses only its binding; schedule modes expand only when no Agent is pinned.')}</span>
-        </div>
-        <button className="ah-btn sm" onClick={() => onTab('local-agents')}>{tr('管理本地 Agent', 'Manage local agents')}</button>
-      </div>
-      {settingsBindingRows(bindings).map(binding => (
-        <BindingRow key={binding.agentId} binding={binding} providers={providers} configuredProviders={configuredProviders}
-          candidates={located[binding.agentId] || []} onChange={onSetBinding} />
-      ))}
-      <div className="glass wb-provider-card">
-        <div className="wb-card-head">
-          <div>
-            <strong>{tr('故障转移', 'Failover')}</strong>
-            <span>{tr('主供应商失败且还没有输出内容时，按顺序尝试备用供应商。', 'When the primary provider fails before output starts, fallback providers are tried in order.')}</span>
-          </div>
-        </div>
-        <div className="wb-chip-row">
-          {providers.filter(provider => provider.enabled && provider.apiKey).map(provider => {
-            const index = fallbackChain.indexOf(provider.id)
-            return (
-              <button key={provider.id} className={index >= 0 ? 'ah-chip mint' : 'ah-chip'} onClick={() => toggleFallback(provider.id)}>
-                {index >= 0 ? `${index + 1}. ` : ''}{provider.name}
-              </button>
-            )
-          })}
-          {providers.filter(provider => provider.enabled && provider.apiKey).length === 0 && <span className="ah-hint">{tr('先配置可用供应商。', 'Configure an available provider first.')}</span>}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function BindingRow({ binding, providers, configuredProviders, candidates, onChange }: {
-  binding: BindingDef
-  providers: ProviderDef[]
-  configuredProviders: ProviderDef[]
-  candidates: BinaryCandidate[]
-  onChange: (binding: BindingDef) => void
-}) {
-  const meta = AGENT_META[binding.agentId]
-  const provider = providers.find(item => item.id === binding.providerId)
-  const modelValue = provider && binding.modelId ? `${binding.providerId}/${binding.modelId}` : ''
-  const protocol = binding.protocol || 'http'
-
-  const patch = (changes: Partial<BindingDef>) => onChange({ ...binding, ...changes, thinking: { ...binding.thinking, ...(changes.thinking || {}) } })
-
-  return (
-    <div className="glass wb-binding-row">
-      <div className="wb-local-agent-head">
-        {meta ? <AgentMark id={binding.agentId} size={34} radius={9} /> : <span className="wb-agent-fallback">{binding.agentId.slice(0, 1)}</span>}
-        <div>
-          <strong>{meta?.name || binding.agentId}</strong>
-          <span>{meta ? agentDesc(binding.agentId, meta.desc) : tr('自定义 Agent', 'Custom Agent')}</span>
-        </div>
-      </div>
-      <div className="wb-form-grid three">
-        <label className="wb-field">
-          <span>{tr('后端', 'Backend')}</span>
-          <select className="ah-select" value={protocol} onChange={event => patch({ protocol: event.target.value as BindingDef['protocol'] })}>
-            <option value="http">{tr('HTTP 模型', 'HTTP model')}</option>
-            <option value="stdio-plain">{tr('本地 CLI', 'Local CLI')}</option>
-            <option value="acp">ACP</option>
-          </select>
-        </label>
-        {protocol === 'http' ? (
-          <label className="wb-field wide">
-            <span>{tr('模型', 'Model')}</span>
-            <select className="ah-select" value={modelValue} onChange={event => {
-              const [providerId, ...modelParts] = event.target.value.split('/')
-              patch({ providerId, modelId: modelParts.join('/') })
-            }}>
-              {!modelValue && <option value="">{tr('选择模型', 'Choose model')}</option>}
-              {configuredProviders.map(item => (
-                <optgroup key={item.id} label={item.name}>
-                  {item.models.map(model => <option key={`${item.id}/${model.id}`} value={`${item.id}/${model.id}`}>{model.label}</option>)}
-                </optgroup>
-              ))}
-            </select>
-          </label>
-        ) : (
-          <>
-            <label className="wb-field">
-              <span>{tr('可执行文件', 'Executable')}</span>
-              <select className="ah-select" value={binding.binary || ''} onChange={event => patch({ binary: event.target.value })}>
-                <option value="">{tr('自动检测', 'Auto detect')}</option>
-                {candidates.map(candidate => <option key={candidate.path} value={candidate.path}>{candidate.label} · {candidate.path}</option>)}
-              </select>
-            </label>
-            <label className="wb-field wide">
-              <span>{tr('参数', 'Args')}</span>
-              <input className="ah-input mono" value={binding.args || ''} placeholder={stdioArgsHint(binding.agentId)} onChange={event => patch({ args: event.target.value })} />
-            </label>
-          </>
-        )}
-        <label className="wb-field">
-          <span>{tr('温度', 'Temperature')}</span>
-          <input className="ah-input" type="number" min={0} max={2} step={0.1} value={binding.temperature ?? 0.3} onChange={event => patch({ temperature: Number(event.target.value) })} />
-        </label>
-      </div>
-    </div>
-  )
-}
-
-function settingsBindingRows(bindings: BindingDef[]): BindingDef[] {
-  const byAgent = new Map(bindings.map(binding => [binding.agentId, binding]))
-  const rows: BindingDef[] = []
-  for (const agentId of AGENT_IDS) {
-    rows.push(byAgent.get(agentId) || defaultCandidateBinding(agentId))
-  }
-  for (const binding of bindings) {
-    if (!AGENT_IDS.includes(binding.agentId)) rows.push(binding)
-  }
-  return rows
-}
-
-function defaultCandidateBinding(agentId: string): BindingDef {
-  return {
-    agentId,
-    providerId: '',
-    modelId: 'local',
-    protocol: 'stdio-plain',
-    thinkingAllow: ['off', 'auto', 'enabled'],
-    thinking: { mode: 'auto', level: 'medium', collapseInUI: true },
-    temperature: 0.2,
-    maxOutputTokens: 8192
-  }
-}
-
-function ApprovalsTab() {
-  const [config, setConfig] = useState<{ default: { write: ApprovalPolicy; exec: ApprovalPolicy }; overrides: Record<string, { write?: ApprovalPolicy; exec?: ApprovalPolicy }> } | null>(null)
-  const [caps, setCaps] = useState<Array<{ agentId: string; name: string }>>([])
-  const [error, setError] = useState<string | null>(null)
-
-  const load = useCallback(async () => {
-    try {
-      const [nextConfig, nextCaps] = await Promise.all([
-        window.electronAPI.agentic.getApprovalConfig(),
-        window.electronAPI.agentic.capabilities()
-      ])
-      setConfig(nextConfig)
-      setCaps(nextCaps)
-      setError(null)
-    } catch (err: any) {
-      setError(err?.message || tr('加载权限策略失败', 'Failed to load approval policies'))
-    }
-  }, [])
-
-  useEffect(() => { load().catch(() => {}) }, [load])
-
-  const setDefault = async (tool: 'write' | 'exec', policy: ApprovalPolicy) => {
-    await window.electronAPI.agentic.setApprovalDefault(tool, policy)
-    await load()
-  }
-
-  const setOverride = async (agentId: string, tool: 'write' | 'exec', value: string) => {
-    await window.electronAPI.agentic.setApprovalOverride(agentId, tool, value === 'default' ? null : value as ApprovalPolicy)
-    await load()
-  }
-
-  if (!config) return <EmptyState icon={IC.check} title={tr('正在加载权限策略', 'Loading approval policies')} detail={error || tr('请稍候。', 'Please wait.')} />
-
-  return (
-    <div className="wb-settings-stack">
-      <div className="glass wb-provider-card">
-        <div className="wb-card-head">
-          <div>
-            <strong>{tr('默认策略', 'Default policy')}</strong>
-            <span>{tr('读取文件不会拦截；写入和执行可按需确认。', 'File reads are not blocked; writes and commands can require confirmation.')}</span>
-          </div>
-        </div>
-        <div className="wb-form-grid two">
-          <PolicySelect label={tr('写文件', 'Write files')} value={config.default.write} onChange={value => setDefault('write', value)} />
-          <PolicySelect label={tr('执行命令', 'Run commands')} value={config.default.exec} onChange={value => setDefault('exec', value)} />
-        </div>
-      </div>
-      <div className="glass wb-table-card">
-        <div className="wb-table-row head"><span>Agent</span><span>{tr('写文件', 'Write files')}</span><span>{tr('执行命令', 'Run commands')}</span></div>
-        {caps.map(agent => {
-          const override = config.overrides[agent.agentId] || {}
-          return (
-            <div key={agent.agentId} className="wb-table-row">
-              <span>{AGENT_META[agent.agentId]?.name || agent.name || agent.agentId}</span>
-              <select value={override.write || 'default'} onChange={event => setOverride(agent.agentId, 'write', event.target.value)}>
-                <option value="default">{tr('默认', 'Default')}</option><option value="allow">{tr('允许', 'Allow')}</option><option value="ask">{tr('询问', 'Ask')}</option><option value="deny">{tr('拒绝', 'Deny')}</option>
-              </select>
-              <select value={override.exec || 'default'} onChange={event => setOverride(agent.agentId, 'exec', event.target.value)}>
-                <option value="default">{tr('默认', 'Default')}</option><option value="allow">{tr('允许', 'Allow')}</option><option value="ask">{tr('询问', 'Ask')}</option><option value="deny">{tr('拒绝', 'Deny')}</option>
-              </select>
-            </div>
-          )
-        })}
-      </div>
-      {error && <div className="glass wb-error-text">{error}</div>}
-    </div>
-  )
-}
-
-function PolicySelect({ label, value, onChange }: { label: string; value: ApprovalPolicy; onChange: (value: ApprovalPolicy) => void }) {
-  return (
-    <label className="wb-field">
-      <span>{label}</span>
-      <select className="ah-select" value={value} onChange={event => onChange(event.target.value as ApprovalPolicy)}>
-        <option value="allow">{tr('允许', 'Allow')}</option>
-        <option value="ask">{tr('询问', 'Ask')}</option>
-        <option value="deny">{tr('拒绝', 'Deny')}</option>
-      </select>
-    </label>
-  )
-}
-
-function WorkspacesTab() {
-  const [items, setItems] = useState<Array<{ id: string; name: string; rootPath: string }>>([])
-  const [activeId, setActiveId] = useState<string | null>(null)
-  const [editing, setEditing] = useState<{ id?: string; name: string; rootPath: string } | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  const refresh = useCallback(async () => {
-    const [list, active] = await Promise.all([
-      window.electronAPI.workspaces.list(),
-      window.electronAPI.workspaces.getActive()
-    ])
-    setItems(list)
-    setActiveId(active)
-  }, [])
-
-  useEffect(() => { refresh().catch((err: any) => setError(err?.message || tr('加载工作目录失败', 'Failed to load workspaces'))) }, [refresh])
-
-  const save = async () => {
-    if (!editing?.name.trim() || !editing.rootPath.trim()) return
-    try {
-      if (editing.id) await window.electronAPI.workspaces.update(editing.id, { name: editing.name.trim(), rootPath: editing.rootPath.trim() })
-      else await window.electronAPI.workspaces.create({ name: editing.name.trim(), rootPath: editing.rootPath.trim() })
-      setEditing(null)
-      await refresh()
-    } catch (err: any) {
-      setError(err?.message || tr('保存工作目录失败', 'Failed to save workspace'))
-    }
-  }
-
-  const pickFolder = async () => {
-    const path = await window.electronAPI.app.pickFolder({ defaultPath: defaultDialogPath('folder', editing?.rootPath) })
-    if (path) {
-      rememberDialogPath('folder', path)
-      setEditing(current => ({ id: current?.id, name: current?.name || path.split(/[\\/]/).filter(Boolean).pop() || tr('工作目录', 'Workspace'), rootPath: path }))
-    }
-  }
-
-  return (
-    <div className="wb-settings-stack">
-      <div className="glass wb-inline-panel">
-        <div>
-          <strong>{tr('工作目录是可选上下文', 'Workspaces are optional context')}</strong>
-          <span>{tr('普通对话和写作不需要目录；终端、Git、工作树和项目文件操作才需要。', 'Chat and writing can work without a folder; terminal, Git, worktrees, and project file actions need one.')}</span>
-        </div>
-        <button className="ah-btn sm primary" onClick={() => setEditing({ name: '', rootPath: '' })}>
-          <Icon d={IC.plus} size={13} /> {tr('添加工作目录', 'Add workspace')}
-        </button>
-      </div>
-      {editing && (
-        <div className="glass wb-provider-card">
-          <div className="wb-card-head"><strong>{editing.id ? tr('编辑工作目录', 'Edit workspace') : tr('添加工作目录', 'Add workspace')}</strong></div>
-          <div className="wb-form-grid two">
-            <input className="ah-input" placeholder={tr('给这个目录起个名字', 'Name this folder')} value={editing.name} onChange={event => setEditing({ ...editing, name: event.target.value })} />
-            <div className="wb-folder-picker">
-              <input className="ah-input mono" placeholder={tr('选择本地目录', 'Choose local folder')} value={editing.rootPath} onChange={event => setEditing({ ...editing, rootPath: event.target.value })} />
-              <button className="ah-btn sm" onClick={pickFolder}>{tr('选择', 'Choose')}</button>
-            </div>
-          </div>
-          <div className="wb-card-actions">
-            <button className="ah-btn sm" onClick={() => setEditing(null)}>{tr('取消', 'Cancel')}</button>
-            <button className="ah-btn sm primary" onClick={save}>{tr('保存', 'Save')}</button>
-          </div>
-        </div>
-      )}
-      {items.length === 0 && <EmptyState icon={IC.folder} title={tr('还没有工作目录', 'No workspaces yet')} detail={tr('可以直接新建对话；需要本地文件能力时再添加目录。', 'You can start a chat now; add a folder when local file features are needed.')} />}
-      {items.map(item => (
-        <div key={item.id} className="glass wb-workspace-row">
-          <div>
-            <strong>{item.name}</strong>
-            {activeId === item.id && <span className="ah-chip mint">{tr('当前', 'Active')}</span>}
-            <p>{item.rootPath}</p>
-          </div>
-          <div className="wb-card-actions">
-            {activeId !== item.id && <button className="ah-btn sm" onClick={async () => { await window.electronAPI.workspaces.setActive(item.id); await refresh() }}>{tr('设为当前', 'Set active')}</button>}
-            <button className="ah-btn sm" onClick={() => setEditing({ id: item.id, name: item.name, rootPath: item.rootPath })}>{tr('编辑', 'Edit')}</button>
-            <button className="ah-btn sm danger" onClick={async () => {
-              if (!window.confirm(tr(`移除工作目录「${item.name}」？磁盘文件不会被删除。`, `Remove workspace "${item.name}"? Files on disk will not be deleted.`))) return
-              await window.electronAPI.workspaces.remove(item.id)
-              await refresh()
-            }}>{tr('移除', 'Remove')}</button>
-          </div>
-        </div>
-      ))}
-      {error && <div className="glass wb-error-text">{error}</div>}
-    </div>
-  )
-}
-
-function ShortcutsSettingsTab() {
-  const [settings, setSettings] = useState<KeyboardShortcutsConfigV1>({ bindings: {} })
-  const [search, setSearch] = useState('')
-  const [recording, setRecording] = useState<KeyboardShortcutCommandId | null>(null)
-  const [message, setMessage] = useState<string | null>(null)
-
-  const bindings = useMemo(() => resolveKeyboardShortcutBindings(settings), [settings])
-  const filteredCommands = useMemo(() => {
-    const needle = search.trim().toLowerCase()
-    if (!needle) return KEYBOARD_SHORTCUT_COMMANDS
-    return KEYBOARD_SHORTCUT_COMMANDS.filter(command => [
-      command.labelZh,
-      command.labelEn,
-      command.descriptionZh,
-      command.descriptionEn,
-      command.id,
-      ...(bindings[command.id] || [])
-    ].join(' ').toLowerCase().includes(needle))
-  }, [search, bindings])
-
-  useEffect(() => {
-    let alive = true
-    window.electronAPI.store.get(KEYBOARD_SHORTCUT_STORE_KEY)
-      .then(value => { if (alive) setSettings(normalizeKeyboardShortcuts(value || { bindings: {} })) })
-      .catch(() => { if (alive) setSettings({ bindings: {} }) })
-    return () => { alive = false }
-  }, [])
-
-  const persist = useCallback(async (next: KeyboardShortcutsConfigV1) => {
-    const normalized = normalizeKeyboardShortcuts(next)
-    setSettings(normalized)
-    await window.electronAPI.store.set(KEYBOARD_SHORTCUT_STORE_KEY, normalized)
-    window.dispatchEvent(new CustomEvent(KEYBOARD_SHORTCUTS_CHANGED))
-  }, [])
-
-  const setCommandShortcut = async (commandId: KeyboardShortcutCommandId, shortcut: string) => {
-    const next = normalizeKeyboardShortcuts({
-      bindings: {
-        ...settings.bindings,
-        [commandId]: [shortcut]
+function ModelsTab({ providers }: { providers: ProviderDef[] }) {
+  const [filter, setFilter] = useState('')
+  const models = useMemo(() => {
+    const all: Array<{ providerId: string; providerName: string; modelId: string; label: string; contextWindow: number; supportsTools: boolean; supportsVision: boolean; supportsThinking: boolean }> = []
+    for (const provider of providers) {
+      if (!provider.enabled) continue
+      for (const model of provider.models) {
+        all.push({
+          providerId: provider.id,
+          providerName: provider.name,
+          modelId: model.id,
+          label: model.label,
+          contextWindow: model.contextWindow || 128_000,
+          supportsTools: !!model.supportsTools,
+          supportsVision: !!model.supportsVision,
+          supportsThinking: !!model.supportsThinking
+        })
       }
-    })
-    await persist(next)
-    const conflict = findKeyboardShortcutConflict(resolveKeyboardShortcutBindings(next), commandId, shortcut)
-    if (conflict) {
-      const other = KEYBOARD_SHORTCUT_COMMANDS.find(command => command.id === conflict)
-      setMessage(`${shortcut} ${tr('\u5df2\u4e0e', 'also matches')} ${shortcutCommandLabel(other)} ${tr('\u51b2\u7a81\u3002', 'conflicts.')}`)
-    } else {
-      setMessage(tr('\u5feb\u6377\u952e\u5df2\u4fdd\u5b58\u3002', 'Shortcut saved.'))
     }
-  }
+    return all
+  }, [providers])
 
-  const resetCommand = async (commandId: KeyboardShortcutCommandId) => {
-    const nextBindings = { ...settings.bindings }
-    delete nextBindings[commandId]
-    await persist({ bindings: nextBindings })
-    setMessage(tr('\u5df2\u6062\u590d\u9ed8\u8ba4\u5feb\u6377\u952e\u3002', 'Default shortcut restored.'))
-  }
+  const filtered = useMemo(() => {
+    const needle = filter.trim().toLowerCase()
+    if (!needle) return models
+    return models.filter(m =>
+      m.modelId.toLowerCase().includes(needle) ||
+      m.label.toLowerCase().includes(needle) ||
+      m.providerName.toLowerCase().includes(needle)
+    )
+  }, [models, filter])
 
-  const onRecorderKeyDown = async (event: React.KeyboardEvent, commandId: KeyboardShortcutCommandId) => {
-    event.preventDefault()
-    event.stopPropagation()
-    if (event.key === 'Escape') {
-      setRecording(null)
-      setMessage(null)
-      return
-    }
-    if (event.key === 'Backspace' || event.key === 'Delete') {
-      await persist({ bindings: { ...settings.bindings, [commandId]: [] } })
-      setRecording(null)
-      setMessage(tr('\u5df2\u6e05\u9664\u8be5\u547d\u4ee4\u5feb\u6377\u952e\u3002', 'Shortcut cleared for this command.'))
-      return
-    }
-    const shortcut = keyboardEventToShortcut(event)
-    if (!shortcut) return
-    if (!event.ctrlKey && !event.metaKey && !event.altKey && shortcut !== 'Shift+Tab') {
-      setMessage(tr('\u8bf7\u4f7f\u7528 Ctrl\u3001Alt\u3001Meta \u7ec4\u5408\u952e\uff0c\u6216 Shift+Tab\u3002', 'Use Ctrl, Alt, Meta, or Shift+Tab.'))
-      return
-    }
-    await setCommandShortcut(commandId, shortcut)
-    setRecording(null)
-  }
+  const formatContext = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${Math.round(n / 1_000)}K` : String(n)
 
   return (
-    <div className="wb-settings-stack wb-shortcuts">
-      <section className="glass wb-shortcuts-card">
-        <div className="wb-card-head">
+    <div className="wb-settings-stack">
+      <section className="glass">
+        <div className="wb-settings-section-head">
           <div>
-            <strong>{tr('\u5feb\u6377\u952e', 'Keyboard shortcuts')}</strong>
-            <span>{tr('\u5f55\u5236\u3001\u91cd\u7f6e\u6216\u641c\u7d22 AgentHub \u5de5\u4f5c\u53f0\u64cd\u4f5c\u3002', 'Record, reset, or search AgentHub workbench actions.')}</span>
+            <strong>{tr('模型能力', 'Model capabilities')}</strong>
+            <span>{tr('所有已启用供应商的模型列表，含上下文窗口和支持的能力。', 'All enabled provider models with context windows and capabilities.')}</span>
           </div>
-          <input className="ah-input" value={search} onChange={event => setSearch(event.target.value)} placeholder={tr('\u641c\u7d22\u547d\u4ee4\u6216\u5feb\u6377\u952e', 'Search commands or shortcuts')} />
+          <input className="ah-input" placeholder={tr('搜索模型...', 'Search models...')} value={filter} onChange={e => setFilter(e.target.value)} style={{ maxWidth: 220 }} />
         </div>
-
-        <div className="wb-shortcuts-list">
-          {filteredCommands.map(command => {
-            const activeShortcut = shortcutDisplay(bindings[command.id])
-            const conflict = activeShortcut ? findKeyboardShortcutConflict(bindings, command.id, activeShortcut) : null
-            const isRecording = recording === command.id
-            return (
-              <div key={command.id} className={'wb-shortcut-row' + (conflict ? ' conflict' : '')}>
-                <div>
-                  <strong>{shortcutCommandLabel(command)}</strong>
-                  <span>{getLang() === 'en' ? command.descriptionEn : command.descriptionZh}</span>
-                </div>
-                <button
-                  className={'wb-shortcut-key' + (isRecording ? ' recording' : '')}
-                  onClick={() => { setRecording(command.id); setMessage(tr('\u8bf7\u6309\u4e0b\u65b0\u7684\u5feb\u6377\u952e\uff1bEsc \u53d6\u6d88\uff0cBackspace \u6e05\u9664\u3002', 'Press a new shortcut. Esc cancels, Backspace clears.')) }}
-                  onKeyDown={event => onRecorderKeyDown(event, command.id)}
-                  autoFocus={isRecording}
-                >
-                  {isRecording ? tr('\u6b63\u5728\u5f55\u5236...', 'Recording...') : activeShortcut || tr('\u672a\u8bbe\u7f6e', 'Unset')}
-                </button>
-                <button className="ah-btn sm" onClick={() => resetCommand(command.id)}>{tr('\u9ed8\u8ba4', 'Default')}</button>
-                {conflict && <small>{tr('\u51b2\u7a81\uff1a', 'Conflict: ')}{shortcutCommandLabel(KEYBOARD_SHORTCUT_COMMANDS.find(item => item.id === conflict))}</small>}
+        <div className="wb-models-grid">
+          {filtered.map(m => (
+            <div key={`${m.providerId}::${m.modelId}`} className="wb-model-card glass">
+              <div className="wb-model-card-head">
+                <strong>{m.label}</strong>
+                <span className="ah-chip">{m.providerName}</span>
               </div>
-            )
-          })}
-          {filteredCommands.length === 0 && <div className="wb-memory-kun-empty"><Icon d={IC.terminal} size={24} /><span>{tr('\u6ca1\u6709\u5339\u914d\u7684\u5feb\u6377\u952e\u3002', 'No matching shortcuts.')}</span></div>}
-        </div>
-      </section>
-      {message && <div className="glass wb-shortcut-message">{message}</div>}
-    </div>
-  )
-}
-
-function shortcutCommandLabel(command?: { labelZh: string; labelEn: string }): string {
-  if (!command) return ''
-  return getLang() === 'en' ? command.labelEn : command.labelZh
-}
-
-function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) {
-  const [servers, setServers] = useState<McpServerConfig[]>([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [adding, setAdding] = useState(false)
-  const [draft, setDraft] = useState({ name: '', transport: 'stdio' as McpServerConfig['transport'], command: '', args: '', url: '' })
-
-  const refresh = useCallback(async () => {
-    setLoading(true)
-    try {
-      setServers(await window.electronAPI.mcp.list(workspaceId))
-      setError(null)
-    } catch (err: any) {
-      setError(err?.message || tr('加载 MCP 失败', 'Failed to load MCP servers'))
-    } finally {
-      setLoading(false)
-    }
-  }, [workspaceId])
-
-  useEffect(() => { refresh().catch(() => {}) }, [refresh])
-
-  const add = async () => {
-    if (!draft.name.trim()) return
-    await window.electronAPI.mcp.upsert({
-      name: draft.name.trim(),
-      transport: draft.transport,
-      command: draft.transport === 'stdio' ? draft.command.trim() : undefined,
-      args: draft.args.split(/\s+/).map(item => item.trim()).filter(Boolean),
-      url: draft.transport !== 'stdio' ? draft.url.trim() : undefined,
-      enabled: true
-    })
-    setDraft({ name: '', transport: 'stdio', command: '', args: '', url: '' })
-    setAdding(false)
-    await refresh()
-  }
-
-  const scan = async () => {
-    setLoading(true)
-    try {
-      await window.electronAPI.mcp.scanLocal(workspaceId)
-      setServers(await window.electronAPI.mcp.list(workspaceId))
-      setError(null)
-    } catch (err: any) {
-      setError(err?.message || tr('扫描 MCP 失败', 'Failed to scan MCP servers'))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  return (
-    <div className="wb-settings-stack wb-mcp-clean">
-      <section className="glass wb-mcp-clean-card">
-        <div className="wb-mcp-clean-head">
-          <div>
-            <strong>{tr('MCP 服务', 'MCP services')}</strong>
-            <span>{tr('管理本地、工作目录和插件目录中的 MCP 服务，启用后同步给支持工具调用的 Agent。', 'Manage MCP services from local, workspace, and plugin folders; enabled services sync to capable agents.')}</span>
-          </div>
-          <div className="wb-card-actions">
-            <button className="ah-btn sm" onClick={scan} disabled={loading}><Icon d={IC.search} size={13} />{tr('扫描本地', 'Scan local')}</button>
-            <button className="ah-btn sm" onClick={refresh} disabled={loading}><Icon d={IC.refresh} size={13} />{tr('刷新', 'Refresh')}</button>
-            <button className="ah-btn sm primary" onClick={() => setAdding(open => !open)}><Icon d={IC.plus} size={13} />{adding ? tr('收起', 'Collapse') : tr('添加服务', 'Add service')}</button>
-          </div>
-        </div>
-
-        <div className="wb-mcp-clean-stats">
-          <div><span>{tr('总数', 'Total')}</span><strong>{servers.length}</strong></div>
-          <div><span>{tr('已启用', 'Enabled')}</span><strong>{servers.filter(server => server.enabled).length}</strong></div>
-          <div><span>{tr('工作目录', 'Workspace')}</span><strong>{workspaceId ? tr('已选择', 'Selected') : tr('未选择', 'None')}</strong></div>
-        </div>
-
-        {adding && (
-          <div className="wb-mcp-editor wb-mcp-clean-editor">
-            <input className="ah-input" placeholder={tr('服务名称', 'Service name')} value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} />
-            <select className="ah-select" value={draft.transport} onChange={event => setDraft({ ...draft, transport: event.target.value as McpServerConfig['transport'] })}>
-              <option value="stdio">stdio</option>
-              <option value="sse">sse</option>
-              <option value="http">http</option>
-            </select>
-            {draft.transport === 'stdio' ? (
-              <>
-                <input className="ah-input mono" placeholder={tr('启动命令', 'Launch command')} value={draft.command} onChange={event => setDraft({ ...draft, command: event.target.value })} />
-                <input className="ah-input mono" placeholder={tr('参数', 'Args')} value={draft.args} onChange={event => setDraft({ ...draft, args: event.target.value })} />
-              </>
-            ) : (
-              <input className="ah-input mono wide" placeholder={tr('服务 URL', 'Service URL')} value={draft.url} onChange={event => setDraft({ ...draft, url: event.target.value })} />
-            )}
-            <button className="ah-btn sm primary" onClick={add}>{tr('添加', 'Add')}</button>
-          </div>
-        )}
-
-        <div className="wb-mcp-clean-list">
-          {servers.map(server => (
-            <div key={server.id} className={'wb-mcp-clean-row' + (server.enabled ? ' enabled' : '')}>
-              <span className="wb-mcp-clean-mark"><Icon d={IC.link} size={15} /></span>
-              <div>
-                <strong>{server.name}</strong>
-                <small className="mono">{server.transport === 'stdio' ? [server.command, ...(server.args || [])].filter(Boolean).join(' ') : server.url}</small>
+              <small className="mono">{m.modelId}</small>
+              <div className="wb-model-card-meta">
+                <span title="Context window">{formatContext(m.contextWindow)} ctx</span>
+                {m.supportsTools && <span className="wb-model-badge tools" title="Supports tool calls">tools</span>}
+                {m.supportsVision && <span className="wb-model-badge vision" title="Supports vision">vision</span>}
+                {m.supportsThinking && <span className="wb-model-badge thinking" title="Supports thinking/reasoning">thinking</span>}
               </div>
-              <span className="ah-chip">{mcpSourceLabel(server.source)}</span>
-              <span className={'wb-mcp-clean-status ' + (server.status || 'unknown')} title={server.error || ''}>{mcpStatusLabel(server.status || 'unknown')}</span>
-              <Switch on={server.enabled} onChange={async value => { await window.electronAPI.mcp.setEnabled(server.id, value, workspaceId); await refresh() }} />
-              <span className="wb-card-actions">
-                <button className="ah-btn sm" onClick={async () => { await window.electronAPI.mcp.test(server.id, workspaceId); await refresh() }}>{tr('测试', 'Test')}</button>
-                {server.source === 'user' && <button className="ah-btn sm danger" onClick={async () => { if (!window.confirm(tr(`删除 MCP 服务「${server.name}」？`, `Delete MCP service "${server.name}"?`))) return; await window.electronAPI.mcp.remove(server.id); await refresh() }}>{tr('删除', 'Delete')}</button>}
-              </span>
-              {server.error && <small className="wb-mcp-clean-error">{server.error}</small>}
             </div>
           ))}
-          {servers.length === 0 && <div className="wb-memory-kun-empty"><Icon d={IC.link} size={24} /><span>{tr('暂无 MCP 服务。', 'No MCP services yet.')}</span></div>}
+          {filtered.length === 0 && <div className="wb-memory-kun-empty"><span>{tr('无匹配模型', 'No matching models')}</span></div>}
         </div>
+        <div className="wb-models-summary"><span>{tr(`共 ${filtered.length} 个模型，来自 ${new Set(filtered.map(m => m.providerId)).size} 个供应商`, `${filtered.length} model(s) from ${new Set(filtered.map(m => m.providerId)).size} provider(s)`)}</span></div>
       </section>
-      {error && <div className="glass wb-error-text">{error}</div>}
-    </div>
-  )
-}
-
-function mcpSourceLabel(source: McpServerConfig['source']): string {
-  return ({
-    workspace: tr('工作目录', 'Workspace'),
-    user: tr('手动添加', 'Manual'),
-    local: tr('本机配置', 'Local config'),
-    claude: 'Claude',
-    codex: 'Codex',
-    gemini: 'Gemini',
-    opencode: 'OpenCode',
-    ccgui: tr('全局配置', 'Global config'),
-    kun: tr('插件目录', 'Plugin folder'),
-    ecc: tr('插件目录', 'Plugin folder')
-  } as Record<McpServerConfig['source'], string>)[source] || source
-}
-
-function mcpStatusLabel(status: string): string {
-  if (status === 'ok') return tr('可用', 'OK')
-  if (status === 'error') return tr('异常', 'Error')
-  return tr('未测试', 'Untested')
-}
-
-function UsageStatsTab() {
-  const [range, setRange] = useState<UsageRange>('all')
-  const [view, setView] = useState<UsageView>('overview')
-  const [stats, setStats] = useState<UsageStats | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [selectedDay, setSelectedDay] = useState<UsageHeatmapDay | null>(null)
-
-  useEffect(() => {
-    let alive = true
-    setLoading(true)
-    setError(null)
-    window.electronAPI.usage.stats(range, view)
-      .then(result => {
-        if (!alive) return
-        setStats(result)
-        const nextSelected = result.heatmap.find(day => day.selected) || result.heatmap.find(day => day.turns > 0 || day.tokens > 0) || result.heatmap.at(-1) || null
-        setSelectedDay(nextSelected)
-      })
-      .catch((err: any) => {
-        if (!alive) return
-        setStats(null)
-        setSelectedDay(null)
-        setError(err?.message || '加载使用统计失败')
-      })
-      .finally(() => { if (alive) setLoading(false) })
-    return () => { alive = false }
-  }, [range, view])
-
-  const cards = useMemo(() => {
-    if (!stats) return []
-    return [
-      ['会话', String(stats.sessions)],
-      ['消息', String(stats.messages)],
-      ['总 Token', formatUsageTokens(stats.totalTokens, stats.hasEstimated)],
-      ['活跃天数', String(stats.activeDays)],
-      ['当前连续', `${stats.currentStreak} 天`],
-      ['最长连续', `${stats.longestStreak} 天`],
-      ['费用', stats.cost == null ? '-' : `$${stats.cost.toFixed(2)}`],
-      ['缓存节省', stats.cacheSavings == null ? '-' : formatToken(stats.cacheSavings)]
-    ]
-  }, [stats])
-
-  const selectedStats = selectedDay
-    ? {
-        date: selectedDay.date,
-        turns: selectedDay.turns,
-        tokens: selectedDay.tokens,
-        actualTokens: selectedDay.actualTokens,
-        estimatedTokens: selectedDay.estimatedTokens,
-        hasEstimated: selectedDay.hasEstimated,
-        rate: stats?.heatmap.find(day => day.date === selectedDay.date)?.level || 0
-      }
-    : null
-
-  return (
-    <div className="wb-usage-shell">
-      <div className="wb-usage-top">
-        <Seg value={view} onChange={value => setView(value as UsageView)} options={[{ value: 'overview', label: '概览' }, { value: 'models', label: '模型' }]} />
-        <Seg value={range} onChange={value => setRange(value as UsageRange)} options={[{ value: 'all', label: '全部' }, { value: '90d', label: '90天' }, { value: '30d', label: '30天' }, { value: '7d', label: '7天' }]} />
-      </div>
-      {loading && <div className="wb-usage-state">加载中…</div>}
-      {error && <div className="wb-usage-state error">{error}</div>}
-      {!loading && !error && stats && (
-        <>
-          <div className="wb-usage-cards">
-            {cards.map(([label, value]) => <button key={label} type="button" className="wb-usage-card"><span>{label}</span><strong>{value}</strong></button>)}
-          </div>
-          <div className="wb-usage-body">
-            <div className="wb-usage-chart">
-              {view === 'models' ? (
-                stats.models.length ? (
-                  <div className="wb-usage-models">
-                    {stats.models.map(row => <button key={`${row.agentId}:${row.modelId}`} type="button" className="wb-usage-model-row"><span>{row.agentId || 'agent'} / {row.modelId}</span><strong>{formatToken(row.tokens)}</strong><small>{row.turns} 次</small></button>)}
-                  </div>
-                ) : (
-                  <div className="wb-usage-empty">暂无模型用量数据。</div>
-                )
-              ) : (
-                <div className="wb-usage-heatmap">
-                  {stats.heatmap.map(day => (
-                    <button
-                      key={day.date}
-                      type="button"
-                      className={`wb-usage-day level-${day.level}${day.selected || selectedDay?.date === day.date ? ' selected' : ''}`}
-                      title={`${day.date} / ${day.turns} 消息 / ${formatToken(day.tokens)}`}
-                      onClick={() => setSelectedDay(day)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-            <aside className="wb-usage-detail">
-              <strong>{selectedStats?.date || '—'}</strong>
-              <span>{selectedStats ? `${selectedStats.turns} 条记录` : '选择一天查看详情'}</span>
-              <small>{selectedStats ? `${formatToken(selectedStats.tokens)} · 等级 ${selectedStats.rate}` : ' '}</small>
-              <div className="wb-usage-mini-metrics">
-                <div><span>Token</span><strong>{formatToken(stats.totalTokens)}</strong></div>
-                <div><span>活跃</span><strong>{stats.activeDays}</strong></div>
-                <div><span>连续</span><strong>{stats.currentStreak}</strong></div>
-              </div>
-            </aside>
-          </div>
-          <div className="wb-usage-foot">最近共使用 {formatToken(stats.totalTokens)}，活跃 {stats.activeDays} 天。</div>
-        </>
-      )}
-    </div>
-  )
-}
-
-void UsageStatsTab
-void UsageStatsTabV2
-
-function UsageStatsTabV2() {
-  const [range, setRange] = useState<UsageRange>('all')
-  const [view, setView] = useState<UsageView>('overview')
-  const [stats, setStats] = useState<UsageStats | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [selectedDay, setSelectedDay] = useState<UsageHeatmapDay | null>(null)
-  const [selectedModelKey, setSelectedModelKey] = useState<string | null>(null)
-
-  useEffect(() => {
-    let alive = true
-    setLoading(true)
-    setError(null)
-    window.electronAPI.usage.stats(range, view)
-      .then(result => {
-        if (!alive) return
-        setStats(result)
-        const nextSelected = result.heatmap.find(day => day.selected)
-          || result.heatmap.find(day => day.turns > 0 || day.tokens > 0)
-          || result.heatmap.at(-1)
-          || null
-        setSelectedDay(nextSelected)
-      })
-      .catch((err: any) => {
-        if (!alive) return
-        setStats(null)
-        setSelectedDay(null)
-        setError(err?.message || '加载使用统计失败')
-      })
-      .finally(() => { if (alive) setLoading(false) })
-    return () => { alive = false }
-  }, [range, view])
-
-  useEffect(() => {
-    if (!stats?.models.length) {
-      setSelectedModelKey(null)
-      return
-    }
-    if (!stats.models.some(row => usageModelKey(row) === selectedModelKey)) {
-      setSelectedModelKey(usageModelKey(stats.models[0]))
-    }
-  }, [stats, selectedModelKey])
-
-  const cards = useMemo(() => {
-    if (!stats) return []
-    return [
-      ['会话', String(stats.sessions)],
-      ['消息', String(stats.messages)],
-      ['总 Token', formatUsageTokens(stats.totalTokens, stats.hasEstimated)],
-      ['活跃天数', String(stats.activeDays)],
-      ['当前连续', `${stats.currentStreak} 天`],
-      ['最长连续', `${stats.longestStreak} 天`],
-      ['费用', stats.cost == null ? '-' : `$${stats.cost.toFixed(2)}`],
-      ['缓存节省', stats.cacheSavings == null ? '-' : formatToken(stats.cacheSavings)]
-    ]
-  }, [stats])
-
-  const selectedStats = selectedDay
-    ? {
-        date: selectedDay.date,
-        turns: selectedDay.turns,
-        tokens: selectedDay.tokens,
-        actualTokens: selectedDay.actualTokens,
-        estimatedTokens: selectedDay.estimatedTokens,
-        hasEstimated: selectedDay.hasEstimated,
-        rate: stats?.heatmap.find(day => day.date === selectedDay.date)?.level || 0
-      }
-    : null
-  const selectedModel = stats?.models.find(row => usageModelKey(row) === selectedModelKey) || null
-
-  return (
-    <div className="wb-usage-shell">
-      <div className="wb-usage-top">
-        <Seg value={view} onChange={value => setView(value as UsageView)} options={[{ value: 'overview', label: '概览' }, { value: 'models', label: '模型' }]} />
-        <Seg value={range} onChange={value => setRange(value as UsageRange)} options={[{ value: 'all', label: '全部' }, { value: '90d', label: '90天' }, { value: '30d', label: '30天' }, { value: '7d', label: '7天' }]} />
-      </div>
-      {loading && <div className="wb-usage-state">加载中…</div>}
-      {error && <div className="wb-usage-state error">{error}</div>}
-      {!loading && !error && stats && (
-        <>
-          <div className="wb-usage-cards">
-            {cards.map(([label, value]) => (
-              <button key={label} type="button" className="wb-usage-card" onClick={() => setView(label.includes('Token') ? 'models' : 'overview')}>
-                <span>{label}</span>
-                <strong>{value}</strong>
-              </button>
-            ))}
-          </div>
-          <div className="wb-usage-body">
-            <div className="wb-usage-chart">
-              {view === 'models' ? (
-                stats.models.length ? (
-                  <div className="wb-usage-models">
-                    {stats.models.map(row => {
-                      const key = usageModelKey(row)
-                      return (
-                        <button key={key} type="button" className={'wb-usage-model-row' + (selectedModelKey === key ? ' selected' : '')} onClick={() => setSelectedModelKey(key)}>
-                          <span>{row.agentId || 'Agent'} / {row.modelId}</span>
-                          <strong>{formatUsageTokens(row.tokens, row.hasEstimated)}</strong>
-                          <small>{row.turns} 次{row.hasEstimated ? ` · 含估算 ${formatToken(row.estimatedTokens)}` : ''}</small>
-                        </button>
-                      )
-                    })}
-                  </div>
-                ) : (
-                  <div className="wb-usage-empty">暂无模型用量数据。</div>
-                )
-              ) : (
-                <div className="wb-usage-heatmap">
-                  {stats.heatmap.map(day => (
-                    <button
-                      key={day.date}
-                      type="button"
-                      className={`wb-usage-day level-${day.level}${day.selected || selectedDay?.date === day.date ? ' selected' : ''}`}
-                      title={`${day.date} / ${day.turns} 条 / ${formatUsageTokens(day.tokens, day.hasEstimated)}`}
-                      onClick={() => setSelectedDay(day)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-            <aside className="wb-usage-detail">
-              <strong>{view === 'models' ? (selectedModel?.modelId || '未选择模型') : (selectedStats?.date || '未选择日期')}</strong>
-              <span>
-                {view === 'models'
-                  ? (selectedModel ? `${selectedModel.turns} 次调用` : '选择一个模型查看详情')
-                  : (selectedStats ? `${selectedStats.turns} 条记录` : '选择一天查看详情')}
-              </span>
-              <small>
-                {view === 'models'
-                  ? (selectedModel ? `${selectedModel.agentId || 'Agent'} · ${formatUsageTokens(selectedModel.tokens, selectedModel.hasEstimated)}` : ' ')
-                  : (selectedStats ? `${formatUsageTokens(selectedStats.tokens, selectedStats.hasEstimated)} · 等级 ${selectedStats.rate}` : ' ')}
-              </small>
-              {(view === 'models' ? selectedModel?.hasEstimated : selectedStats?.hasEstimated) && (
-                <small>
-                  真实 {formatToken(view === 'models' ? selectedModel?.actualTokens || 0 : selectedStats?.actualTokens || 0)}
-                  {' · '}
-                  估算 {formatToken(view === 'models' ? selectedModel?.estimatedTokens || 0 : selectedStats?.estimatedTokens || 0)}
-                </small>
-              )}
-              <div className="wb-usage-mini-metrics">
-                <div><span>Token</span><strong>{formatUsageTokens(stats.totalTokens, stats.hasEstimated)}</strong></div>
-                <div><span>活跃</span><strong>{stats.activeDays}</strong></div>
-                <div><span>连续</span><strong>{stats.currentStreak}</strong></div>
-              </div>
-            </aside>
-          </div>
-          <div className="wb-usage-foot">
-            当前范围共使用 {formatUsageTokens(stats.totalTokens, stats.hasEstimated)}，活跃 {stats.activeDays} 天。
-            {stats.hasEstimated && <> 其中真实 {formatToken(stats.actualTokens)}，估算 {formatToken(stats.estimatedTokens)}。</>}
-          </div>
-        </>
-      )}
     </div>
   )
 }
@@ -1591,7 +663,8 @@ function MemorySettingsTab() {
   }
 
   const deleteMemory = async (id: string) => {
-    if (!window.confirm(tr('删除这条记忆？此操作不可撤销。', 'Delete this memory? This cannot be undone.'))) return
+    const ok = await styledConfirm({ message: tr('删除这条记忆？此操作不可撤销。', 'Delete this memory? This cannot be undone.'), danger: true })
+    if (!ok) return
     await window.electronAPI.memory.delete(id)
     if (editing?.id === id) closeEditor()
     await refresh()
@@ -1638,6 +711,9 @@ function MemorySettingsTab() {
             <div><span>{tr('状态', 'Status')}</span><strong>{enabled ? tr('开启', 'On') : tr('关闭', 'Off')}</strong></div>
           </div>
         </div>
+
+        {/* Memory Graph Visualization */}
+        <MemoryGraphSection entries={entries} />
 
         <div className="wb-memory-kun-section">
           <div className="wb-memory-kun-record-head">
@@ -1731,7 +807,7 @@ function MemorySettingsTab() {
   )
 }
 
-function LegacyMemorySettingsTab() {
+function _LegacyMemorySettingsTab() {
   const [statusFilter, setStatusFilter] = useState<'all' | MemoryEntryStatus>('all')
   const [query, setQuery] = useState('')
   const [entries, setEntries] = useState<MemoryEntry[]>([])
@@ -1839,7 +915,8 @@ function LegacyMemorySettingsTab() {
   }
 
   const deleteMemory = async (id: string) => {
-    if (!window.confirm(tr('删除这条记忆？此操作不可撤销。', 'Delete this memory? This cannot be undone.'))) return
+    const ok = await styledConfirm({ message: tr('删除这条记忆？此操作不可撤销。', 'Delete this memory? This cannot be undone.'), danger: true })
+    if (!ok) return
     await window.electronAPI.memory.delete(id)
     if (editing?.id === id) setEditing(null)
     await refresh()
@@ -1987,6 +1064,265 @@ function MemorySettingsRow({ entry, onEdit, onApprove, onDisable, onDelete, onTo
   )
 }
 
+function MemoryGraphSection({ entries }: { entries: MemoryEntry[] }) {
+  const [graph, setGraph] = useState<any>(null)
+  const [cleanupSuggestions, setCleanupSuggestions] = useState<any[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const buildGraph = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await window.electronAPI.memoryGraph.build(entries)
+      setGraph(result)
+      setCleanupSuggestions([])
+    } catch (err: any) {
+      setError(err?.message || tr('构建记忆图谱失败', 'Failed to build memory graph'))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const cleanup = async () => {
+    if (!graph) return
+    try {
+      const suggestions = await window.electronAPI.memoryGraph.cleanupSuggestions(graph)
+      setCleanupSuggestions(Array.isArray(suggestions) ? suggestions : [])
+    } catch (err: any) {
+      setError(err?.message || tr('获取清理建议失败', 'Failed to get cleanup suggestions'))
+    }
+  }
+
+  if (entries.length === 0) return null
+
+  return (
+    <div className="wb-memory-kun-section">
+      <div className="wb-memory-kun-copy">
+        <strong>{tr('记忆图谱', 'Memory Graph')}</strong>
+        <span>{tr('可视化记忆条目之间的关系，查看清理建议。', 'Visualize relationships between memory entries and view cleanup suggestions.')}</span>
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <button className="ah-btn sm" onClick={buildGraph} disabled={loading}>
+          {loading ? tr('构建中...', 'Building...') : tr('构建图谱', 'Build Graph')}
+        </button>
+        {graph && (
+          <button className="ah-btn sm" onClick={cleanup}>
+            {tr('清理建议', 'Cleanup Suggestions')}
+          </button>
+        )}
+      </div>
+      {error && <div style={{ fontSize: 12, color: 'var(--color-error)', marginTop: 4 }}>{error}</div>}
+      {graph && (
+        <div style={{ marginTop: 8, padding: 12, background: 'var(--bg-input)', borderRadius: 8, fontSize: 12 }}>
+          <div>{tr(`节点: ${graph.stats?.totalNodes || 0}，边: ${graph.stats?.totalEdges || 0}，孤立节点: ${graph.stats?.isolatedNodes || 0}`, `Nodes: ${graph.stats?.totalNodes || 0}, Edges: ${graph.stats?.totalEdges || 0}, Isolated: ${graph.stats?.isolatedNodes || 0}`)}</div>
+          {graph.stats?.categories && (
+            <div style={{ marginTop: 4 }}>
+              {Object.entries(graph.stats.categories).map(([cat, count]) => (
+                <span key={cat} className="ah-chip" style={{ marginRight: 4, fontSize: 10 }}>{cat}: {count as number}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {cleanupSuggestions.length > 0 && (
+        <div className="wb-memory-kun-suggestions" style={{ marginTop: 8 }}>
+          <strong>{tr(`发现 ${cleanupSuggestions.length} 条可清理的记忆`, `Found ${cleanupSuggestions.length} memories to clean up`)}</strong>
+          <div style={{ display: 'grid', gap: 6, marginTop: 6 }}>
+            {cleanupSuggestions.slice(0, 5).map((item: any, index) => (
+              <div key={item.id || item.entryId || index} className="ah-chip" style={{ justifyContent: 'flex-start', whiteSpace: 'normal' }}>
+                {String(item.title || item.reason || item.summary || item.id || item.entryId || tr('清理建议', 'Cleanup suggestion')).slice(0, 160)}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PluginSettingsTab({ workspaceId }: { workspaceId: string | null }) {
+  const [plugins, setPlugins] = useState<any[]>([])
+  const [repositories, setRepositories] = useState<any[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [importMessage, setImportMessage] = useState<string | null>(null)
+  const [importing, setImporting] = useState<string | null>(null)
+  const [repoUrl, setRepoUrl] = useState('')
+  const [repoBranch, setRepoBranch] = useState('')
+  const [contributions, setContributions] = useState<any>(null)
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      // Get workspace root if workspaceId is provided
+      let workspaceRoot: string | undefined
+      if (workspaceId) {
+        try {
+          const workspaces = await window.electronAPI.workspaces.list()
+          const ws = workspaces?.find((w: any) => w.id === workspaceId)
+          workspaceRoot = ws?.rootPath
+        } catch { /* ignore */ }
+      }
+      const list = await window.electronAPI.plugins.scan(workspaceRoot)
+      setPlugins(Array.isArray(list) ? list : [])
+      if (list && list.length > 0) {
+        const contribs = await window.electronAPI.plugins.contributions(list)
+        setContributions(contribs)
+      } else {
+        setContributions(null)
+      }
+    } catch (err: any) {
+      setError(err?.message || tr('扫描插件失败', 'Failed to scan plugins'))
+    } finally {
+      setLoading(false)
+    }
+  }, [workspaceId])
+
+  const loadRepositories = useCallback(async () => {
+    try {
+      const list = await window.electronAPI.plugins.repositories()
+      setRepositories(Array.isArray(list) ? list : [])
+    } catch { /* ignore startup races */ }
+  }, [])
+
+  const importRepository = useCallback(async (input: { url: string; id?: string; name?: string; branch?: string }, clearAfter = false) => {
+    if (!input.url.trim()) {
+      setError(tr('请输入 GitHub 或 GitCode 仓库地址', 'Enter a GitHub or GitCode repository URL'))
+      return
+    }
+    const key = input.id || input.url
+    setImporting(key)
+    setError(null)
+    setImportMessage(null)
+    try {
+      const result = await window.electronAPI.plugins.importRepository(input)
+      if (!result?.ok) {
+        setError(result?.error || tr('导入插件仓库失败', 'Failed to import plugin repository'))
+        return
+      }
+      const count = Array.isArray(result.plugins) ? result.plugins.length : result.plugin ? 1 : 0
+      setImportMessage(tr(`已导入 ${input.name || result.plugin?.manifest?.name || '插件仓库'}，发现 ${count} 个插件入口。`, `Imported ${input.name || result.plugin?.manifest?.name || 'plugin repository'} with ${count} plugin entr${count === 1 ? 'y' : 'ies'}.`))
+      if (clearAfter) {
+        setRepoUrl('')
+        setRepoBranch('')
+      }
+      await refresh()
+    } catch (err: any) {
+      setError(err?.message || tr('导入插件仓库失败', 'Failed to import plugin repository'))
+    } finally {
+      setImporting(null)
+    }
+  }, [refresh])
+
+  useEffect(() => {
+    refresh()
+    loadRepositories()
+  }, [refresh, loadRepositories])
+
+  return (
+    <div className="wb-settings-stack">
+      <section className="glass wb-mcp-clean-card">
+        <div className="wb-mcp-clean-head">
+          <div>
+            <strong>{tr('插件管理', 'Plugin Manager')}</strong>
+            <span>{tr('扫描本地插件目录，查看已安装插件的贡献点。', 'Scan local plugin directories and view installed plugin contributions.')}</span>
+          </div>
+          <button className="ah-btn sm" onClick={refresh} disabled={loading}>
+            {loading ? tr('扫描中...', 'Scanning...') : tr('扫描插件', 'Scan Plugins')}
+          </button>
+        </div>
+
+        {error && <div className="glass wb-error-text">{error}</div>}
+        {importMessage && <div className="glass" style={{ padding: 10, color: 'var(--ok)', fontSize: 12 }}>{importMessage}</div>}
+
+        <div className="wb-plugin-repo-list" style={{ marginTop: 12 }}>
+          {repositories.map(repo => (
+            <div key={repo.id} className="wb-plugin-row">
+              <div className="wb-plugin-row-main">
+                <strong>{repo.name}</strong>
+                <small className="mono">{repo.source || 'builtin'}</small>
+                {repo.description && (
+                  <div>{repo.description}</div>
+                )}
+                <code>{repo.url}</code>
+              </div>
+              <button
+                className="ah-btn sm"
+                disabled={!!importing}
+                onClick={() => importRepository({ id: repo.id, name: repo.name, url: repo.url })}
+              >
+                {importing === repo.id ? tr('导入中...', 'Importing...') : tr('导入', 'Import')}
+              </button>
+            </div>
+          ))}
+          <div className="wb-plugin-import-row">
+            <div className="wb-plugin-row-main">
+              <strong>{tr('从仓库 URL 导入', 'Import from repository URL')}</strong>
+              <input
+                className="ah-input mono"
+                value={repoUrl}
+                onChange={event => setRepoUrl(event.target.value)}
+                placeholder="https://github.com/owner/plugin.git"
+              />
+              <input
+                className="ah-input mono"
+                value={repoBranch}
+                onChange={event => setRepoBranch(event.target.value)}
+                placeholder={tr('分支，可选', 'Branch, optional')}
+              />
+              <span>
+                {tr('仅支持 HTTPS GitHub/GitCode 仓库。导入后只扫描 manifest 和 SKILL.md，不执行远程代码。', 'Only HTTPS GitHub/GitCode repositories are supported. AgentHub scans manifest and SKILL.md files only; remote code is not executed.')}
+              </span>
+            </div>
+            <button
+              className="ah-btn sm"
+              disabled={!!importing || !repoUrl.trim()}
+              onClick={() => importRepository({ url: repoUrl.trim(), branch: repoBranch.trim() || undefined }, true)}
+            >
+              {importing === repoUrl.trim() ? tr('导入中...', 'Importing...') : tr('导入仓库', 'Import Repo')}
+            </button>
+          </div>
+        </div>
+
+        <div className="wb-mcp-clean-stats">
+          <div><span>{tr('已发现', 'Found')}</span><strong>{plugins.length}</strong></div>
+          {contributions && (
+            <>
+              <div><span>{tr('命令', 'Commands')}</span><strong>{contributions.commands?.length || 0}</strong></div>
+              <div><span>{tr('技能', 'Skills')}</span><strong>{contributions.skills?.length || 0}</strong></div>
+              <div><span>{tr('提示词', 'Prompts')}</span><strong>{contributions.prompts?.length || 0}</strong></div>
+            </>
+          )}
+        </div>
+
+        <div className="wb-plugin-installed-list">
+          {plugins.map((plugin, idx) => (
+            <div key={plugin.id || idx} className="wb-plugin-row">
+              <div className="wb-plugin-row-main">
+                <strong>{plugin.manifest?.name || plugin.id}</strong>
+                <small className="mono">{plugin.manifest?.version || '?'}</small>
+                {plugin.manifest?.description && (
+                  <div>{plugin.manifest.description}</div>
+                )}
+                <code>
+                  {tr('来源', 'Source')}: {plugin.source || 'unknown'} · {tr('路径', 'Path')}: {plugin.path || '?'}
+                </code>
+              </div>
+            </div>
+          ))}
+          {plugins.length === 0 && !loading && (
+            <div className="wb-memory-kun-empty">
+              <span>{tr('暂无已发现的插件。', 'No plugins discovered yet.')}</span>
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  )
+}
+
 function memoryScopeOf(entry: Partial<MemoryEntry>): Exclude<MemoryScopeFilter, 'all'> {
   const scope = String(entry.metadata?.scope || '').toLowerCase()
   if (scope === 'user' || scope === 'workspace' || scope === 'project') return scope
@@ -2033,10 +1369,6 @@ function memoryCategoryLabel(category: MemoryCategory): string {
 
 function memoryStatusLabel(status: MemoryEntryStatus): string {
   return ({ approved: tr('已学习', 'Learned'), candidate: tr('待确认', 'Pending'), disabled: tr('已禁用', 'Disabled') } as Record<MemoryEntryStatus, string>)[status] || status
-}
-
-function usageModelKey(row: UsageModelRow): string {
-  return `${row.agentId || 'agent'}:${row.modelId}`
 }
 
 function UpdatesSettingsTab() {
@@ -2425,12 +1757,8 @@ function EmptyState({ icon, title, detail }: { icon: React.ReactNode; title: str
   )
 }
 
-function formatToken(value: number): string {
+function _formatToken(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M tokens`
   if (value >= 1000) return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}k tokens`
   return `${value} tokens`
-}
-
-function formatUsageTokens(value: number, hasEstimated?: boolean): string {
-  return `${hasEstimated ? '约 ' : ''}${formatToken(value)}${hasEstimated ? '（含估算）' : ''}`
 }

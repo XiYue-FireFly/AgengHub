@@ -77,6 +77,19 @@ export interface ProviderDefinition {
   health?: ProviderHealth
   /** 模型列表最近一次刷新状态。失败时仍保留已有模型。 */
   modelFetch?: ProviderModelFetchState
+  /** 创建时间戳，用于供应商排序的稳定兜底。 */
+  createdAt?: number
+  /** 用户自定义排序。数值越小越靠前。 */
+  sortOrder?: number
+  /** Claude Code 兼容模型映射，用作 Main/Haiku/Sonnet/Opus 建议和运行时选择。 */
+  modelMapping?: ProviderModelMapping
+}
+
+export interface ProviderModelMapping {
+  main?: string
+  haiku?: string
+  sonnet?: string
+  opus?: string
 }
 
 export interface ProviderHealth {

@@ -2,6 +2,7 @@ import React, { FormEvent, useEffect, useMemo, useState } from 'react'
 import { Icon, IC } from '../glass/ui'
 import { tr } from '../glass/i18n'
 import { WorkspaceItem } from './types'
+import { styledConfirm } from '../lib/confirm'
 
 const PERSONAL_WORKSPACE_KEY = '__personal__'
 const SIDEBAR_WIDTH_KEY = 'agenthub.workbench.sidebarWidth.v1'
@@ -26,8 +27,8 @@ export function SessionSidebar({
   setSearch,
   proxyHost
 }: {
-  view: 'chat' | 'write' | 'tasks' | 'settings'
-  setView: (view: 'chat' | 'write' | 'tasks' | 'settings') => void
+  view: 'chat' | 'write' | 'tasks' | 'settings' | 'workflows'
+  setView: (view: 'chat' | 'write' | 'tasks' | 'settings' | 'workflows') => void
   workspaces: WorkspaceItem[]
   workspaceId: string | null
   selectWorkspace: (id: string | null) => void
@@ -139,8 +140,9 @@ export function SessionSidebar({
     }
   }
 
-  const removeThread = (thread: WorkbenchThread) => {
-    if (!window.confirm(tr(`删除会话“${thread.title}”？`, `Delete session "${thread.title}"?`))) return
+  const removeThread = async (thread: WorkbenchThread) => {
+    const ok = await styledConfirm({ message: tr(`删除会话"${thread.title}"？`, `Delete session "${thread.title}"?`), danger: true })
+    if (!ok) return
     deleteThread(thread.id)
   }
 

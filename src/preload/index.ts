@@ -44,13 +44,14 @@ const api = {
   },
   providers: {
     get: () => ipcRenderer.invoke('providers:get'),
-    upsert: (p: any) => ipcRenderer.invoke('providers:upsert', p),
+    upsert: (p: Record<string, unknown>) => ipcRenderer.invoke('providers:upsert', p),
     delete: (id: string) => ipcRenderer.invoke('providers:delete', id),
     setEnabled: (id: string, enabled: boolean) => ipcRenderer.invoke('providers:setEnabled', id, enabled),
     setKey: (id: string, key: string) => ipcRenderer.invoke('providers:setKey', id, key),
     health: (id: string) => ipcRenderer.invoke('providers:health', id),
     healthAll: () => ipcRenderer.invoke('providers:healthAll'),
-    fetchModels: (id: string) => ipcRenderer.invoke('providers:fetchModels', id)
+    fetchModels: (id: string, override?: { baseUrl?: string; apiKey?: string; kind?: string }) => ipcRenderer.invoke('providers:fetchModels', id, override),
+    reorderForClaude: (orderedIds: string[]) => ipcRenderer.invoke('providers:reorderForClaude', orderedIds)
   },
   takeover: {
     status: () => ipcRenderer.invoke('takeover:status'),
@@ -78,14 +79,14 @@ const api = {
   memory: {
     catalog: () => ipcRenderer.invoke('memory:catalog'),
     getSettings: () => ipcRenderer.invoke('memory:getSettings'),
-    updateSettings: (patch: any) => ipcRenderer.invoke('memory:updateSettings', patch),
+    updateSettings: (patch: Record<string, unknown>) => ipcRenderer.invoke('memory:updateSettings', patch),
     list: (category?: string) => ipcRenderer.invoke('memory:list', category),
     search: (query: string, category?: string) => ipcRenderer.invoke('memory:search', query, category),
-    addEntry: (entry: any) => ipcRenderer.invoke('memory:addEntry', entry),
+    addEntry: (entry: Record<string, unknown>) => ipcRenderer.invoke('memory:addEntry', entry),
     importConversation: (source: string, content: string) => ipcRenderer.invoke('memory:importConversation', source, content),
     listCandidates: () => ipcRenderer.invoke('memory:listCandidates'),
     approveCandidate: (id: string) => ipcRenderer.invoke('memory:approveCandidate', id),
-    updateEntry: (id: string, patch: any) => ipcRenderer.invoke('memory:updateEntry', id, patch),
+    updateEntry: (id: string, patch: Record<string, unknown>) => ipcRenderer.invoke('memory:updateEntry', id, patch),
     disableEntry: (id: string) => ipcRenderer.invoke('memory:disableEntry', id),
     delete: (id: string) => ipcRenderer.invoke('memory:delete', id),
     loadState: () => ipcRenderer.invoke('memory:loadState'),
@@ -123,7 +124,8 @@ const api = {
     create: (input: { workspaceId?: string | null; title?: string }) => ipcRenderer.invoke('threads:create', input),
     rename: (threadId: string, title: string) => ipcRenderer.invoke('threads:rename', threadId, title),
     delete: (threadId: string) => ipcRenderer.invoke('threads:delete', threadId),
-    select: (threadId: string | null) => ipcRenderer.invoke('threads:select', threadId)
+    select: (threadId: string | null) => ipcRenderer.invoke('threads:select', threadId),
+    fork: (input: { sourceThreadId: string; sourceTurnId: string; message: string }) => ipcRenderer.invoke('threads:fork', input)
   },
   turns: {
     create: (input: { threadId?: string | null; workspaceId?: string | null; prompt: string; mode?: string; targetAgent?: string | null; thinking?: any; modelSelection?: ModelSelection; attachments?: any[]; customSchedule?: any }) =>
@@ -172,6 +174,14 @@ const api = {
     list: () => ipcRenderer.invoke('commands:list'),
     run: (input: { id?: string; text?: string }) => ipcRenderer.invoke('commands:run', input)
   },
+  workflows: {
+    list: (category?: string) => ipcRenderer.invoke('workflows:list', category),
+    get: (id: string) => ipcRenderer.invoke('workflows:get', id),
+    upsert: (input: Record<string, unknown>) => ipcRenderer.invoke('workflows:upsert', input),
+    delete: (id: string) => ipcRenderer.invoke('workflows:delete', id),
+    search: (query: string) => ipcRenderer.invoke('workflows:search', query),
+    seed: () => ipcRenderer.invoke('workflows:seed')
+  },
   ecc: {
     status: () => ipcRenderer.invoke('ecc:status'),
     update: () => ipcRenderer.invoke('ecc:update')
@@ -213,10 +223,11 @@ const api = {
   mcp: {
     list: (workspaceId?: string | null) => ipcRenderer.invoke('mcp:list', workspaceId),
     scanLocal: (workspaceId?: string | null) => ipcRenderer.invoke('mcp:scanLocal', workspaceId),
-    upsert: (input: any) => ipcRenderer.invoke('mcp:upsert', input),
+    upsert: (input: Record<string, unknown>) => ipcRenderer.invoke('mcp:upsert', input),
     remove: (id: string) => ipcRenderer.invoke('mcp:remove', id),
     setEnabled: (id: string, enabled: boolean, workspaceId?: string | null) => ipcRenderer.invoke('mcp:setEnabled', id, enabled, workspaceId),
-    test: (id: string, workspaceId?: string | null) => ipcRenderer.invoke('mcp:test', id, workspaceId)
+    test: (id: string, workspaceId?: string | null) => ipcRenderer.invoke('mcp:test', id, workspaceId),
+    listTools: (id: string, workspaceId?: string | null) => ipcRenderer.invoke('mcp:listTools', id, workspaceId)
   },
   worktrees: {
     list: (parentWorkspaceId?: string | null) => ipcRenderer.invoke('worktrees:list', parentWorkspaceId),
@@ -241,7 +252,10 @@ const api = {
   },
   browser: {
     open: (input: { workspaceId?: string | null; url?: string }) => ipcRenderer.invoke('browser:open', input),
-    capture: (attachment: any) => ipcRenderer.invoke('browser:capture', attachment)
+    capture: (attachment: any) => ipcRenderer.invoke('browser:capture', attachment),
+    summarize: (snapshot: any) => ipcRenderer.invoke('browser:summarize', snapshot),
+    extractText: (html: string) => ipcRenderer.invoke('browser:extractText', html),
+    analyzePrompt: (snapshot: any, request?: string) => ipcRenderer.invoke('browser:analyzePrompt', snapshot, request)
   },
   usage: {
     stats: (range?: 'all' | '90d' | '30d' | '7d', view?: 'overview' | 'models' | 'requests' | 'providers' | 'pricing') => ipcRenderer.invoke('usage:stats', range, view),
@@ -278,12 +292,198 @@ const api = {
     setMode: (mode: 'all' | 'selected') => ipcRenderer.invoke('agentic:setMode', mode),
     // 写/执行审批门禁
     getApprovalConfig: () => ipcRenderer.invoke('agentic:getApprovalConfig'),
+    setApprovalPreset: (preset: 'read-only' | 'auto' | 'full-access' | 'ask-all' | 'custom') =>
+      ipcRenderer.invoke('agentic:setApprovalPreset', preset),
     setApprovalDefault: (tool: 'write' | 'exec', policy: 'allow' | 'ask' | 'deny') =>
       ipcRenderer.invoke('agentic:setApprovalDefault', tool, policy),
     setApprovalOverride: (agentId: string, tool: 'write' | 'exec', policy: 'allow' | 'ask' | 'deny' | null) =>
       ipcRenderer.invoke('agentic:setApprovalOverride', agentId, tool, policy),
     resolveApproval: (requestId: string, approved: boolean) =>
       ipcRenderer.invoke('agentic:resolveApproval', requestId, approved)
+  },
+  // --- Prompt Library ---
+  prompts: {
+    list: (category?: string) => ipcRenderer.invoke('prompts:list', category),
+    get: (id: string) => ipcRenderer.invoke('prompts:get', id),
+    upsert: (input: any) => ipcRenderer.invoke('prompts:upsert', input),
+    delete: (id: string) => ipcRenderer.invoke('prompts:delete', id),
+    search: (query: string) => ipcRenderer.invoke('prompts:search', query),
+    slashCommands: () => ipcRenderer.invoke('prompts:slashCommands'),
+    incrementUse: (id: string) => ipcRenderer.invoke('prompts:incrementUse', id),
+    seedDefaults: () => ipcRenderer.invoke('prompts:seedDefaults')
+  },
+  // --- Keyboard Shortcuts ---
+  shortcuts: {
+    list: (category?: string) => ipcRenderer.invoke('shortcuts:list', category),
+    get: (id: string) => ipcRenderer.invoke('shortcuts:get', id),
+    update: (id: string, key: string) => ipcRenderer.invoke('shortcuts:update', id, key),
+    reset: (id: string) => ipcRenderer.invoke('shortcuts:reset', id),
+    resetAll: () => ipcRenderer.invoke('shortcuts:resetAll'),
+    conflicts: () => ipcRenderer.invoke('shortcuts:conflicts')
+  },
+  // --- Diagnostics ---
+  diagnostics: {
+    run: () => ipcRenderer.invoke('diagnostics:run')
+  },
+  // --- Backup ---
+  backup: {
+    create: () => ipcRenderer.invoke('backup:create'),
+    list: () => ipcRenderer.invoke('backup:list'),
+    restore: (filename: string) => ipcRenderer.invoke('backup:restore', filename),
+    delete: (filename: string) => ipcRenderer.invoke('backup:delete', filename)
+  },
+  // --- Conversation Export ---
+  conversation: {
+    exportMarkdown: (data: any) => ipcRenderer.invoke('conversation:exportMarkdown', data),
+    exportHtml: (data: any) => ipcRenderer.invoke('conversation:exportHtml', data),
+    exportFile: (data: any, format: string, path: string) => ipcRenderer.invoke('conversation:exportFile', data, format, path)
+  },
+  // --- Notifications ---
+  notifications: {
+    list: (unreadOnly?: boolean) => ipcRenderer.invoke('notifications:list', unreadOnly),
+    unreadCount: () => ipcRenderer.invoke('notifications:unreadCount'),
+    push: (input: any) => ipcRenderer.invoke('notifications:push', input),
+    markRead: (id: string) => ipcRenderer.invoke('notifications:markRead', id),
+    markAllRead: () => ipcRenderer.invoke('notifications:markAllRead'),
+    delete: (id: string) => ipcRenderer.invoke('notifications:delete', id),
+    clearAll: () => ipcRenderer.invoke('notifications:clearAll')
+  },
+  // --- Onboarding ---
+  onboarding: {
+    getState: () => ipcRenderer.invoke('onboarding:getState'),
+    shouldShow: () => ipcRenderer.invoke('onboarding:shouldShow'),
+    completeStep: (step: string, skipped?: boolean) => ipcRenderer.invoke('onboarding:completeStep', step, skipped),
+    skipAll: () => ipcRenderer.invoke('onboarding:skipAll'),
+    reset: () => ipcRenderer.invoke('onboarding:reset'),
+    nextStep: () => ipcRenderer.invoke('onboarding:nextStep')
+  },
+  // --- Workspace Files ---
+  workspaceFiles: {
+    list: (rootPath: string, max?: number) => ipcRenderer.invoke('workspaceFiles:list', rootPath, max),
+    search: (rootPath: string, query: string, max?: number) => ipcRenderer.invoke('workspaceFiles:search', rootPath, query, max),
+    preview: (filePath: string, maxLines?: number) => ipcRenderer.invoke('workspaceFiles:preview', filePath, maxLines)
+  },
+  // --- GitHub Integration ---
+  github: {
+    checkCli: () => ipcRenderer.invoke('github:checkCli'),
+    listPrs: (state?: string, limit?: number) => ipcRenderer.invoke('github:listPrs', state, limit),
+    listIssues: (state?: string, limit?: number) => ipcRenderer.invoke('github:listIssues', state, limit),
+    currentBranchPr: () => ipcRenderer.invoke('github:currentBranchPr')
+  },
+  // --- Slash Commands ---
+  slashCommands: {
+    list: () => ipcRenderer.invoke('slashCommands:list'),
+    get: (shortcut: string) => ipcRenderer.invoke('slashCommands:get', shortcut),
+    save: (input: any) => ipcRenderer.invoke('slashCommands:save', input),
+    delete: (shortcut: string) => ipcRenderer.invoke('slashCommands:delete', shortcut),
+    resolve: (shortcut: string, params: any) => ipcRenderer.invoke('slashCommands:resolve', shortcut, params),
+    validate: (shortcut: string) => ipcRenderer.invoke('slashCommands:validate', shortcut),
+    conflict: (shortcut: string) => ipcRenderer.invoke('slashCommands:conflict', shortcut)
+  },
+  // --- Conversation Import ---
+  conversationImport: {
+    importFile: (filePath: string) => ipcRenderer.invoke('conversation:importFile', filePath),
+    importJson: (json: string) => ipcRenderer.invoke('conversation:importJson', json),
+    branch: (conversation: any, index: number) => ipcRenderer.invoke('conversation:branch', conversation, index),
+    summarize: (conversation: any) => ipcRenderer.invoke('conversation:summarize', conversation)
+  },
+  // --- Memory Graph ---
+  memoryGraph: {
+    build: (entries: any[]) => ipcRenderer.invoke('memory:graph', entries),
+    cleanupSuggestions: (graph: any) => ipcRenderer.invoke('memory:cleanupSuggestions', graph)
+  },
+  // --- Plugin Manager ---
+  plugins: {
+    scan: (workspaceRoot?: string) => ipcRenderer.invoke('plugins:scan', workspaceRoot),
+    validate: (manifest: any) => ipcRenderer.invoke('plugins:validate', manifest),
+    contributions: (plugins: any[]) => ipcRenderer.invoke('plugins:contributions', plugins),
+    repositories: () => ipcRenderer.invoke('plugins:repositories'),
+    importRepository: (input: { url: string; id?: string; name?: string; branch?: string }) => ipcRenderer.invoke('plugins:importRepository', input)
+  },
+  // --- Project Map ---
+  projectMap: {
+    build: (rootPath: string, maxDepth?: number) => ipcRenderer.invoke('projectMap:build', rootPath, maxDepth),
+    search: (map: any, query: string) => ipcRenderer.invoke('projectMap:search', map, query)
+  },
+  // --- Release Workspace ---
+  release: {
+    checks: () => ipcRenderer.invoke('release:checks')
+  },
+  // --- Terminal AI ---
+  terminalAi: {
+    buildPrompt: (userPrompt: string, context: any) => ipcRenderer.invoke('terminalAi:buildPrompt', userPrompt, context),
+    suggestCommand: (intent: string, context: any) => ipcRenderer.invoke('terminalAi:suggestCommand', intent, context),
+    explainOutput: (context: any) => ipcRenderer.invoke('terminalAi:explainOutput', context)
+  },
+  // --- Inline Edit ---
+  inlineEdit: {
+    buildPrompt: (request: any) => ipcRenderer.invoke('inlineEdit:buildPrompt', request),
+    validate: (original: string, replacement: string) => ipcRenderer.invoke('inlineEdit:validate', original, replacement),
+    apply: (content: string, startLine: number, endLine: number, replacement: string) => ipcRenderer.invoke('inlineEdit:apply', content, startLine, endLine, replacement)
+  },
+  // --- AI Quick Complete (lightweight standalone LLM call) ---
+  ai: {
+    quickComplete: (input: { prompt: string; systemPrompt?: string; providerId?: string; modelId?: string; timeoutMs?: number }) =>
+      ipcRenderer.invoke('ai:quickComplete', input)
+  },
+  // --- P4-F1: Models Center ---
+  models: {
+    list: (providers: any[]) => ipcRenderer.invoke('models:list', providers),
+    toggleFavorite: (providerId: string, modelId: string) => ipcRenderer.invoke('models:toggleFavorite', providerId, modelId),
+    toggleHidden: (providerId: string, modelId: string) => ipcRenderer.invoke('models:toggleHidden', providerId, modelId),
+    favorites: () => ipcRenderer.invoke('models:favorites'),
+    hidden: () => ipcRenderer.invoke('models:hidden')
+  },
+  // --- P4-F2: Budget Center ---
+  budget: {
+    get: () => ipcRenderer.invoke('budget:get'),
+    update: (patch: Record<string, unknown>) => ipcRenderer.invoke('budget:update', patch),
+    check: (dailySpent: number, monthlySpent: number, requestTokens: number) => ipcRenderer.invoke('budget:check', dailySpent, monthlySpent, requestTokens)
+  },
+  // --- P4-F3: Memory Studio ---
+  memoryStudio: {
+    scoreQuality: (entry: Record<string, unknown>) => ipcRenderer.invoke('memory:scoreQuality', entry),
+    detectConflicts: (entries: Record<string, unknown>[]) => ipcRenderer.invoke('memory:detectConflicts', entries)
+  },
+  // --- P4-F4: Workflow Center ---
+  workflowCenter: {
+    substituteVars: (template: string, vars: Record<string, unknown>[]) => ipcRenderer.invoke('workflow:substituteVars', template, vars),
+    evaluateCondition: (condition: string, vars: Record<string, unknown>[]) => ipcRenderer.invoke('workflow:evaluateCondition', condition, vars),
+    saveRun: (record: Record<string, unknown>) => ipcRenderer.invoke('workflow:saveRun', record),
+    runHistory: () => ipcRenderer.invoke('workflow:runHistory'),
+    runHistoryFor: (workflowId: string) => ipcRenderer.invoke('workflow:runHistoryFor', workflowId)
+  },
+  // --- P4-F5: Team Builder ---
+  teams: {
+    list: () => ipcRenderer.invoke('teams:list'),
+    save: (input: Record<string, unknown>) => ipcRenderer.invoke('teams:save', input),
+    delete: (id: string) => ipcRenderer.invoke('teams:delete', id),
+    defaultFirefly: (agentIds: string[]) => ipcRenderer.invoke('teams:defaultFirefly', agentIds)
+  },
+  // --- P4-F6: Project Knowledge ---
+  projectKnowledge: {
+    detectTechStack: (rootPath: string) => ipcRenderer.invoke('knowledge:detectTechStack', rootPath),
+    generateSummary: (rootPath: string, entries: Record<string, unknown>[]) => ipcRenderer.invoke('knowledge:generateSummary', rootPath, entries)
+  },
+  // --- P4-F7: Plugin Manager ---
+  pluginManager: {
+    install: (manifest: Record<string, unknown>) => ipcRenderer.invoke('plugins:install', manifest),
+    uninstall: (id: string) => ipcRenderer.invoke('plugins:uninstall', id),
+    toggle: (id: string) => ipcRenderer.invoke('plugins:toggle', id),
+    listInstalled: () => ipcRenderer.invoke('plugins:listInstalled'),
+    enabledContributions: () => ipcRenderer.invoke('plugins:enabledContributions')
+  },
+  // --- P4-F8: Diagnostics Suite ---
+  diagnosticsSuite: {
+    run: () => ipcRenderer.invoke('diagnostics:runSuite')
+  },
+  // --- P1-2: Firefly State Machine ---
+  firefly: {
+    createState: () => ipcRenderer.invoke('firefly:createState'),
+    completeRole: (state: Record<string, unknown>, role: string, output: string) => ipcRenderer.invoke('firefly:completeRole', state, role, output),
+    getRoleContext: (state: Record<string, unknown>, role: string, prompt: string, memory?: string, project?: string) => ipcRenderer.invoke('firefly:getRoleContext', state, role, prompt, memory, project),
+    isComplete: (state: Record<string, unknown>) => ipcRenderer.invoke('firefly:isComplete', state),
+    getOutput: (state: Record<string, unknown>) => ipcRenderer.invoke('firefly:getOutput', state)
   },
   // --- /AgentHub skills + native agentic ---
   platform: process.platform

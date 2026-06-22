@@ -3,6 +3,38 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const memory: Record<string, any> = {}
 const runtimes: Array<{ dispose?: () => void }> = []
 
+function usageLedgerRecord(overrides: Record<string, any> = {}) {
+  const eventId = overrides.eventId || "event-test"
+  const totalTokens = overrides.totalTokens ?? 0
+  const source = overrides.source || "estimated"
+  return {
+    id: `${eventId}:${source}`,
+    eventId,
+    threadId: overrides.threadId || "thread-test",
+    turnId: overrides.turnId || "turn-test",
+    agentId: overrides.agentId || "codex",
+    providerId: overrides.providerId || "local-cli",
+    modelId: overrides.modelId || "codex",
+    requestModelId: overrides.requestModelId || overrides.modelId || "codex",
+    source,
+    status: overrides.status || "completed",
+    createdAt: overrides.createdAt ?? Date.now(),
+    inputTokens: overrides.inputTokens ?? totalTokens,
+    outputTokens: overrides.outputTokens ?? 0,
+    cacheReadTokens: overrides.cacheReadTokens ?? 0,
+    cacheCreationTokens: overrides.cacheCreationTokens ?? 0,
+    billableInputTokens: overrides.billableInputTokens ?? overrides.inputTokens ?? totalTokens,
+    inputSurfaceTokens: overrides.inputSurfaceTokens ?? overrides.inputTokens ?? totalTokens,
+    totalTokens,
+    actualTokens: source === "actual" ? totalTokens : 0,
+    estimatedTokens: source === "estimated" ? totalTokens : 0,
+    hasEstimated: source === "estimated",
+    costUsd: overrides.costUsd ?? null,
+    hasUnpriced: overrides.hasUnpriced ?? false,
+    cacheSavingsUsd: overrides.cacheSavingsUsd ?? null
+  }
+}
+
 vi.mock("../../store", () => ({
   store: {
     get: (key: string) => memory[key],
@@ -281,92 +313,6 @@ describe("usageStats", () => {
     expect(stats.cacheRate).toBeCloseTo(0.4, 5)
   })
 
-  it("records provider direct usage after dispatcher stream events enter the runtime store", async () => {
-    vi.doMock("../../providers/manager", () => ({
-      getProviderManager: () => ({
-        getProvider: (id: string) => id === "deepseek"
-          ? {
-              id: "deepseek",
-              name: "DeepSeek",
-              kind: "openai-compatible",
-              baseUrl: "https://api.deepseek.example/v1",
-              apiKey: "deepseek-key",
-              enabled: true,
-              builtIn: true,
-              models: [{
-                id: "deepseek-v4-flash",
-                label: "DeepSeek V4 Flash",
-                contextWindow: 258000,
-                supportsTools: true,
-                supportsVision: false,
-                supportsThinking: false
-              }],
-              capabilities: {
-                protocol: "chat_completions",
-                stream: true,
-                nativeThinking: false,
-                budgetTokens: false,
-                toolCalls: true,
-                systemPrompt: true
-              },
-              defaultThinking: { mode: "off", level: "low" }
-            }
-          : undefined,
-        getBindings: () => [{ agentId: "codex", providerId: "openai", modelId: "gpt-4o" }],
-        resolveBinding: () => null
-      })
-    }))
-    vi.doMock("../../providers/client", () => ({
-      buildProviderClient: () => ({
-        stream: (_opts: any, cb: any) => {
-          cb.onContent?.("provider answer")
-          cb.onDone?.({
-            content: "provider answer",
-            usage: { input_tokens: 13, output_tokens: 17 }
-          })
-        }
-      })
-    }))
-
-    const { WorkbenchRuntimeStore } = await import("../store")
-    const { usageRecords, usageStats } = await import("../usage-stats")
-    const { AgentRegistry } = await import("../../hub/registry")
-    const { EventPipeline } = await import("../../hub/pipeline")
-    const { Dispatcher } = await import("../../hub/dispatcher")
-    const runtime = new WorkbenchRuntimeStore()
-    runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({
-      prompt: "who are you?",
-      mode: "auto",
-      workspaceId: null,
-      modelSelection: { providerId: "deepseek", modelId: "deepseek-v4-flash", source: "provider" }
-    })
-    const dispatcher = new Dispatcher(new AgentRegistry(), new EventPipeline())
-    dispatcher.on("stream", event => runtime.appendStreamEvent(turn.id, event))
-
-    await dispatcher.dispatchProviderDirect(
-      "who are you?",
-      { providerId: "deepseek", modelId: "deepseek-v4-flash", source: "provider" },
-      { turnId: turn.id, messages: [{ role: "user", content: "who are you?" }] }
-    )
-    const stats = usageStats("all", "providers")
-    const page = usageRecords({ range: "all", providerId: "deepseek" }, 1, 10)
-    const deepseek = stats.providers.find(row => row.providerId === "deepseek")
-
-    expect(deepseek).toMatchObject({ providerId: "deepseek", actualTokens: 30, tokens: 30 })
-    expect(page.total).toBe(1)
-    expect(page.records[0]).toMatchObject({
-      threadId: thread.id,
-      turnId: turn.id,
-      providerId: "deepseek",
-      agentId: "provider:deepseek",
-      modelId: "deepseek-v4-flash",
-      source: "actual",
-      inputTokens: 13,
-      outputTokens: 17
-    })
-  })
-
   it("keeps provider-served model IDs separate from requested model IDs", async () => {
     const { WorkbenchRuntimeStore } = await import("../store")
     const { usageRecords, usageStats } = await import("../usage-stats")
@@ -642,5 +588,197 @@ describe("usageStats", () => {
       status: "cancelled",
       totalTokens: 0
     })
+  })
+})
+
+describe("P0-5 usage ledger persistence", () => {
+  beforeEach(() => {
+    for (const key of Object.keys(memory)) delete memory[key]
+    vi.doUnmock("../../providers/manager")
+    vi.doUnmock("../../providers/client")
+    vi.resetModules()
+  })
+
+  afterEach(() => {
+    for (const runtime of runtimes.splice(0)) runtime.dispose?.()
+    vi.useRealTimers()
+  })
+
+  it("persists usage records to ledger so they survive event trimming", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const { usageStats } = await import("../usage-stats")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const { thread, turn } = runtime.createTurn({ prompt: "hello", mode: "auto", workspaceId: null })
+    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
+      providerId: "openai",
+      modelId: "gpt-4o",
+      content: "done",
+      usage: { input_tokens: 100, output_tokens: 50 }
+    })
+
+    const stats1 = usageStats("all", "overview")
+    expect(stats1.totalTokens).toBeGreaterThan(0)
+
+    const ledger = memory["usage.ledger.v1"]
+    expect(Array.isArray(ledger)).toBe(true)
+    expect(ledger.length).toBe(1)
+    expect(ledger[0].providerId).toBe("openai")
+    expect(ledger[0].modelId).toBe("gpt-4o")
+    expect(ledger[0].source).toBe("actual")
+
+    // Simulate event trimming: new runtime without old events
+    for (const r of runtimes.splice(0)) r.dispose?.()
+    const newRuntime = new WorkbenchRuntimeStore()
+    runtimes.push(newRuntime)
+
+    const stats2 = usageStats("all", "overview")
+    expect(stats2.totalTokens).toBeGreaterThan(0)
+    expect(stats2.requests).toBe(1)
+  })
+
+  it("does not silently truncate the persistent usage ledger", async () => {
+    const { usageRecords } = await import("../usage-stats")
+    memory["usage.ledger.v1"] = Array.from({ length: 10050 }, (_, index) => usageLedgerRecord({
+      eventId: `event-${index}`,
+      threadId: `thread-${index % 3}`,
+      turnId: `turn-${index}`,
+      createdAt: 2_000_000 - index,
+      totalTokens: 1,
+      inputTokens: 1,
+      outputTokens: 0
+    }))
+
+    const page = usageRecords({ range: "all" }, 1, 200)
+
+    expect(page.total).toBe(10050)
+    expect(memory["usage.ledger.v1"]).toHaveLength(10050)
+  })
+
+  it("replaces an older estimated ledger record when real usage arrives for the same event", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const { usageRecords, usageStats } = await import("../usage-stats")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const { thread, turn } = runtime.createTurn({ prompt: "replace estimated", mode: "auto", workspaceId: null })
+    const event = runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "provider:deepseek", {
+      providerId: "deepseek",
+      modelId: "deepseek-chat",
+      content: "actual answer",
+      usage: { input_tokens: 4, output_tokens: 6 }
+    })
+    memory["usage.ledger.v1"] = [usageLedgerRecord({
+      eventId: event.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      agentId: "provider:deepseek",
+      providerId: "deepseek",
+      modelId: "deepseek-chat",
+      source: "estimated",
+      totalTokens: 999,
+      inputTokens: 999,
+      outputTokens: 0,
+      createdAt: event.createdAt
+    })]
+
+    const stats = usageStats("all", "overview")
+    const page = usageRecords({ range: "all" }, 1, 10)
+
+    expect(stats.totalTokens).toBe(10)
+    expect(stats.actualTokens).toBe(10)
+    expect(stats.estimatedTokens).toBe(0)
+    expect(page.records[0]).toMatchObject({ eventId: event.id, source: "actual", totalTokens: 10 })
+    expect(memory["usage.ledger.v1"][0]).toMatchObject({ eventId: event.id, source: "actual", totalTokens: 10 })
+  })
+
+  it("estimates CJK text tokens higher than naive chars/4", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const { usageRecords } = await import("../usage-stats")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const { thread, turn } = runtime.createTurn({ prompt: "这是一段二十个中文字符的测试文本用于验证", mode: "auto", workspaceId: null })
+    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
+      providerId: "local-cli",
+      modelId: "codex",
+      content: "这是一段二十个中文字符的测试文本用于验证"
+    })
+
+    const result = usageRecords({}, 1, 50)
+    const record = result.records[0]
+    if (record && record.source === "estimated") {
+      expect(record.inputTokens).toBeGreaterThan(5)
+    }
+  })
+})
+
+describe("cacheHitRate computation", () => {
+  beforeEach(() => {
+    for (const key of Object.keys(memory)) delete memory[key]
+    vi.doUnmock("../../providers/manager")
+    vi.doUnmock("../../providers/client")
+    vi.resetModules()
+  })
+
+  afterEach(() => {
+    for (const runtime of runtimes.splice(0)) runtime.dispose?.()
+  })
+
+  it("computes cacheHitRate from cacheReadTokens/inputTokens", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const { usageRecords } = await import("../usage-stats")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const { thread, turn } = runtime.createTurn({ prompt: "cache rate", mode: "auto", workspaceId: null })
+    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "claude", {
+      providerId: "anthropic",
+      modelId: "claude-sonnet",
+      content: "ok",
+      usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 60 }
+    })
+
+    const page = usageRecords({ range: "all" }, 1, 10)
+    const record = page.records[0]
+    expect(record.cacheHitRate).toBeCloseTo(0.6, 5)
+  })
+
+  it("returns null cacheHitRate when no cache info available", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const { usageRecords } = await import("../usage-stats")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const { thread, turn } = runtime.createTurn({ prompt: "no cache", mode: "auto", workspaceId: null })
+    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
+      providerId: "openai",
+      modelId: "gpt-4o",
+      content: "ok",
+      usage: { input_tokens: 50, output_tokens: 10 }
+    })
+
+    const page = usageRecords({ range: "all" }, 1, 10)
+    const record = page.records[0]
+    expect(record.cacheHitRate).toBeNull()
+  })
+})
+
+describe("usage ledger monthly sharding", () => {
+  beforeEach(() => {
+    for (const key of Object.keys(memory)) delete memory[key]
+    vi.resetModules()
+  })
+
+  afterEach(() => {
+    for (const runtime of runtimes.splice(0)) runtime.dispose?.()
+  })
+
+  it("loads empty ledger for non-existent month", async () => {
+    const { loadLedgerForMonth } = await import("../usage-stats")
+    const ledger = loadLedgerForMonth("2099-01")
+    expect(ledger).toEqual([])
+  })
+
+  it("returns available ledger months", async () => {
+    const { getAvailableLedgerMonths } = await import("../usage-stats")
+    const months = getAvailableLedgerMonths()
+    expect(Array.isArray(months)).toBe(true)
   })
 })

@@ -14,7 +14,7 @@ vi.mock('../../store', () => ({
   }
 }))
 
-beforeEach(() => { store = {} })
+beforeEach(() => { store = {}; vi.resetModules() })
 
 describe('ApprovalConfig', () => {
   it('默认全 allow（与 0.3.0 行为一致）', async () => {
@@ -46,6 +46,50 @@ describe('ApprovalConfig', () => {
     expect(cfg.getConfig().overrides.claude).toBeUndefined() // 空覆盖条目被删除
   })
 
+  // 修正后的审批规则（参照 codex builtin_approval_presets）
+  it('preset=full-access：永不弹窗，全部放行（等价 codex Never）', async () => {
+    const { getApprovalConfig } = await import('../approval')
+    const cfg = getApprovalConfig()
+    cfg.setOverride('claude', 'write', 'deny') // 即使有 deny 覆盖
+    cfg.setPreset('full-access')
+    // full-access 下覆盖被忽略，全部放行
+    expect(cfg.policyFor('claude', 'write')).toBe('allow')
+    expect(cfg.policyFor('any', 'exec')).toBe('allow')
+  })
+
+  it('preset=read-only：写/执行全部拒绝', async () => {
+    const { getApprovalConfig } = await import('../approval')
+    const cfg = getApprovalConfig()
+    cfg.setPreset('read-only')
+    expect(cfg.policyFor('claude', 'write')).toBe('deny')
+    expect(cfg.policyFor('codex', 'exec')).toBe('deny')
+  })
+
+  it('preset=ask-all：每次写/执行都问', async () => {
+    const { getApprovalConfig } = await import('../approval')
+    const cfg = getApprovalConfig()
+    cfg.setPreset('ask-all')
+    expect(cfg.policyFor('claude', 'write')).toBe('ask')
+    expect(cfg.policyFor('codex', 'exec')).toBe('ask')
+  })
+
+  it('手动改 default 自动切到 custom 模式', async () => {
+    const { getApprovalConfig } = await import('../approval')
+    const cfg = getApprovalConfig()
+    cfg.setPreset('full-access')
+    expect(cfg.getConfig().preset).toBe('full-access')
+    cfg.setDefault('write', 'ask')
+    expect(cfg.getConfig().preset).toBe('custom')
+  })
+
+  it('presetToPolicies 映射正确（参考 codex builtin_approval_presets）', async () => {
+    const { presetToPolicies } = await import('../approval')
+    expect(presetToPolicies('read-only')).toEqual({ write: 'deny', exec: 'deny' })
+    expect(presetToPolicies('full-access')).toEqual({ write: 'allow', exec: 'allow' })
+    expect(presetToPolicies('ask-all')).toEqual({ write: 'ask', exec: 'ask' })
+    expect(presetToPolicies('auto')).toEqual({ write: 'allow', exec: 'allow' })
+  })
+
   it('guardedToolFor：只读工具（fs_read/fs_list）不门禁', async () => {
     const { guardedToolFor } = await import('../approval')
     expect(guardedToolFor('fs_write')).toBe('write')
@@ -61,5 +105,60 @@ describe('ApprovalConfig', () => {
     const cfg = getApprovalConfig()
     expect(cfg.policyFor('x', 'write')).toBe('allow')
     expect(cfg.policyFor('x', 'exec')).toBe('allow')
+  })
+
+  // ——— policyForWithRisk：auto 预设风险升级 ———
+  describe('policyForWithRisk', () => {
+    it('auto + low/medium risk → 保持 allow', async () => {
+      const { getApprovalConfig } = await import('../approval')
+      const cfg = getApprovalConfig()
+      cfg.setPreset('auto')
+      expect(cfg.policyForWithRisk('claude', 'write', 'low')).toBe('allow')
+      expect(cfg.policyForWithRisk('claude', 'write', 'medium')).toBe('allow')
+      expect(cfg.policyForWithRisk('claude', 'exec', 'low')).toBe('allow')
+    })
+
+    it('auto + high/critical risk → 升级为 ask', async () => {
+      const { getApprovalConfig } = await import('../approval')
+      const cfg = getApprovalConfig()
+      cfg.setPreset('auto')
+      expect(cfg.policyForWithRisk('claude', 'write', 'high')).toBe('ask')
+      expect(cfg.policyForWithRisk('claude', 'write', 'critical')).toBe('ask')
+      expect(cfg.policyForWithRisk('claude', 'exec', 'critical')).toBe('ask')
+    })
+
+    it('full-access + high risk → 仍为 allow（不受 risk 影响）', async () => {
+      const { getApprovalConfig } = await import('../approval')
+      const cfg = getApprovalConfig()
+      cfg.setPreset('full-access')
+      expect(cfg.policyForWithRisk('claude', 'write', 'critical')).toBe('allow')
+      expect(cfg.policyForWithRisk('claude', 'exec', 'high')).toBe('allow')
+    })
+
+    it('read-only + low risk → deny（不受 risk 影响）', async () => {
+      const { getApprovalConfig } = await import('../approval')
+      const cfg = getApprovalConfig()
+      cfg.setPreset('read-only')
+      expect(cfg.policyForWithRisk('claude', 'write', 'low')).toBe('deny')
+    })
+
+    it('ask-all + low risk → ask（不受 risk 影响）', async () => {
+      const { getApprovalConfig } = await import('../approval')
+      const cfg = getApprovalConfig()
+      cfg.setPreset('ask-all')
+      expect(cfg.policyForWithRisk('claude', 'exec', 'low')).toBe('ask')
+    })
+
+    it('custom 模式尊重显式配置，不按 risk 升级', async () => {
+      const { getApprovalConfig } = await import('../approval')
+      const cfg = getApprovalConfig()
+      cfg.setPreset('custom')
+      cfg.setDefault('write', 'allow')
+      cfg.setDefault('exec', 'deny')
+      // custom 下即使 high risk，显式 allow 不升级
+      expect(cfg.policyForWithRisk('claude', 'write', 'high')).toBe('allow')
+      // custom 下显式 deny 也不因 low risk 降级
+      expect(cfg.policyForWithRisk('claude', 'exec', 'low')).toBe('deny')
+    })
   })
 })

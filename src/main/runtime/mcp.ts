@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process"
+﻿import { spawn } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
@@ -7,6 +7,13 @@ import { getWorkspaceManager } from "../hub/workspace"
 import type { McpConfigState, McpServerConfig } from "./types"
 
 const STORAGE_KEY = "runtime.mcp.v1"
+
+/** Configurable probe timeout: env override > server config > default 5s. */
+function probeTimeoutMs(server: McpServerConfig): number {
+  const envOverride = Number(process.env.AGENTHUB_MCP_PROBE_TIMEOUT_MS)
+  const base = Number.isFinite(envOverride) && envOverride > 0 ? envOverride : (server.timeoutMs || 5000)
+  return Math.max(2500, Math.min(30000, base))
+}
 
 function emptyState(): McpConfigState {
   return { version: 1, servers: [], overrides: {} }
@@ -117,58 +124,128 @@ export async function testMcpServer(id: string, workspaceId?: string | null): Pr
   }
 }
 
+function resolveAppVersion(): string {
+  try {
+    // In Electron main process, __dirname points into the bundled app.
+    // Walk up to find package.json (works in both dev and production).
+    let dir = __dirname
+    for (let i = 0; i < 5; i++) {
+      const candidate = join(dir, 'package.json')
+      if (existsSync(candidate)) {
+        const pkg = JSON.parse(readFileSync(candidate, 'utf-8'))
+        if (pkg.version) return pkg.version
+      }
+      dir = join(dir, '..')
+    }
+  } catch { /* fall through to default */ }
+  return '0.0.0'
+}
+
+function resolveAppName(): string {
+  try {
+    let dir = __dirname
+    for (let i = 0; i < 5; i++) {
+      const candidate = join(dir, 'package.json')
+      if (existsSync(candidate)) {
+        const pkg = JSON.parse(readFileSync(candidate, 'utf-8'))
+        if (pkg.productName) return pkg.productName
+        if (pkg.name) return pkg.name
+      }
+      dir = join(dir, '..')
+    }
+  } catch { /* fall through to default */ }
+  return 'AgentHub'
+}
+
+/**
+ * Validate whether `stdout` contains a successful JSON-RPC initialize result.
+ * Returns the parsed result object on success, or an error message string on failure.
+ */
+export function validateInitializeResult(stdout: string): { ok: true; result: any } | { ok: false; error: string } {
+  const braceStart = stdout.indexOf('{')
+  if (braceStart < 0) return { ok: false, error: 'No JSON object found in stdout' }
+  // Find matching closing brace
+  let depth = 0
+  let end = -1
+  for (let i = braceStart; i < stdout.length && i < braceStart + 65536; i++) {
+    if (stdout[i] === '{') depth++
+    else if (stdout[i] === '}') { depth--; if (depth === 0) { end = i; break } }
+  }
+  if (end < 0) return { ok: false, error: 'Unbalanced braces in JSON-RPC response' }
+  let parsed: any
+  try {
+    parsed = JSON.parse(stdout.slice(braceStart, end + 1))
+  } catch {
+    return { ok: false, error: 'Invalid JSON in response' }
+  }
+  if (parsed.jsonrpc !== '2.0') return { ok: false, error: `Missing or wrong jsonrpc: ${JSON.stringify(parsed.jsonrpc)}` }
+  if (parsed.id !== 1) return { ok: false, error: `Expected id=1, got id=${JSON.stringify(parsed.id)}` }
+  if (parsed.error) return { ok: false, error: `Server returned JSON-RPC error: ${JSON.stringify(parsed.error)}` }
+  if (!parsed.result || typeof parsed.result !== 'object') return { ok: false, error: 'Missing result object in response' }
+  return { ok: true, result: parsed.result }
+}
+
 async function probeStdioServer(server: McpServerConfig): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
+  const appVersion = resolveAppVersion()
+  const appName = resolveAppName()
+  return new Promise<void>((resolve, reject) => {
     const child = spawn(server.command!, server.args || [], {
       cwd: server.cwd || undefined,
       env: { ...process.env, ...(server.env || {}) },
       windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ['pipe', 'pipe', 'pipe']
     })
-    let stderr = ""
-    let stdout = ""
+    let stderr = ''
+    let stdout = ''
     let settled = false
     const finish = (error?: Error) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      child.kill()
+      try { child.kill() } catch { /* ignore */ }
       if (error) reject(error)
       else resolve()
     }
     const timer = setTimeout(() => {
-      const detail = (stderr || stdout).trim()
-      finish(new Error(detail ? `MCP initialize timed out: ${detail}` : "MCP initialize timed out; no JSON-RPC initialize response was received."))
-    }, Math.max(2500, Math.min(15000, server.timeoutMs || 5000)))
-    child.stdout?.on("data", chunk => {
-      stdout += String(chunk).slice(0, 2048)
-      if (/"jsonrpc"\s*:\s*"2\.0"/.test(stdout) && /"id"\s*:\s*1/.test(stdout)) finish()
+      const diag = stderr || stdout
+      finish(new Error(diag.trim()
+        ? `MCP initialize timed out: ${diag.trim().slice(0, 200)}`
+        : 'MCP initialize timed out; no JSON-RPC initialize response was received.'))
+    }, probeTimeoutMs(server))
+    child.stdout?.on('data', (chunk: Buffer | string) => {
+      stdout += String(chunk).slice(0, 65536)
+      // Only succeed when stdout contains a parsed JSON-RPC initialize result
+      const result = validateInitializeResult(stdout)
+      if (result.ok) finish()
     })
-    child.stderr?.on("data", chunk => {
+    child.stderr?.on('data', (chunk: Buffer | string) => {
       stderr += String(chunk).slice(0, 2048)
-      if (/mcp|json-rpc|server|listening|ready/i.test(stderr)) finish()
+      // stderr is diagnostic only — never treated as success
     })
-    child.on("error", error => {
-      const message = (error as any)?.code === "ENOENT"
+    child.on('error', (error: Error) => {
+      const message = (error as any)?.code === 'ENOENT'
         ? `MCP command not found: ${server.command}`
         : error.message
       finish(new Error(message))
     })
-    child.on("exit", code => {
+    child.on('exit', (code: number | null) => {
       if (settled) return
-      if (stdout && /"jsonrpc"\s*:\s*"2\.0"/.test(stdout)) finish()
+      // On exit, check if stdout has a valid initialize result
+      const result = validateInitializeResult(stdout)
+      if (result.ok) finish()
       else finish(new Error((stderr || `MCP process exited with code ${code}`).trim()))
     })
-    child.stdin?.write(JSON.stringify({
-      jsonrpc: "2.0",
+    const initRequest = JSON.stringify({
+      jsonrpc: '2.0',
       id: 1,
-      method: "initialize",
+      method: 'initialize',
       params: {
-        protocolVersion: "2024-11-05",
+        protocolVersion: '2024-11-05',
         capabilities: {},
-        clientInfo: { name: "AgentHub", version: "0.5.4" }
+        clientInfo: { name: appName, version: appVersion }
       }
-    }) + "\n")
+    }) + '\n'
+    child.stdin?.write(initRequest)
   })
 }
 
@@ -417,4 +494,136 @@ function stableId(value: string): string {
     h = Math.imul(h, 16777619)
   }
   return `mcp-${(h >>> 0).toString(16)}`
+}
+
+/** Result of listing tools from an MCP server. */
+export interface McpToolInfo {
+  name: string
+  description?: string
+  inputSchema?: any
+}
+
+export interface McpServerToolsResult {
+  ok: boolean
+  tools: McpToolInfo[]
+  error?: string
+  resources?: number
+  prompts?: number
+}
+
+/**
+ * Connect to a stdio MCP server, initialize, and list its tools.
+ * Returns structured tool info for the inventory UI.
+ */
+export async function listMcpServerTools(id: string, workspaceId?: string | null): Promise<McpServerToolsResult> {
+  const server = listMcpServers(workspaceId).find(item => item.id === id)
+  if (!server) return { ok: false, tools: [], error: `Server not found: ${id}` }
+  if (server.transport !== 'stdio' || !server.command) {
+    return { ok: false, tools: [], error: 'Only stdio servers are supported for tool listing' }
+  }
+  const appVersion = resolveAppVersion()
+  const appName = resolveAppName()
+  return new Promise(resolve => {
+    const child = spawn(server.command!, server.args || [], {
+      cwd: server.cwd || undefined,
+      env: { ...process.env, ...(server.env || {}) },
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe']
+    })
+    let stdout = ''
+    let stderr = ''
+    let _initialized = false
+    let requestId = 1
+    const pending = new Map<number, (result: any) => void>()
+    let settled = false
+
+    const finish = (result: McpServerToolsResult) => {
+      if (settled) return
+      settled = true
+      try { child.kill() } catch { /* ignore */ }
+      resolve(result)
+    }
+
+    const timer = setTimeout(() => finish({ ok: false, tools: [], error: `Timeout: ${(stderr || stdout).trim().slice(0, 200)}` }), Math.max(5000, Math.min(30000, server.timeoutMs || 10000)))
+
+    function sendRequest(method: string, params?: any): Promise<any> {
+      return new Promise(res => {
+        const id = ++requestId
+        pending.set(id, res)
+        child.stdin?.write(JSON.stringify({ jsonrpc: '2.0', id, method, params: params || {} }) + '\n')
+      })
+    }
+
+    child.stdout?.on('data', (chunk: Buffer | string) => {
+      stdout += String(chunk)
+      // Try to parse complete JSON responses from the accumulated stdout
+      const lines = stdout.split('\n')
+      stdout = lines.pop() || '' // keep incomplete last line
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed || !trimmed.startsWith('{')) continue
+        try {
+          const msg = JSON.parse(trimmed)
+          if (msg.id && pending.has(msg.id)) {
+            const cb = pending.get(msg.id)
+            pending.delete(msg.id)
+            cb?.(msg)
+          }
+        } catch { /* not valid JSON, skip */ }
+      }
+    })
+
+    child.stderr?.on('data', (chunk: Buffer | string) => { stderr += String(chunk).slice(0, 2048) })
+    child.on('error', (err: Error) => {
+      const msg = (err as any)?.code === 'ENOENT' ? `Command not found: ${server.command}` : err.message
+      finish({ ok: false, tools: [], error: msg })
+    })
+    child.on('exit', (code: number | null) => {
+      if (!settled) finish({ ok: false, tools: [], error: stderr.trim() || `Process exited with code ${code}` })
+    })
+
+    // Step 1: Initialize
+    sendRequest('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: appName, version: appVersion }
+    }).then(initResult => {
+      if (initResult.error) {
+        finish({ ok: false, tools: [], error: `Initialize failed: ${JSON.stringify(initResult.error)}` })
+        return
+      }
+      _initialized = true
+      // Step 2: Send initialized notification
+      child.stdin?.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n')
+      // Step 3: List tools
+      return sendRequest('tools/list')
+    }).then(toolsResult => {
+      if (settled || !toolsResult) return
+      if (toolsResult.error) {
+        finish({ ok: false, tools: [], error: `tools/list failed: ${JSON.stringify(toolsResult.error)}` })
+        return
+      }
+      const tools: McpToolInfo[] = (toolsResult.result?.tools || []).map((t: any) => ({
+        name: t.name || 'unnamed',
+        description: t.description || undefined,
+        inputSchema: t.inputSchema || undefined
+      }))
+      // Step 4: List resources (non-fatal — some servers don't support this)
+      return sendRequest('resources/list').then(resourcesResult => {
+        const resourceCount = resourcesResult?.result?.resources?.length ?? 0
+        // Step 5: List prompts (non-fatal)
+        return sendRequest('prompts/list').then(promptsResult => {
+          clearTimeout(timer)
+          const promptCount = promptsResult?.result?.prompts?.length ?? 0
+          finish({ ok: true, tools, resources: resourceCount, prompts: promptCount })
+        })
+      }).catch(() => {
+        clearTimeout(timer)
+        // resources/list or prompts/list failed — still return tools
+        finish({ ok: true, tools, resources: 0, prompts: 0 })
+      })
+    }).catch(err => {
+      if (!settled) finish({ ok: false, tools: [], error: String(err) })
+    })
+  })
 }

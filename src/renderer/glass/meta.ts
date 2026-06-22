@@ -3,7 +3,7 @@
    （与 design_handoff_glass_ui/app/store.jsx 的 AGENT_META 一致）
    ============================================================ */
 
-import type { OrchestrateState } from './orchestrate-view'
+import type { OrchestrateState } from './orchestrate-types'
 
 export interface AgentMeta {
   name: string
@@ -170,6 +170,14 @@ export interface ProviderDef {
   builtIn: boolean
   models: ModelDef[]
   health?: { reachable: boolean; latencyMs?: number; error?: string } | null
+  createdAt?: number
+  sortOrder?: number
+  modelMapping?: {
+    main?: string
+    haiku?: string
+    sonnet?: string
+    opus?: string
+  }
   modelFetch?: {
     status: 'idle' | 'ok' | 'error'
     lastAttemptAt: number

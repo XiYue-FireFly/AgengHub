@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Icon, IC } from '../glass/ui'
 import { tr } from '../glass/i18n'
+import { styledConfirm } from '../lib/confirm'
 
 type GitViewMode = 'changes' | 'branches' | 'commits'
 type GitDiffMode = 'working' | 'commit'
@@ -160,12 +161,14 @@ export function GitWorkbenchPanel({ workspaceId, onClose }: GitWorkbenchPanelPro
 
   const stageFile = (file: GitFileStatus) => runAction(`stage:${file.path}`, () => window.electronAPI.git.stageFile(workspaceId, file.path))
   const unstageFile = (file: GitFileStatus) => runAction(`unstage:${file.path}`, () => window.electronAPI.git.unstageFile(workspaceId, file.path))
-  const revertFile = (file: GitFileStatus) => {
-    if (!window.confirm(tr(`确认丢弃 ${file.path} 的变更？`, `Discard changes in ${file.path}?`))) return
+  const revertFile = async (file: GitFileStatus) => {
+    const ok = await styledConfirm({ message: tr(`确认丢弃 ${file.path} 的变更？`, `Discard changes in ${file.path}?`), danger: true })
+    if (!ok) return
     void runAction(`revert:${file.path}`, () => window.electronAPI.git.revertFile(workspaceId, file.path))
   }
-  const revertAll = () => {
-    if (!window.confirm(tr('确认丢弃所有未提交变更？这个操作不可撤销。', 'Discard all uncommitted changes? This cannot be undone.'))) return
+  const revertAll = async () => {
+    const ok = await styledConfirm({ message: tr('确认丢弃所有未提交变更？这个操作不可撤销。', 'Discard all uncommitted changes? This cannot be undone.'), danger: true })
+    if (!ok) return
     void runAction('revert-all', () => window.electronAPI.git.revertAll(workspaceId))
   }
   const commit = () => {
@@ -188,8 +191,9 @@ export function GitWorkbenchPanel({ workspaceId, onClose }: GitWorkbenchPanelPro
       setRenameDraft('')
     })
   }
-  const deleteBranch = (branch: GitBranch) => {
-    if (!window.confirm(tr(`删除分支 ${branch.name}？未合并分支会被 Git 阻止。`, `Delete branch ${branch.name}? Git will block unmerged branches.`))) return
+  const deleteBranch = async (branch: GitBranch) => {
+    const ok = await styledConfirm({ message: tr(`删除分支 ${branch.name}？未合并分支会被 Git 阻止。`, `Delete branch ${branch.name}? Git will block unmerged branches.`), danger: true })
+    if (!ok) return
     void runAction(`delete:${branch.name}`, () => window.electronAPI.git.deleteBranch(workspaceId, branch.name, false))
   }
 
@@ -218,8 +222,8 @@ export function GitWorkbenchPanel({ workspaceId, onClose }: GitWorkbenchPanelPro
         <div className="wb-git-workbench-actions">
           <button onClick={() => runAction('fetch', () => window.electronAPI.git.fetch(workspaceId))} disabled={!status?.isRepo || !!actionLoading}>{tr('Fetch', 'Fetch')}</button>
           <button onClick={() => runAction('pull', () => window.electronAPI.git.pull(workspaceId))} disabled={!status?.isRepo || !!actionLoading}>{tr('Pull', 'Pull')}</button>
-          <button onClick={() => runAction('push', () => window.electronAPI.git.push(workspaceId))} disabled={!status?.isRepo || !!actionLoading}>{tr('Push', 'Push')}</button>
-          <button onClick={() => runAction('sync', () => window.electronAPI.git.sync(workspaceId))} disabled={!status?.isRepo || !!actionLoading}>{tr('同步', 'Sync')}</button>
+          <button onClick={async () => { const ok = await styledConfirm({ message: tr('确认推送到远程仓库？', 'Push to remote?') }); if (ok) void runAction('push', () => window.electronAPI.git.push(workspaceId)) }} disabled={!status?.isRepo || !!actionLoading}>{tr('Push', 'Push')}</button>
+          <button onClick={async () => { const ok = await styledConfirm({ message: tr('确认同步（pull + push）到远程仓库？', 'Sync (pull + push) to remote?') }); if (ok) void runAction('sync', () => window.electronAPI.git.sync(workspaceId)) }} disabled={!status?.isRepo || !!actionLoading}>{tr('同步', 'Sync')}</button>
           <button onClick={refresh} disabled={loading}><Icon d={IC.refresh} size={14} /></button>
           <button onClick={onClose}><Icon d={IC.x} size={14} /></button>
         </div>

@@ -29,4 +29,11 @@ describe("ThreadView agent output status", () => {
     expect(source).toContain("event.payload?.visibility !== 'run'")
     expect(source).toContain("summary.done?.payload?.visibility === 'run' ? ''")
   })
+
+  it("collapses tool streams after an agent finishes", () => {
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
+
+    expect(source).toContain("defaultOpen={status === 'running'}")
+    expect(source).toContain("collapseWhenComplete")
+  })
 })

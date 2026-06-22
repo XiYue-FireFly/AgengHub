@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { shouldRunComposerCommand } from "../ComposerBar"
+import { addPaletteQuery, replaceAddToken, shouldRunComposerCommand } from "../ComposerBar"
 
 describe("workbench slash command behavior", () => {
   it("keeps model and reasoning commands wired into the runtime", () => {
@@ -35,8 +35,28 @@ describe("workbench slash command behavior", () => {
     expect(shouldRunComposerCommand("@codex fix this", commands)).toBe(true)
     expect(shouldRunComposerCommand("@C:\\Users\\me\\file.ts explain this", commands)).toBe(false)
     expect(shouldRunComposerCommand("@/workspace/file.ts explain this", commands)).toBe(false)
+    expect(shouldRunComposerCommand("@plugin-writing-plans fix this", commands)).toBe(false)
+    expect(shouldRunComposerCommand("@writing-plans fix this", commands)).toBe(false)
     expect(shouldRunComposerCommand('@"C:\\Users\\me\\file with spaces.ts" explain this', commands)).toBe(false)
     expect(shouldRunComposerCommand("file:///C:/Users/me/file.ts explain this", commands)).toBe(false)
+  })
+
+  it("opens plugin add palette from @ mentions at the current cursor", () => {
+    const commands = [{ label: "/agent:codex" }] as any[]
+
+    expect(addPaletteQuery("@", commands, 1)).toEqual({ query: "", start: 0, end: 1 })
+    expect(addPaletteQuery("read @wri", commands, 9)).toEqual({ query: "wri", start: 5, end: 9 })
+    expect(addPaletteQuery("read @wri please", commands, 9)).toEqual({ query: "wri", start: 5, end: 9 })
+    expect(addPaletteQuery("@codex fix this", commands, 6)).toBeNull()
+    expect(addPaletteQuery("@plugin-writing-plans fix", commands, 21)).toBeNull()
+  })
+
+  it("replaces the active @ mention instead of only the leading token", () => {
+    const match = addPaletteQuery("read @wri please", [], 9)
+
+    expect(replaceAddToken("read @wri please", match, "@plugin-writing-plans ")).toBe("read @plugin-writing-plans please")
+    expect(replaceAddToken("@wri please", addPaletteQuery("@wri please", [], 4), "/goal ")).toBe("/goal please")
+    expect(replaceAddToken("read @wri please", match, "")).toBe("read please")
   })
 
   it("does not submit while IME composition is confirming text", () => {
@@ -50,6 +70,20 @@ describe("workbench slash command behavior", () => {
     expect(composer).toContain("onCompositionStart")
     expect(composer).toContain("onCompositionEnd")
     expect(composer).toContain("e.key === 'Enter' && !e.shiftKey && isImeConfirming(e)")
+  })
+
+  it("loads plugin contributions for the composer @ palette", () => {
+    const composer = readFileSync(join(process.cwd(), "src/renderer/workbench/ComposerBar.tsx"), "utf8")
+
+    expect(composer).toContain("setPluginAddItems")
+    expect(composer).toContain("window.electronAPI.plugins.scan(workspace?.rootPath)")
+    expect(composer).toContain("window.electronAPI.plugins.contributions(plugins)")
+    expect(composer).toContain("buildPluginAddItems(plugins, contributions)")
+    expect(composer).toContain("const openAddPalette")
+    expect(composer).toContain("onClick={openAddPalette}")
+    expect(composer).toContain('className="wb-add-palette"')
+    expect(composer).toContain("groupComposerAddItems(addItems)")
+    expect(composer).toContain("chooseAddItem(item)")
   })
 
   it("prioritizes workflow commands in the slash palette", () => {

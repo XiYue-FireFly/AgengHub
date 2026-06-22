@@ -238,4 +238,99 @@ describe("MCP runtime", () => {
 
     expect(result.status).toBe("ok")
   })
+
+  it("enumerates tools, resources, and prompts from MCP server", async () => {
+    const serverPath = join(workspaceRoot, "full-mcp-server.js")
+    writeFileSync(serverPath, [
+      "process.stdin.setEncoding('utf8')",
+      "let id = 0",
+      "process.stdin.on('data', chunk => {",
+      "  const lines = chunk.split('\\n').filter(Boolean)",
+      "  for (const line of lines) {",
+      "    try {",
+      "      const msg = JSON.parse(line)",
+      "      if (msg.method === 'initialize') {",
+      "        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {}, resources: {}, prompts: {} }, serverInfo: { name: 'full', version: '1' } } }) + '\\n')",
+      "      } else if (msg.method === 'notifications/initialized') {",
+      "        // no response needed",
+      "      } else if (msg.method === 'tools/list') {",
+      "        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'search', description: 'Search docs' }, { name: 'fetch', description: 'Fetch URL' }] } }) + '\\n')",
+      "      } else if (msg.method === 'resources/list') {",
+      "        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { resources: [{ uri: 'file:///readme', name: 'README' }, { uri: 'file:///changelog', name: 'CHANGELOG' }, { uri: 'file:///license', name: 'LICENSE' }] } }) + '\\n')",
+      "      } else if (msg.method === 'prompts/list') {",
+      "        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { prompts: [{ name: 'summarize', description: 'Summarize text' }] } }) + '\\n')",
+      "      }",
+      "    } catch {}",
+      "  }",
+      "})"
+    ].join("\n"))
+    memory["runtime.mcp.v1"] = {
+      version: 1,
+      servers: [{
+        id: "full-test",
+        name: "full-test",
+        source: "user",
+        enabled: true,
+        transport: "stdio",
+        command: process.execPath,
+        args: [serverPath],
+        timeoutMs: 5000
+      }],
+      overrides: {}
+    }
+
+    const { listMcpServerTools } = await import("../mcp")
+    const result = await listMcpServerTools("full-test", "ws-1")
+
+    expect(result.ok).toBe(true)
+    expect(result.tools).toHaveLength(2)
+    expect(result.resources).toBe(3)
+    expect(result.prompts).toBe(1)
+  })
+
+  it("returns tools even when resources/list or prompts/list fail", async () => {
+    const serverPath = join(workspaceRoot, "partial-mcp-server.js")
+    writeFileSync(serverPath, [
+      "process.stdin.setEncoding('utf8')",
+      "process.stdin.on('data', chunk => {",
+      "  const lines = chunk.split('\\n').filter(Boolean)",
+      "  for (const line of lines) {",
+      "    try {",
+      "      const msg = JSON.parse(line)",
+      "      if (msg.method === 'initialize') {",
+      "        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'partial', version: '1' } } }) + '\\n')",
+      "      } else if (msg.method === 'notifications/initialized') {",
+      "        // no response",
+      "      } else if (msg.method === 'tools/list') {",
+      "        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'ping' }] } }) + '\\n')",
+      "      } else if (msg.method === 'resources/list' || msg.method === 'prompts/list') {",
+      "        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'Method not found' } }) + '\\n')",
+      "      }",
+      "    } catch {}",
+      "  }",
+      "})"
+    ].join("\n"))
+    memory["runtime.mcp.v1"] = {
+      version: 1,
+      servers: [{
+        id: "partial-test",
+        name: "partial-test",
+        source: "user",
+        enabled: true,
+        transport: "stdio",
+        command: process.execPath,
+        args: [serverPath],
+        timeoutMs: 5000
+      }],
+      overrides: {}
+    }
+
+    const { listMcpServerTools } = await import("../mcp")
+    const result = await listMcpServerTools("partial-test", "ws-1")
+
+    expect(result.ok).toBe(true)
+    expect(result.tools).toHaveLength(1)
+    expect(result.resources).toBe(0)
+    expect(result.prompts).toBe(0)
+  })
 })

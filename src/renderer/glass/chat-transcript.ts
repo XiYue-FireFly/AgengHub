@@ -1,5 +1,5 @@
 import type { ActivityStep, ReplyState } from "./meta"
-import type { OrchestrateState, OrchestrateSubtask } from "./orchestrate-view"
+import type { OrchestrateState, OrchestrateSubtask } from "./orchestrate-types"
 
 export type TranscriptReply = Pick<ReplyState, "agentId" | "thinking" | "text" | "done" | "cancelled" | "error" | "steps">
 

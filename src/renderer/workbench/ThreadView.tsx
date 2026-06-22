@@ -1,6 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Icon, IC, AgentMark } from '../glass/ui'
-import { ActivityTrail } from '../glass/activity-view'
+// ActivityTrail reserved for future activity view integration
+
+import { ToolCallStream } from '../glass/ToolCallStream'
+import { ExecutionReport } from '../glass/ExecutionReport'
+import { InlineEditAffordance } from './InlineEditAffordance'
+import { ForkButton } from './ForkButton'
+import { ContextLedger } from './ContextLedger'
 import { AGENT_META } from '../glass/meta'
 import { tr } from '../glass/i18n'
 import { SetupTab, firstRunActionForError } from '../glass/connection-status'
@@ -68,14 +74,14 @@ export function ThreadView({
               <button onClick={() => onRetry(turn.id)} title={tr('重试', 'Retry')}><Icon d={IC.refresh} size={14} /></button>
             )}
           </div>
-          <AgentOutputs turn={turn} events={byTurn.get(turn.id) ?? []} openSetup={openSetup} onCancelAgent={onCancelAgent} onResolveGuard={onResolveGuard} workspaceRoot={workspaceRoot} />
+          <AgentOutputs turn={turn} events={byTurn.get(turn.id) ?? []} openSetup={openSetup} onCancelAgent={onCancelAgent} onResolveGuard={onResolveGuard} workspaceRoot={workspaceRoot} threadId={thread?.id} />
         </article>
       ))}
     </section>
   )
 }
 
-function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, workspaceRoot }: { turn: WorkbenchTurn; events: RuntimeEvent[]; openSetup: (tab?: SetupTab | 'appearance') => void; onCancelAgent: (turnId: string, agentId: string) => void; onResolveGuard: (requestId: string, approved: boolean) => void; workspaceRoot?: string | null }) {
+function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, workspaceRoot, threadId }: { turn: WorkbenchTurn; events: RuntimeEvent[]; openSetup: (tab?: SetupTab | 'appearance') => void; onCancelAgent: (turnId: string, agentId: string) => void; onResolveGuard: (requestId: string, approved: boolean) => void; workspaceRoot?: string | null; threadId?: string }) {
   const grouped = new Map<string, RuntimeEvent[]>()
   const visibleEvents = events.filter(event => event.kind !== 'turn:created' && event.kind !== 'turn:status' && event.kind !== 'run:created' && event.kind !== 'run:status')
   for (const event of visibleEvents) {
@@ -117,7 +123,15 @@ function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, 
               status={status}
               workspaceRoot={workspaceRoot}
             />
-            {summary.steps.length > 0 && <ActivityTrail steps={summary.steps as any} running={!summary.done && !summary.error} />}
+            {summary.steps.length > 0 && (
+              <div className="wb-tool-call-area">
+                <ToolCallStream
+                  calls={stepsToToolCalls(summary.steps)}
+                  defaultOpen={status === 'running'}
+                  collapseWhenComplete
+                />
+              </div>
+            )}
             {summary.orch.length > 0 && <OrchestrateCompact events={summary.orch} turnStatus={turn.status} workspaceRoot={workspaceRoot} />}
             {(summary.routeEvents.length > 0 || summary.guardEvents.length > 0) && (
               <RoleEvents routeEvents={summary.routeEvents} guardEvents={summary.guardEvents} onResolveGuard={onResolveGuard} />
@@ -136,6 +150,20 @@ function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, 
               </div>
             )}
             {status !== 'running' && <CompletionSummary agentId={agentId} events={agentEvents} summary={summary} status={status} workspaceRoot={workspaceRoot} />}
+            {/* Context Ledger for completed turns */}
+            {status === 'completed' && threadId && (
+              <ContextLedger threadId={threadId} turnId={turn.id} compact />
+            )}
+            {/* Fork button for completed turns */}
+            {status === 'completed' && (
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+                <ForkButton
+                  turnId={turn.id}
+                  threadId={threadId || turn.threadId || ''}
+                  messageContent={text || doneContent || ''}
+                />
+              </div>
+            )}
           </div>
         )
       })}
@@ -188,11 +216,20 @@ function ProcessDetails({
           {processRows.map(row => (
             <div key={row.id} className={'wb-agent-process-row ' + row.kind}>
               <span className="wb-agent-process-icon"><Icon d={row.icon} size={13} /></span>
-              <div>
+              <div style={{ flex: 1 }}>
                 <strong>{row.title}</strong>
                 {row.detail && row.filePath
                   ? <MarkdownBlock content={`\`${row.filePath}${row.line ? `:${row.line}` : ''}\` ${row.detail}`} workspaceRoot={workspaceRoot} />
                   : row.detail ? <small>{row.detail}</small> : null}
+                {/* Inline Edit affordance for code-related tool outputs */}
+                {(row.kind === 'activity' && row.detail && /write|edit|create|update|patch|apply/i.test(row.title || '')) && (
+                  <InlineEditAffordance
+                    code={row.detail || ''}
+                    filePath={row.filePath}
+                    startLine={row.line}
+                    workspaceRoot={workspaceRoot || undefined}
+                  />
+                )}
               </div>
               <em>{relativeEventTime(row.createdAt)}</em>
             </div>
@@ -204,7 +241,7 @@ function ProcessDetails({
 }
 
 function CompletionSummary({
-  agentId,
+  agentId: _agentId,
   events,
   summary,
   status,
@@ -218,26 +255,30 @@ function CompletionSummary({
 }) {
   const stats = completionStats(events, summary, status)
   if (status === 'cancelled' && stats.activities === 0) return null
+
+  // Use ExecutionReport for a richer completion summary
+  const toolCalls = stepsToToolCalls(summary.steps)
+  const execReport = {
+    totalTools: toolCalls.length,
+    successfulTools: toolCalls.filter(c => c.status === 'succeeded').length,
+    failedTools: toolCalls.filter(c => c.status === 'failed').length,
+    totalDuration: formatEventDuration(events).includes('s') ? parseFloat(formatEventDuration(events)) * 1000 : 0,
+    filesModified: stats.files || []
+  }
+
   return (
-    <div className={'wb-completion-summary ' + status}>
-      <div className="wb-completion-summary-head">
-        <Icon d={status === 'failed' ? IC.x : status === 'cancelled' ? IC.stop : IC.check} size={14} />
-        <strong>{completionTitle(status)}</strong>
-        <small>{formatEventDuration(events)}</small>
-      </div>
-      <ul>
-        {stats.activities > 0 && <li>{tr(`完成 ${stats.activities} 个执行活动。`, `${stats.activities} execution activities recorded.`)}</li>}
-        {stats.guardVerdicts > 0 && <li>{tr(`完成 ${stats.guardVerdicts} 个审查/门禁检查。`, `${stats.guardVerdicts} review/gate checks completed.`)}</li>}
-        {stats.routeDecisions > 0 && <li>{tr(`记录 ${stats.routeDecisions} 个路由决策。`, `${stats.routeDecisions} route decisions recorded.`)}</li>}
-        {stats.files.length > 0 && (
-          <li>
-            {tr('相关文件：', 'Related files: ')}
-            <MarkdownBlock content={stats.files.slice(0, 6).map(file => `\`${file}\``).join('、')} workspaceRoot={workspaceRoot} />
-          </li>
-        )}
-        {stats.finalPreview && <li>{stats.finalPreview}</li>}
-        {status === 'failed' && summary.error?.payload?.error && <li>{friendlyError(summary.error.payload.error)}</li>}
-      </ul>
+    <div className="wb-completion-wrapper">
+      <ExecutionReport stats={execReport} />
+      {stats.finalPreview && (
+        <div className="wb-completion-final-preview">
+          <MarkdownBlock content={stats.finalPreview} workspaceRoot={workspaceRoot} />
+        </div>
+      )}
+      {status === 'failed' && summary.error?.payload?.error && (
+        <div className="wb-output-error">
+          {friendlyError(summary.error.payload.error)}
+        </div>
+      )}
     </div>
   )
 }
@@ -318,6 +359,25 @@ function buildProcessRows(agentId: string, events: RuntimeEvent[], summary: Agen
   return rows.slice(-28)
 }
 
+function stepsToToolCalls(steps: any[]): Array<{ id: string; tool: string; status: 'started' | 'succeeded' | 'failed' | 'declined'; startTime: number; endTime?: number; input?: string; output?: string; error?: string }> {
+  return steps.map(step => {
+    const status = step.status === 'running' || step.status === 'awaiting' ? 'started'
+      : step.status === 'error' ? 'failed'
+      : step.status === 'cancelled' ? 'declined'
+      : 'succeeded'
+    return {
+      id: step.id || `step-${Math.random().toString(36).slice(2, 8)}`,
+      tool: step.tool || step.label || step.kind || 'tool',
+      status,
+      startTime: step.createdAt || Date.now(),
+      endTime: step.status === 'done' || step.status === 'error' ? (step.updatedAt || step.createdAt || Date.now()) : undefined,
+      input: step.detail || undefined,
+      output: step.output || undefined,
+      error: step.status === 'error' ? (step.output || step.error || undefined) : undefined
+    }
+  })
+}
+
 function iconForProcessStep(step: any): React.ReactNode {
   const haystack = `${step.kind || ''} ${step.tool || ''} ${step.label || ''}`
   if (/bash|shell|exec|command|terminal|run|cmd/i.test(haystack)) return IC.terminal
@@ -345,7 +405,7 @@ function doneSummaryText(summary: AgentEventSummary): string {
   return short(firstMeaningful.replace(/^[-*]\s*/, ''), 150)
 }
 
-function completionTitle(status: WorkbenchTurnStatus): string {
+function _completionTitle(status: WorkbenchTurnStatus): string {
   if (status === 'failed') return tr('执行未完成', 'Run did not complete')
   if (status === 'cancelled') return tr('已停止执行', 'Run stopped')
   return tr('执行完成总结', 'Completion summary')
@@ -749,7 +809,7 @@ function extractReferencedFiles(events: RuntimeEvent[], extraText = ''): string[
   const out: string[] = []
   const scan = (value: any) => {
     const text = String(value || '')
-    const matches = text.match(/(?:[A-Za-z]:[\\/][^\s'"`<>]+|(?:\.{1,2}[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+|[A-Za-z0-9_.-]+\.(?:tsx?|jsx?|mjs|cjs|json|ya?ml|toml|md|css|scss|html|py|go|rs|java|cs|cpp|c|h|hpp|vue|svelte))(?:\:\d+)?/g) || []
+    const matches = text.match(/(?:[A-Za-z]:[\\/][^\s'"`<>]+|(?:.{1,2}[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+|[A-Za-z0-9_.-]+\.(?:tsx?|jsx?|mjs|cjs|json|ya?ml|toml|md|css|scss|html|py|go|rs|java|cs|cpp|c|h|hpp|vue|svelte))(?::\d+)?/g) || []
     for (const match of matches) {
       const parsed = filePathFromText(match)
       if (!parsed || seen.has(parsed.path)) continue
@@ -771,12 +831,12 @@ function extractReferencedFiles(events: RuntimeEvent[], extraText = ''): string[
 }
 
 function filePathFromText(value: string): { path: string; line?: number } | null {
-  const match = value.match(/(?:^|\s|["'`])((?:[A-Za-z]:[\\/][^\s'"`<>]+|(?:\.{1,2}[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+|[A-Za-z0-9_.-]+\.(?:tsx?|jsx?|mjs|cjs|json|ya?ml|toml|md|css|scss|html|py|go|rs|java|cs|cpp|c|h|hpp|vue|svelte)))(?:\:(\d+))?/)
+  const match = value.match(/(?:^|\s|["'`])((?:[A-Za-z]:[\\/][^\s'"`<>]+|(?:\.{1,2}[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+|[A-Za-z0-9_.-]+\.(?:tsx?|jsx?|mjs|cjs|json|ya?ml|toml|md|css|scss|html|py|go|rs|java|cs|cpp|c|h|hpp|vue|svelte)))(?::(\d+))?/)
   if (!match) return null
   return { path: match[1], line: match[2] ? Number(match[2]) : undefined }
 }
 
-function describePlan(subtasks: any[]): string {
+function _describePlan(subtasks: any[]): string {
   const rows = subtasks
     .slice(0, 5)
     .map((task, index) => `${index + 1}. ${task.title || task.detail || task.id || tr('未命名子任务', 'Untitled subtask')}`)
