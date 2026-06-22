@@ -711,7 +711,10 @@ export class ProviderManager extends EventEmitter {
           })
         }
         raw = raw.filter(m => m.id).slice(0, 300)
-        if (raw.length === 0) return this.recordModelFetchFailure(p, "接口未返回模型")
+        if (raw.length === 0) {
+          lastError = `接口未返回模型 from ${url.replace(requestProvider.apiKey || "", "REDACTED")}`
+          continue
+        }
 
         const old = new Map(p.models.map(m => [m.id, m]))
         const pinnedModelIds = new Set(

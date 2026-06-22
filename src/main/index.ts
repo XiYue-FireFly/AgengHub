@@ -1341,7 +1341,7 @@ ipcMain.handle("turns:create", async (_event, payload: { threadId?: string | nul
         messages
       }
     )
-    : (effectiveMode === "custom" || effectiveMode === "firefly-custom") && !directTarget && scheduleForTurn
+    : !directTarget && scheduleForTurn
     ? runCustomScheduleTurn({
         dispatcher,
         prompt: dispatchPrompt,
@@ -1373,7 +1373,7 @@ ipcMain.handle("turns:create", async (_event, payload: { threadId?: string | nul
   void runner
     .then((task: any) => {
       if (runtimeStore.getTurn(turn.id)?.status === "cancelled") return
-      if ((effectiveMode === "custom" || effectiveMode === "firefly-custom") && !("id" in task)) {
+      if (scheduleForTurn && !("id" in task)) {
         runtimeStore.setTurnStatus(turn.id, task.status, { error: task.error })
         return
       }
@@ -1458,7 +1458,7 @@ ipcMain.handle("turns:retry", async (_event, turnId: string) => {
       modelSelection: retryModelSelection,
       thinking: turn.thinking
     })
-    : (turn.mode === "custom" || turn.mode === "firefly-custom") && !retryTargetAgent && retrySchedule
+    : !retryTargetAgent && retrySchedule
     ? runCustomScheduleTurn({
         dispatcher,
         prompt: retryPrompt,
@@ -1485,7 +1485,7 @@ ipcMain.handle("turns:retry", async (_event, turnId: string) => {
   void retryRunner
     .then((task: any) => {
       if (runtimeStore.getTurn(created.turn.id)?.status === "cancelled") return
-      if ((turn.mode === "custom" || turn.mode === "firefly-custom") && !("id" in task)) {
+      if (retrySchedule && !("id" in task)) {
         runtimeStore.setTurnStatus(created.turn.id, task.status, { error: task.error })
         return
       }
@@ -1684,7 +1684,7 @@ ipcMain.handle("plugins:importRepository", (_e, input: any) => importPluginRepos
 // Project Map — moved to src/main/ipc/workflow-ipc.ts
 
 ipcMain.handle("release:checks", async () => {
-  // R7 fix: run real checks instead of hardcoded placeholders
+  // Release checks: run real git status checks
   const appVersion = resolveAppVersionFromMain()
   let gitClean = false
   let hasChangelog = false

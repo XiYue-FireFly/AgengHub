@@ -290,7 +290,7 @@ export class WorkbenchRuntimeStore extends EventEmitter {
       : "agent:activity"
     if (stream.kind === "start" && stream.agentId) this.createRun({ turnId, agentId: stream.agentId, role: stream.scheduleRole || "target" })
     if (stream.kind === "done" && stream.agentId) this.setRunStatus(turnId, stream.agentId, "completed", { durationMs: stream.durationMs })
-    if (stream.kind === "error" && stream.agentId) this.setRunStatus(turnId, stream.agentId, stream.code === "AGENT_CANCELLED" ? "cancelled" : "failed", { error: stream.error, code: stream.code })
+    if (stream.kind === "error" && stream.agentId) this.setRunStatus(turnId, stream.agentId, stream.code === "AGENT_CANCELLED" ? "cancelled" : "failed", { error: stream.error, code: stream.code, durationMs: stream.durationMs })
     const persistNow = kind !== "agent:delta"
     return this.appendEvent(turn.threadId, turn.id, kind, stream.agentId, stream, persistNow)
   }

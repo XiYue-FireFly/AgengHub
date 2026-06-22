@@ -157,9 +157,9 @@ describe("local model config readers", () => {
     expect(config.agentId).toBe("claude")
     expect(config.modelId).toBe("claude-opus-4-8")
     expect(config.models).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: "settings-main", label: "claude-opus-4-8" }),
-      expect.objectContaining({ id: "settings-sonnet", label: "claude-sonnet-4-6" }),
-      expect.objectContaining({ id: "settings-haiku", label: "claude-haiku-4-5-20251001" })
+      expect.objectContaining({ id: "claude-opus-4-8", label: "Main (claude-opus-4-8)" }),
+      expect.objectContaining({ id: "claude-sonnet-4-6", label: "Sonnet (claude-sonnet-4-6)" }),
+      expect.objectContaining({ id: "claude-haiku-4-5-20251001", label: "Haiku (claude-haiku-4-5-20251001)" })
     ]))
   })
 

@@ -140,11 +140,11 @@ export function readClaudeConfig(root = join(homedir(), ".claude")): LocalModelC
     const reasoningModel = stringValue(settingsEnv.ANTHROPIC_REASONING_MODEL) || stringValue(process.env.ANTHROPIC_REASONING_MODEL)
 
     const models: LocalModelInfo[] = []
-    if (mainModel) models.push({ id: "settings-main", label: mainModel, contextWindow: DEFAULT_CONTEXT_WINDOW })
-    if (sonnetModel) models.push({ id: "settings-sonnet", label: sonnetModel, contextWindow: DEFAULT_CONTEXT_WINDOW })
-    if (opusModel) models.push({ id: "settings-opus", label: opusModel, contextWindow: DEFAULT_CONTEXT_WINDOW })
-    if (haikuModel) models.push({ id: "settings-haiku", label: haikuModel, contextWindow: DEFAULT_CONTEXT_WINDOW })
-    if (reasoningModel) models.push({ id: "settings-reasoning", label: reasoningModel, contextWindow: DEFAULT_CONTEXT_WINDOW })
+    if (mainModel) models.push({ id: mainModel, label: `Main (${mainModel})`, contextWindow: DEFAULT_CONTEXT_WINDOW, capabilities: ["role:main"] })
+    if (sonnetModel) models.push({ id: sonnetModel, label: `Sonnet (${sonnetModel})`, contextWindow: DEFAULT_CONTEXT_WINDOW, capabilities: ["role:sonnet"] })
+    if (opusModel) models.push({ id: opusModel, label: `Opus (${opusModel})`, contextWindow: DEFAULT_CONTEXT_WINDOW, capabilities: ["role:opus"] })
+    if (haikuModel) models.push({ id: haikuModel, label: `Haiku (${haikuModel})`, contextWindow: DEFAULT_CONTEXT_WINDOW, capabilities: ["role:haiku"] })
+    if (reasoningModel) models.push({ id: reasoningModel, label: `Reasoning (${reasoningModel})`, contextWindow: DEFAULT_CONTEXT_WINDOW, capabilities: ["role:reasoning"] })
 
     // Check for auth indicators (settings.json exists = likely configured)
     const hasSettings = !!settings && typeof settings === "object"

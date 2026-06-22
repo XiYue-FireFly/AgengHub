@@ -113,8 +113,17 @@ export async function testMcpServer(id: string, workspaceId?: string | null): Pr
       if (!server.command) throw new Error("Missing command")
       await probeStdioServer(server)
     } else if (server.url) {
-      const res = await fetch(server.url, { method: "HEAD", headers: server.headers }).catch(() => null)
+      // P0-4: Real MCP protocol test for HTTP/SSE — send initialize request
+      const initBody = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "agenthub", version: "1.0" } } })
+      const res = await fetch(server.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(server.headers || {}) },
+        body: initBody,
+        signal: AbortSignal.timeout(10000)
+      }).catch(() => null)
       if (!res || res.status < 200 || res.status >= 400) throw new Error(`HTTP ${res?.status ?? "unreachable"}`)
+      const body = await res.text().catch(() => "")
+      if (!body.includes("result") && !body.includes("protocolVersion")) throw new Error("MCP initialize failed: no valid response")
     } else {
       throw new Error("Missing URL")
     }

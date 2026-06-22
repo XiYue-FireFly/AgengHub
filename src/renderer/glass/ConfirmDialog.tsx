@@ -1,13 +1,8 @@
 /**
- * ConfirmDialog: styled confirmation dialog replacing window.confirm().
- *
- * Shows a glass-styled modal with title, message, confirm/cancel buttons.
- * Supports danger styling for destructive actions.
- *
- * Phase P0-3: Replace all native window.confirm() with unified UI.
+ * ConfirmDialog: React confirmation dialog.
  */
 
-import React, { useState, useCallback, useEffect } from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import { tr } from './i18n'
 
 interface ConfirmDialogProps {
@@ -35,15 +30,13 @@ export function ConfirmDialog({ open, title, message, confirmLabel, cancelLabel,
   if (!open) return null
 
   return (
-    <div className="wb-cp-overlay" onClick={onCancel}>
-      <div className="wb-cp-container" style={{ maxWidth: 420 }} onClick={e => e.stopPropagation()}>
-        <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--glass-border-default)' }}>
-          <strong style={{ fontSize: 15 }}>{title}</strong>
+    <div className="wb-confirm-overlay" onClick={onCancel}>
+      <div className="wb-confirm-container" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true">
+        <div className="wb-confirm-title">
+          <strong>{title}</strong>
         </div>
-        <div style={{ padding: '16px 20px', fontSize: 13, color: 'var(--tx-2)', lineHeight: 1.5 }}>
-          {message}
-        </div>
-        <div style={{ padding: '12px 20px', display: 'flex', justifyContent: 'flex-end', gap: 8, borderTop: '1px solid var(--glass-border-default)' }}>
+        <div className="wb-confirm-message">{message}</div>
+        <div className="wb-confirm-actions">
           <button className="ah-btn sm" onClick={onCancel}>
             {cancelLabel || tr('取消', 'Cancel')}
           </button>
@@ -56,10 +49,6 @@ export function ConfirmDialog({ open, title, message, confirmLabel, cancelLabel,
   )
 }
 
-/**
- * Hook for using ConfirmDialog declaratively.
- * Returns [ConfirmDialogComponent, confirm(message, options)]
- */
 export function useConfirmDialog(): [
   React.ReactElement | null,
   (message: string, opts?: { title?: string; confirmLabel?: string; danger?: boolean }) => Promise<boolean>

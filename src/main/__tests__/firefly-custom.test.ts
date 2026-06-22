@@ -69,6 +69,17 @@ describe("smart five-role custom schedule integration", () => {
     expect(source).toContain("void decision")
   })
 
+  it("runs any supplied schedule graph instead of only custom and smart five-role modes", () => {
+    const source = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
+
+    expect(source).toContain(": !directTarget && scheduleForTurn")
+    expect(source).toContain(": !retryTargetAgent && retrySchedule")
+    expect(source).toContain("if (scheduleForTurn && !(\"id\" in task))")
+    expect(source).toContain("if (retrySchedule && !(\"id\" in task))")
+    expect(source).not.toContain('(effectiveMode === "custom" || effectiveMode === "firefly-custom") && !directTarget && scheduleForTurn')
+    expect(source).not.toContain('(turn.mode === "custom" || turn.mode === "firefly-custom") && !retryTargetAgent && retrySchedule')
+  })
+
   it("scores guard verdicts from agent output instead of guard prompt instructions", () => {
     const source = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
     const guardService = readFileSync(join(process.cwd(), "src/main/runtime/guard-approval-service.ts"), "utf8")

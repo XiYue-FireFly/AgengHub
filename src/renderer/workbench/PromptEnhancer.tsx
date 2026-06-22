@@ -1,13 +1,8 @@
 /**
- * PromptEnhancer: "Optimize prompt" button for Composer.
- *
- * When clicked, takes the current user input and sends it to the AI model
- * for rewriting/improvement. Returns the enhanced prompt.
- *
- * Phase 3.4 of AGENTHUB_ITERATION_GOAL.
+ * PromptEnhancer: compact "Optimize prompt" button for Composer.
  */
 
-import React, { useState, useCallback } from 'react'
+import React, { useCallback, useState } from 'react'
 
 interface PromptEnhancerProps {
   text: string
@@ -30,7 +25,6 @@ export function PromptEnhancer({ text, onEnhanced, disabled }: PromptEnhancerPro
     setError(null)
 
     try {
-      // Build a meta-prompt that asks the AI to improve the user's input
       const metaPrompt = `You are a prompt engineering assistant. Your task is to improve the following user prompt to be clearer, more specific, and more likely to get a good response from an AI coding assistant.
 
 Rules:
@@ -38,7 +32,7 @@ Rules:
 - Add specificity where the prompt is vague
 - Structure complex requests into numbered steps
 - Add relevant context cues (file paths, language, framework) when obvious
-- Keep it concise — don't add unnecessary preamble
+- Keep it concise; do not add unnecessary preamble
 - Output ONLY the improved prompt, nothing else
 
 Original prompt:
@@ -46,7 +40,6 @@ ${text.trim()}
 
 Improved prompt:`
 
-      // Send metaPrompt to AI via ai:quickComplete
       const result = await window.electronAPI.ai.quickComplete({
         prompt: metaPrompt,
         systemPrompt: 'You are a prompt engineering assistant. Output ONLY the improved prompt.',
@@ -58,7 +51,6 @@ Improved prompt:`
         return
       }
 
-      // Clean up the response: strip markdown fences if present
       let enhanced = result.content.trim()
       if (enhanced.startsWith('```') && enhanced.endsWith('```')) {
         enhanced = enhanced.split('\n').slice(1, -1).join('\n').trim()
@@ -75,15 +67,17 @@ Improved prompt:`
   if (!text.trim()) return null
 
   return (
-    <button
-      className="ah-btn sm"
-      onClick={enhance}
-      disabled={disabled || loading || !text.trim()}
-      title={tr('用 AI 优化提示词', 'Optimize prompt with AI')}
-      style={{ fontSize: 11, padding: '2px 8px' }}
-    >
-      {loading ? '⏳' : '✨'} {tr('优化', 'Enhance')}
-      {error && <span style={{ color: 'var(--color-error)', marginLeft: 4, fontSize: 10 }}>{error}</span>}
-    </button>
+    <span className="wb-prompt-enhancer">
+      <button
+        className="wb-prompt-enhancer-button"
+        onClick={enhance}
+        disabled={disabled || loading || !text.trim()}
+        title={tr('用 AI 优化提示词', 'Optimize prompt with AI')}
+      >
+        <span aria-hidden="true">{loading ? '...' : '*'}</span>
+        {tr('优化', 'Enhance')}
+      </button>
+      {error && <span className="wb-prompt-enhancer-error">{error}</span>}
+    </span>
   )
 }

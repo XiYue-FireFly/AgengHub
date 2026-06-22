@@ -83,7 +83,7 @@ export function ThreadView({
 
 function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, workspaceRoot, threadId }: { turn: WorkbenchTurn; events: RuntimeEvent[]; openSetup: (tab?: SetupTab | 'appearance') => void; onCancelAgent: (turnId: string, agentId: string) => void; onResolveGuard: (requestId: string, approved: boolean) => void; workspaceRoot?: string | null; threadId?: string }) {
   const grouped = new Map<string, RuntimeEvent[]>()
-  const visibleEvents = events.filter(event => event.kind !== 'turn:created' && event.kind !== 'turn:status' && event.kind !== 'run:created' && event.kind !== 'run:status')
+  const visibleEvents = events.filter(event => event.kind !== 'turn:created' && event.kind !== 'turn:status')
   for (const event of visibleEvents) {
     if (event.kind === 'memory:candidate') continue
     if (!event.agentId && event.kind !== 'orchestrate' && event.kind !== 'route:decision' && event.kind !== 'guard:verdict' && !event.payload?.kind?.startsWith?.('orchestrate:')) continue
@@ -126,7 +126,7 @@ function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, 
             {summary.steps.length > 0 && (
               <div className="wb-tool-call-area">
                 <ToolCallStream
-                  calls={stepsToToolCalls(summary.steps)}
+                  calls={stepsToToolCalls(summary.steps, status, terminalEventTime(agentEvents))}
                   defaultOpen={status === 'running'}
                   collapseWhenComplete
                 />
@@ -257,12 +257,14 @@ function CompletionSummary({
   if (status === 'cancelled' && stats.activities === 0) return null
 
   // Use ExecutionReport for a richer completion summary
-  const toolCalls = stepsToToolCalls(summary.steps)
+  const toolCalls = stepsToToolCalls(summary.steps, status, terminalEventTime(events))
+  const failedRunCount = status === 'failed' || summary.hasError || summary.hasOrchestrateError ? 1 : 0
+  const successfulRunCount = failedRunCount || toolCalls.length > 0 ? 0 : status === 'completed' || summary.hasDone || summary.hasOrchestrateFinal ? 1 : 0
   const execReport = {
-    totalTools: toolCalls.length,
-    successfulTools: toolCalls.filter(c => c.status === 'succeeded').length,
-    failedTools: toolCalls.filter(c => c.status === 'failed').length,
-    totalDuration: formatEventDuration(events).includes('s') ? parseFloat(formatEventDuration(events)) * 1000 : 0,
+    totalTools: toolCalls.length + failedRunCount + successfulRunCount,
+    successfulTools: toolCalls.filter(c => c.status === 'succeeded').length + successfulRunCount,
+    failedTools: toolCalls.filter(c => c.status === 'failed').length + failedRunCount,
+    totalDuration: eventDurationMs(events),
     filesModified: stats.files || []
   }
 
@@ -359,21 +361,30 @@ function buildProcessRows(agentId: string, events: RuntimeEvent[], summary: Agen
   return rows.slice(-28)
 }
 
-function stepsToToolCalls(steps: any[]): Array<{ id: string; tool: string; status: 'started' | 'succeeded' | 'failed' | 'declined'; startTime: number; endTime?: number; input?: string; output?: string; error?: string }> {
+function stepsToToolCalls(steps: any[], runStatus: WorkbenchTurnStatus = 'running', terminalTime?: number): Array<{ id: string; tool: string; status: 'started' | 'succeeded' | 'failed' | 'declined'; startTime: number; endTime?: number; input?: string; output?: string; error?: string }> {
   return steps.map(step => {
-    const status = step.status === 'running' || step.status === 'awaiting' ? 'started'
+    const rawStatus = step.status === 'running' || step.status === 'awaiting' ? 'started'
       : step.status === 'error' ? 'failed'
       : step.status === 'cancelled' ? 'declined'
       : 'succeeded'
+    const status = rawStatus === 'started' && runStatus === 'failed' ? 'failed'
+      : rawStatus === 'started' && runStatus === 'cancelled' ? 'declined'
+      : rawStatus
+    const startTime = step.createdAt || Date.now()
+    const endTime = step.status === 'done' || step.status === 'error'
+      ? (step.updatedAt || step.createdAt || Date.now())
+      : status === 'failed' || status === 'declined'
+      ? (terminalTime || step.updatedAt || step.createdAt || Date.now())
+      : undefined
     return {
       id: step.id || `step-${Math.random().toString(36).slice(2, 8)}`,
       tool: step.tool || step.label || step.kind || 'tool',
       status,
-      startTime: step.createdAt || Date.now(),
-      endTime: step.status === 'done' || step.status === 'error' ? (step.updatedAt || step.createdAt || Date.now()) : undefined,
+      startTime,
+      endTime,
       input: step.detail || undefined,
       output: step.output || undefined,
-      error: step.status === 'error' ? (step.output || step.error || undefined) : undefined
+      error: status === 'failed' ? (step.output || step.error || undefined) : undefined
     }
   })
 }
@@ -411,11 +422,32 @@ function _completionTitle(status: WorkbenchTurnStatus): string {
   return tr('执行完成总结', 'Completion summary')
 }
 
-function formatEventDuration(events: RuntimeEvent[]): string {
-  if (events.length === 0) return ''
-  const started = events[0].createdAt
-  const ended = events[events.length - 1].createdAt
-  return formatDuration(Math.max(0, Math.round((ended - started) / 1000)))
+function eventDurationMs(events: RuntimeEvent[]): number {
+  if (events.length === 0) return 0
+  const explicitDuration = [...events]
+    .reverse()
+    .map(event => event.payload?.durationMs)
+    .find(value => typeof value === 'number' && Number.isFinite(value) && value >= 0)
+  if (typeof explicitDuration === 'number') return explicitDuration
+  const started = events.find(event => event.kind === 'run:created' || event.kind === 'agent:start')?.createdAt || events[0].createdAt
+  const ended = terminalEventTime(events) || events[events.length - 1].createdAt
+  return Math.max(0, ended - started)
+}
+
+function terminalEventTime(events: RuntimeEvent[]): number | undefined {
+  return [...events]
+    .reverse()
+    .find(event =>
+      event.kind === 'agent:done' ||
+      event.kind === 'agent:error' ||
+      (event.kind === 'run:status' && event.payload?.status && event.payload.status !== 'running' && event.payload.status !== 'queued') ||
+      event.payload?.kind === 'orchestrate:final' ||
+      event.payload?.kind === 'orchestrate:error'
+    )?.createdAt
+}
+
+function _formatEventDuration(events: RuntimeEvent[]): string {
+  return formatDuration(Math.round(eventDurationMs(events) / 1000))
 }
 
 function roleName(role: string): string {
@@ -441,6 +473,14 @@ function summarizeAgentEvents(events: RuntimeEvent[]): AgentEventSummary {
 
   for (const event of events) {
     if (event.payload?.providerId || event.payload?.modelId) providerPayload = event.payload
+    if (event.kind === 'run:created') {
+      latestAgentStatus = event.payload?.status || 'running'
+      continue
+    }
+    if (event.kind === 'run:status') {
+      latestAgentStatus = event.payload?.status || latestAgentStatus
+      continue
+    }
     if (event.kind === 'agent:start') latestAgentStatus = 'running'
     if (event.kind === 'agent:delta' && event.payload?.channel !== 'thinking') {
       latestAgentStatus = 'running'
@@ -477,6 +517,14 @@ function summarizeAgentEvents(events: RuntimeEvent[]): AgentEventSummary {
     if (event.kind === 'route:decision') routeEvents.push(event)
     else if (event.kind === 'guard:verdict') guardEvents.push(event)
   }
+  const terminal = [...events].reverse().find(event =>
+    event.kind === 'agent:error' ||
+    event.kind === 'agent:done' ||
+    (event.kind === 'run:status' && event.payload?.status && event.payload.status !== 'running' && event.payload.status !== 'queued')
+  )
+  if (terminal?.kind === 'agent:error') latestAgentStatus = 'failed'
+  else if (terminal?.kind === 'agent:done') latestAgentStatus = 'completed'
+  else if (terminal?.kind === 'run:status') latestAgentStatus = terminal.payload?.status || latestAgentStatus
 
   return {
     rawText: textParts.join(''),
@@ -788,6 +836,17 @@ function parseJsonLine(line: string): any | null {
 function friendlyError(error: any): string {
   const text = String(error || tr('运行失败。', 'Run failed.')).trim()
   if (/RESULT为空/.test(text)) return tr('结果为空：Agent 没有返回可用内容。请检查登录状态、CLI 路径或切换为直连 Agent。', 'Empty result: the agent returned no usable content. Check login, CLI path, or switch to direct routing.')
+  // Improve exit code error messages with actionable hints
+  const exitCodeMatch = text.match(/(\S+?)\s*退出码\s*(-?\d+)/)
+  if (exitCodeMatch) {
+    const code = parseInt(exitCodeMatch[2], 10)
+    let hint = ''
+    if (code === 1) hint = tr(' 可能原因：工具调用失败、API 错误或权限问题。', ' Possible cause: tool call failure, API error, or permission issue.')
+    else if (code === 137 || code === 143) hint = tr(' 进程被强制终止（可能超时或内存不足）。', ' Process was force-killed (possibly timeout or OOM).')
+    else if (code === 126) hint = tr(' 权限不足，无法执行命令。', ' Permission denied, cannot execute command.')
+    else if (code === 127) hint = tr(' 命令未找到，请检查 CLI 路径配置。', ' Command not found, please check CLI path configuration.')
+    return text + hint
+  }
   return text
 }
 
@@ -809,10 +868,10 @@ function extractReferencedFiles(events: RuntimeEvent[], extraText = ''): string[
   const out: string[] = []
   const scan = (value: any) => {
     const text = String(value || '')
-    const matches = text.match(/(?:[A-Za-z]:[\\/][^\s'"`<>]+|(?:.{1,2}[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+|[A-Za-z0-9_.-]+\.(?:tsx?|jsx?|mjs|cjs|json|ya?ml|toml|md|css|scss|html|py|go|rs|java|cs|cpp|c|h|hpp|vue|svelte))(?::\d+)?/g) || []
+    const matches = text.match(/(?:[A-Za-z]:[\\/][^\s'"`<>]+|(?:\.{1,2}[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+|[A-Za-z0-9_.-]+\.(?:tsx?|jsx?|mjs|cjs|json|ya?ml|toml|md|css|scss|html|py|go|rs|java|cs|cpp|c|h|hpp|vue|svelte))(?::\d+)?/g) || []
     for (const match of matches) {
       const parsed = filePathFromText(match)
-      if (!parsed || seen.has(parsed.path)) continue
+      if (!parsed || seen.has(parsed.path) || !isLikelySourceFilePath(parsed.path)) continue
       seen.add(parsed.path)
       out.push(parsed.line ? `${parsed.path}:${parsed.line}` : parsed.path)
     }
@@ -831,9 +890,22 @@ function extractReferencedFiles(events: RuntimeEvent[], extraText = ''): string[
 }
 
 function filePathFromText(value: string): { path: string; line?: number } | null {
+  if (/\b[a-z][a-z0-9+.-]*:\/\//i.test(value)) return null
   const match = value.match(/(?:^|\s|["'`])((?:[A-Za-z]:[\\/][^\s'"`<>]+|(?:\.{1,2}[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+|[A-Za-z0-9_.-]+\.(?:tsx?|jsx?|mjs|cjs|json|ya?ml|toml|md|css|scss|html|py|go|rs|java|cs|cpp|c|h|hpp|vue|svelte)))(?::(\d+))?/)
   if (!match) return null
-  return { path: match[1], line: match[2] ? Number(match[2]) : undefined }
+  const path = match[1].replace(/[),.;\]}]+$/, '')
+  if (!isLikelySourceFilePath(path)) return null
+  return { path, line: match[2] ? Number(match[2]) : undefined }
+}
+
+function isLikelySourceFilePath(path: string): boolean {
+  if (!path || /\b[a-z][a-z0-9+.-]*:\/\//i.test(path)) return false
+  if (!/\.(?:tsx?|jsx?|mjs|cjs|json|ya?ml|toml|md|css|scss|html|py|go|rs|java|cs|cpp|c|h|hpp|vue|svelte)$/i.test(path)) return false
+  const normalized = path.replace(/\\/g, '/')
+  if (/^[A-Za-z]:\//.test(normalized)) return true
+  if (normalized.startsWith('./') || normalized.startsWith('../')) return true
+  if (normalized.includes('/')) return true
+  return /^(README|CHANGELOG|LICENSE|package|vite\.config|tsconfig|config)\./i.test(normalized)
 }
 
 function _describePlan(subtasks: any[]): string {
