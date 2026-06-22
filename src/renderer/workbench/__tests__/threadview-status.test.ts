@@ -42,14 +42,30 @@ describe("ThreadView agent output status", () => {
 
     expect(source).toContain("event.kind !== 'turn:created' && event.kind !== 'turn:status'")
     expect(source).not.toContain("event.kind !== 'run:created' && event.kind !== 'run:status'")
-    expect(source).toContain("const failedRunCount = status === 'failed'")
+    expect(source).toContain("const failedRunCount = status === 'failed' ? 1 : 0")
     expect(source).toContain("totalTools: toolCalls.length + failedRunCount + successfulRunCount")
-    expect(source).toContain("failedTools: toolCalls.filter(c => c.status === 'failed').length + failedRunCount")
+    expect(source).toContain("const visibleFailedTools = status === 'failed'")
+    expect(source).toContain("const historicalFailedAttempts = status === 'completed'")
+    expect(source).toContain("outcome: status === 'failed' ? 'failed' as const")
     expect(source).toContain("totalDuration: eventDurationMs(events)")
     expect(source).toContain("function eventDurationMs(events: RuntimeEvent[]): number")
     expect(source).toContain("terminalEventTime(events)")
     expect(source).toContain("event.payload?.durationMs")
     expect(source).not.toContain("parseFloat(formatEventDuration(events))")
+  })
+
+  it("does not let route-only metadata cards inherit a later failed turn status", () => {
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
+
+    expect(source).toContain("eventsOrSummary.routeEvents.length > 0 || eventsOrSummary.guardEvents.length > 0")
+    expect(source).toContain("return pendingGuard && (turnStatus === 'running' || turnStatus === 'queued') ? 'running' : 'completed'")
+  })
+
+  it("does not render empty 0ms completion reports without reportable work", () => {
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
+
+    expect(source).toContain("const hasReportableWork = toolCalls.length > 0")
+    expect(source).toContain("if (!hasReportableWork) return null")
   })
 
   it("finalizes running tool rows and filters noisy URL fragments from modified files", () => {

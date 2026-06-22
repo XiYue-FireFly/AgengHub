@@ -10,7 +10,8 @@ const h = vi.hoisted(() => {
     providerApiKey: "deepseek-key",
     clientCalls: [] as any[],
     resolveBindingCalls: [] as string[],
-    getBindingsCalls: 0
+    getBindingsCalls: 0,
+    localModels: {} as Record<string, any>
   }
   return { state }
 })
@@ -49,6 +50,7 @@ vi.mock("../../providers/manager", () => ({
       h.state.getBindingsCalls += 1
       return [{ agentId: "codex", providerId: "openai", modelId: "gpt-4o" }]
     },
+    getBinding: (agentId: string) => ({ agentId, providerId: "openai", modelId: "gpt-4o" }),
     resolveBinding: (id: string) => {
       h.state.resolveBindingCalls.push(id)
       return null
@@ -67,6 +69,10 @@ vi.mock("../../providers/client", () => ({
       })
     }
   })
+}))
+
+vi.mock("../../runtime/local-models", () => ({
+  readLocalModelConfig: (agentId: string) => h.state.localModels[agentId] ?? null
 }))
 
 import { Dispatcher, providerDirectAgentId } from "../dispatcher"
@@ -105,6 +111,7 @@ describe("provider direct dispatch", () => {
     h.state.clientCalls = []
     h.state.resolveBindingCalls = []
     h.state.getBindingsCalls = 0
+    h.state.localModels = {}
   })
 
   it("runs the selected API provider directly without touching local agent routing", async () => {
@@ -172,5 +179,39 @@ describe("provider direct dispatch", () => {
     expect(localCodex.send).not.toHaveBeenCalled()
     expect(h.state.clientCalls).toHaveLength(0)
     expect(h.state.resolveBindingCalls).toEqual([])
+  })
+
+  it("labels local CLI runs with the configured local model instead of stale API binding defaults", async () => {
+    h.state.localModels.codex = {
+      agentId: "codex",
+      source: "codex",
+      status: "ok",
+      modelId: "gpt-5.5",
+      configPath: "C:/Users/test/.codex/config.toml",
+      models: [{ id: "gpt-5.5" }]
+    }
+    const { dispatcher, events, localCodex } = makeDispatcher()
+
+    const task = await dispatcher.dispatch("hello", "auto", "codex")
+
+    expect(task.status).toBe("completed")
+    expect(localCodex.send).toHaveBeenCalled()
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "start",
+        agentId: "codex",
+        providerId: "local-cli",
+        modelId: "gpt-5.5"
+      }),
+      expect.objectContaining({
+        kind: "done",
+        agentId: "codex",
+        providerId: "local-cli",
+        modelId: "gpt-5.5"
+      })
+    ]))
+    expect(events).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ providerId: "openai", modelId: "gpt-4o" })
+    ]))
   })
 })
