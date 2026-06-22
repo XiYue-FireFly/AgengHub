@@ -19,7 +19,8 @@ interface ElectronAPI {
     setKey: (id: string, key: string) => Promise<any>
     health: (id: string) => Promise<any>
     healthAll: () => Promise<any>
-    fetchModels: (id: string) => Promise<{ ok: boolean; count?: number; error?: string; config?: any }>
+    fetchModels: (id: string, override?: { baseUrl?: string; apiKey?: string; kind?: string }) => Promise<{ ok: boolean; count?: number; error?: string; config?: any }>
+    reorderForClaude: (orderedIds: string[]) => Promise<any>
   }
   takeover: {
     status: () => Promise<Record<string, {
@@ -341,7 +342,13 @@ interface ElectronAPI {
   plugins: {
     scan: (workspaceRoot?: string) => Promise<any[]>
     validate: (manifest: any) => Promise<{ valid: boolean; errors?: string[] }>
-    contributions: (plugins: any[]) => Promise<{ commands: any[]; skills: any[]; prompts: any[] }>
+    contributions: (plugins: any[]) => Promise<{
+      commands: Array<{ pluginId: string; id: string; label: string }>
+      skills: Array<{ pluginId: string; id: string; path: string; content?: string }>
+      prompts: Array<{ pluginId: string; id: string; name: string; body: string }>
+    }>
+    repositories: () => Promise<Array<{ id: string; name: string; url: string; description?: string; source: 'builtin' }>>
+    importRepository: (input: { url: string; id?: string; name?: string; branch?: string }) => Promise<{ ok: boolean; plugin?: any; plugins?: any[]; path?: string; error?: string; diagnostics?: string[] }>
   }
   projectMap: {
     build: (rootPath: string, maxDepth?: number) => Promise<any>
@@ -419,7 +426,7 @@ interface ModelSelection {
 
 interface LocalModelConfig {
   agentId: string
-  source: 'codex' | 'gemini'
+  source: 'codex' | 'gemini' | 'claude'
   modelId?: string
   authMode?: 'api-key' | 'oauth' | 'unknown' | 'missing'
   baseUrl?: string

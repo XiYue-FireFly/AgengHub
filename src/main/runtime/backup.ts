@@ -7,7 +7,7 @@
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, statSync } from 'node:fs'
-import { join, basename } from 'node:path'
+import { join } from 'node:path'
 
 export interface BackupMeta {
   id: string

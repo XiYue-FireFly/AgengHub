@@ -125,4 +125,21 @@ describe('runAgenticHttp', () => {
     })
     expect(h.toolCalls).toBe(1)
   })
+
+  it('审批 ask 但缺 requestApproval：fail-closed 拒绝（安全侧兜底）', async () => {
+    // 用户选了「每次询问」但无审批通道时，应拒绝而非悄悄放行
+    const { runAgenticHttp } = await import('../executor')
+    h.script = [
+      (cb) => { cb.onDone({ finishReason: 'tool_calls', toolCalls: [{ id: 'e3', function: { name: 'exec', arguments: '{"command":"ls"}' } }] }) },
+      (cb) => { cb.onContent('done'); cb.onDone({ finishReason: 'stop' }) }
+    ]
+    const res = await runAgenticHttp({
+      userText: 'run', systemPrompt: 's', resolved: {} as any, thinking: {} as any, root: '/ws',
+      policyFor: () => 'ask' as const, isCancelled: () => false,
+      // 没有 requestApproval 回调（测试场景）
+      emit: { delta: () => {}, activity: () => {} }
+    })
+    expect(h.toolCalls).toBe(0)                                  // fail-closed：工具被拒绝，未执行
+    expect(res.content).toBe('done')
+  })
 })

@@ -213,7 +213,7 @@ function WorkflowEditor({ wf, onSave, onCancel }: {
   )
 }
 
-export function WorkflowsPanel({ onClose }: { onClose?: () => void }) {
+export function WorkflowsPanel({ onClose: _onClose }: { onClose?: () => void }) {
   const [workflows, setWorkflows] = useState<WorkflowDef[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)

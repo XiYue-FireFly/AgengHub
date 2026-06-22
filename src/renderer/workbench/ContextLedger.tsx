@@ -50,7 +50,7 @@ const PARTICIPATION_LABELS: Record<string, { zh: string; en: string; color: stri
 
 export function ContextLedger({ threadId, turnId, compact }: ContextLedgerProps) {
   const [blocks, setBlocks] = useState<ContextBlock[]>([])
-  const [loading, setLoading] = useState(false)
+  const [_loading, setLoading] = useState(false)
   const [expanded, setExpanded] = useState(!compact)
 
   useEffect(() => {

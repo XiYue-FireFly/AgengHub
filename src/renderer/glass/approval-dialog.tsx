@@ -20,7 +20,7 @@ export interface ApprovalItem {
   detail?: string
 }
 
-const AMBER = '#f5b45a'
+const AMBER = 'var(--color-warning)'
 
 export function ApprovalDialog({ items, onDecide }: {
   items: ApprovalItem[]
@@ -38,12 +38,12 @@ export function ApprovalDialog({ items, onDecide }: {
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: 'rgba(8,10,14,0.55)', backdropFilter: 'blur(2px)'
+      background: 'var(--overlay-bg)', backdropFilter: 'blur(2px)'
     }}>
       <div className="glass" style={{
         width: 'min(540px, 92vw)', padding: 20, display: 'flex', flexDirection: 'column', gap: 14,
         borderColor: 'color-mix(in srgb, ' + AMBER + ' 45%, transparent)',
-        boxShadow: '0 18px 50px -12px rgba(0,0,0,0.6)'
+        boxShadow: 'var(--shadow-sm)'
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <Icon d={IC.bolt} size={18} style={{ color: AMBER }} />

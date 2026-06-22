@@ -5,9 +5,8 @@
  * Falls back to zh-CN (default) when a key is missing in the current locale.
  */
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const zhCN: Record<string, any> = require('./zh-CN.json')
-const enUS: Record<string, any> = require('./en-US.json')
+import zhCN from './zh-CN.json'
+import enUS from './en-US.json'
 
 export type Locale = 'zh-CN' | 'en-US'
 

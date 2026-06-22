@@ -8,7 +8,7 @@
  */
 
 import { existsSync, readdirSync, statSync } from 'node:fs'
-import { join, extname, relative } from 'node:path'
+import { join, extname } from 'node:path'
 
 export interface ProjectNode {
   name: string

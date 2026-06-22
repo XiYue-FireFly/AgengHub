@@ -18,7 +18,7 @@ import { locateAgentCandidates } from "./hub/agent-locator"
 import { takeoverStatus, takeoverApply, takeoverRestore } from "./routing/takeover"
 import { syncRegistryFromBindings } from "./hub/agent-connections"
 import { routePreview } from "./hub/route-preview"
-import { MemoryCategory, MemoryLibrary } from "./memory-library"
+import { MemoryLibrary } from "./memory-library"
 import { getWorkspaceManager, WorkspaceNotFoundError, WorkspacePathInvalidError } from "./hub/workspace"
 // --- AgentHub skills + native agentic (Claude-B 新增) ---
 import { getSkillManager } from "./skills/manager"
@@ -30,45 +30,19 @@ import { ChatCompletionMessage } from "./providers/types"
 // --- /AgentHub skills + native agentic ---
 import { getWorkbenchRuntimeStore } from "./runtime/store"
 import { createExecutionTracker } from "./runtime/execution-tracker"
-import { listWorkflows, getWorkflow, upsertWorkflow, deleteWorkflow, searchWorkflows, seedDefaultWorkflows } from "./runtime/workflows"
 import { DispatchPreset, ModelSelection, SchedulePreview, ScheduleStep, WorkbenchAttachment, WorkbenchTurn } from "./runtime/types"
 import { fireflyFiveRoleTemplate, listSchedules, previewSchedule } from "./runtime/schedules"
-import { configureLocalAgent, detectLocalAgentStatuses, getCachedLocalAgentStatuses, refreshLocalAgentStatusCache } from "./runtime/local-agents"
+import { configureLocalAgent, getCachedLocalAgentStatuses, refreshLocalAgentStatusCache } from "./runtime/local-agents"
 import { readLocalModelConfig, scanLocalModels } from "./runtime/local-models"
 import { getRunTimeoutMs, setRunTimeoutMs, RUN_TIMEOUT_DEFAULTS } from "./runtime/run-preferences"
-import { explicitGuardVerdictFromText, guardShouldBlockExecutor, riskVerdictForText as sharedRiskVerdictForText } from "./runtime/guards"
-import { evaluateGuardVerdict, emitGuardVerdict, executorVerdictNeedsApproval, requestGuardApproval, resolveGuardApproval, cancelGuardApprovalsForTurn, clearAllGuardApprovals, type GuardDecision, type GuardResolution } from "./runtime/guard-approval-service"
+import { guardShouldBlockExecutor } from "./runtime/guards"
+import { evaluateGuardVerdict, emitGuardVerdict, executorVerdictNeedsApproval, requestGuardApproval, resolveGuardApproval, cancelGuardApprovalsForTurn } from "./runtime/guard-approval-service"
 import { clearWorkbenchGoal, getWorkbenchGoal, promptWithGoalContext, setWorkbenchGoal } from "./runtime/goals"
 import { buildAgentOptions } from "./runtime/agent-options"
 import { listWorkbenchCommands, runWorkbenchCommand } from "./runtime/commands"
 import { eccCommandStatus, updateEccCommands } from "./runtime/ecc-commands"
 import { getTerminalRuntime } from "./runtime/terminal"
-import {
-  gitBranches,
-  gitCheckoutBranch,
-  gitCommit,
-  gitCommitDetails,
-  gitCommitDiff,
-  gitCreateBranch,
-  gitDeleteBranch,
-  gitDiff,
-  gitDiffs,
-  gitFetch,
-  gitLog,
-  gitPull,
-  gitPush,
-  gitRenameBranch,
-  gitRevertAll,
-  gitRevertFile,
-  gitStageAll,
-  gitStageFile,
-  gitStatus,
-  gitSync,
-  gitUnstageFile,
-  gitUpdateBranch,
-  runGitQuery
-} from "./runtime/git"
-import { listMcpServers, listMcpServerTools, removeMcpServer, scanLocalMcpServers, setMcpEnabled, testMcpServer, upsertMcpServer } from "./runtime/mcp"
+import { runGitQuery } from "./runtime/git"
 import { createWorktree, listWorktrees, openWorktree, removeWorktree, syncWorktree } from "./runtime/worktrees"
 import { clearThreadTodos, deleteThreadTodo, listThreadTodos, setThreadTodos, syncTodosFromMarkdown, upsertThreadTodo } from "./runtime/todos"
 import { checkUpdates, openUpdateDownload, setUpdateChannel, updateStatus } from "./runtime/updates"
@@ -82,20 +56,17 @@ import {
 } from "./runtime/usage-stats"
 import { buildContextProjection } from "./runtime/context-ledger"
 import { listPrompts, getPrompt, upsertPrompt, deletePrompt, searchPrompts, getSlashCommands, incrementUseCount, seedDefaultPrompts } from "./runtime/prompt-library"
-import { listShortcuts, getShortcut, updateShortcut, resetShortcut, resetAllShortcuts, detectConflicts } from "./runtime/keyboard-shortcuts"
-import { runDiagnostics } from "./runtime/diagnostics"
-import { createBackup, listBackups, restoreBackup, deleteBackup } from "./runtime/backup"
+// keyboard-shortcuts imports moved to src/main/ipc/workflow-ipc.ts
+// diagnostics, backup imports moved to src/main/ipc/workflow-ipc.ts
 import { formatAsMarkdown, formatAsHtml, exportConversation } from "./runtime/conversation-export"
-import { listNotifications, getUnreadCount, pushNotification, markRead, markAllRead, deleteNotification, clearAllNotifications } from "./runtime/notifications"
-import { getOnboardingState, shouldShowOnboarding, completeStep, skipAllOnboarding, resetOnboarding, getNextStep } from "./runtime/onboarding"
+// notifications, onboarding imports moved to src/main/ipc/workflow-ipc.ts
 import { listWorkspaceFiles, searchWorkspaceFiles, readFilePreview } from "./runtime/workspace-files"
-import { checkGhCli, listPullRequests, listIssues, getCurrentBranchPr } from "./runtime/github-integration"
-import { listSlashCommands, getSlashCommand, saveSlashCommand, deleteSlashCommand, resolveSlashCommand, validateShortcut, checkConflict } from "./runtime/slash-commands"
+// github, slash-commands imports moved to src/main/ipc/workflow-ipc.ts
 import { importConversationFromFile, importConversationFromJson, branchFromCheckpoint, summarizeConversation } from "./runtime/conversation-import"
-import { buildMemoryGraph, suggestCleanup } from "./runtime/memory-graph"
+// memory-graph imports no longer needed in index.ts
 import { scanPlugins, validateManifest, getPluginContributions, listPluginRepositories, importPluginRepository } from "./runtime/plugin-manager"
 import { runReleaseChecks } from "./runtime/release-workspace"
-import { buildProjectMap, searchProjectFiles } from "./runtime/project-map"
+// project-map imports moved to src/main/ipc/workflow-ipc.ts
 import { buildTerminalPrompt, suggestCommandPrompt, explainOutputPrompt } from "./runtime/terminal-ai"
 import { getBudgetConfig, checkBudget, updateBudgetConfig } from "./runtime/budget-center"
 import { buildModelList, toggleModelFavorite, toggleModelHidden, getModelFavorites, getModelHidden } from "./runtime/models-center"
@@ -241,7 +212,7 @@ function attachmentContextBlock(attachments?: WorkbenchAttachment[]): string {
     if (att.path) lines.push(`Path: ${att.path}`)
     if (att.kind === "image") {
       lines.push("Use the local image path above as visual context. If the agent supports image input, inspect the image directly; otherwise reason from the filename/path and ask for clarification only if needed.")
-      if (att.dataUrl) lines.push(`Inline preview data URL: ${att.dataUrl.slice(0, 4096)}${att.dataUrl.length > 4096 ? "...[truncated]" : ""}`)
+      if (att.dataUrl) lines.push(`Inline preview data URL: ${att.dataUrl.slice(0, 8192)}${att.dataUrl.length > 8192 ? "...[truncated]" : ""}`)
     } else if (att.text) {
       lines.push("Content:")
       lines.push("```")
@@ -695,8 +666,19 @@ function finalScheduleRelease(outputs: Array<{ step: ScheduleStep; content: stri
 }
 
 function scheduleStepsWithRouteDecision(steps: ScheduleStep[], decision?: RouteDecision): ScheduleStep[] {
+  // Keep the decision object intentionally consumed here; router reasoning is
+  // recorded as route:decision metadata, not mixed into the visible answer.
   void decision
-  return steps
+  if (!decision || !decision.selectedAgentId) return steps
+  const selectedAgent = decision.selectedAgentId
+  // Route decision influences the lead/main step's agentId:
+  // if the router selected a specific agent, use it for the lead step
+  return steps.map(step => {
+    if (step.role === "lead" && step.agentId === "auto") {
+      return { ...step, agentId: selectedAgent }
+    }
+    return step
+  })
 }
 
 function streamMetaForScheduleStep(step: ScheduleStep, gatedCandidateIds = new Set<string>(), forceRunOnly = false): Record<string, any> {
@@ -1665,66 +1647,23 @@ ipcMain.handle("prompts:seedDefaults", () => seedDefaultPrompts())
 // Keyboard shortcuts, diagnostics, backup, notifications, onboarding,
 // slashCommands, projectMap, github — all moved to src/main/ipc/workflow-ipc.ts
 
-// --- Diagnostics ---
-ipcMain.handle("diagnostics:run", async () => {
-  return runDiagnostics({
-    storeGet: (key: string) => store.get(key),
-    hasProviders: () => providerMgr.getConfig().providers.length > 0,
-    hasAgents: () => registry.getAll().length > 0,
-    hasMcpServers: () => listMcpServers().length > 0,
-    hasMemoryEntries: () => memory().listEntries().length > 0,
-    hasWorkspace: () => !!getWorkspaceManager()?.getActive(),
-    appVersion: resolveAppVersionFromMain()
-  })
-})
-
-// --- Backup ---
-ipcMain.handle("backup:create", () => createBackup(() => store.getAll(), app.getPath("userData"), resolveAppVersionFromMain()))
-ipcMain.handle("backup:list", () => listBackups(app.getPath("userData")))
-ipcMain.handle("backup:restore", (_e, filename: string) => restoreBackup(app.getPath("userData"), filename, (k: string, v: any) => store.set(k, v)))
-ipcMain.handle("backup:delete", (_e, filename: string) => deleteBackup(app.getPath("userData"), filename))
+// Diagnostics, Backup — moved to src/main/ipc/workflow-ipc.ts
 
 // --- Conversation Export ---
 ipcMain.handle("conversation:exportMarkdown", (_e, data: any) => formatAsMarkdown(data))
 ipcMain.handle("conversation:exportHtml", (_e, data: any) => formatAsHtml(data))
 ipcMain.handle("conversation:exportFile", (_e, data: any, format: string, path: string) => exportConversation(data, format as any, path))
 
-// --- Notifications ---
-ipcMain.handle("notifications:list", (_e, unreadOnly?: boolean) => listNotifications(unreadOnly))
-ipcMain.handle("notifications:unreadCount", () => getUnreadCount())
-ipcMain.handle("notifications:push", (_e, input: any) => pushNotification(input))
-ipcMain.handle("notifications:markRead", (_e, id: string) => markRead(id))
-ipcMain.handle("notifications:markAllRead", () => markAllRead())
-ipcMain.handle("notifications:delete", (_e, id: string) => deleteNotification(id))
-ipcMain.handle("notifications:clearAll", () => clearAllNotifications())
+// Notifications — moved to src/main/ipc/workflow-ipc.ts
 
-// --- Onboarding ---
-ipcMain.handle("onboarding:getState", () => getOnboardingState())
-ipcMain.handle("onboarding:shouldShow", () => shouldShowOnboarding())
-ipcMain.handle("onboarding:completeStep", (_e, step: string, skipped?: boolean) => completeStep(step as any, skipped))
-ipcMain.handle("onboarding:skipAll", () => skipAllOnboarding())
-ipcMain.handle("onboarding:reset", () => resetOnboarding())
-ipcMain.handle("onboarding:nextStep", () => getNextStep())
+// Onboarding — moved to src/main/ipc/workflow-ipc.ts
 
 // --- Workspace Files ---
 ipcMain.handle("workspaceFiles:list", (_e, rootPath: string, max?: number) => listWorkspaceFiles(rootPath, max))
 ipcMain.handle("workspaceFiles:search", (_e, rootPath: string, query: string, max?: number) => searchWorkspaceFiles(rootPath, query, max))
 ipcMain.handle("workspaceFiles:preview", (_e, filePath: string, maxLines?: number) => readFilePreview(filePath, maxLines))
 
-// --- GitHub Integration ---
-ipcMain.handle("github:checkCli", () => checkGhCli())
-ipcMain.handle("github:listPrs", async (_e, state?: string, limit?: number) => listPullRequests(state as any, limit))
-ipcMain.handle("github:listIssues", async (_e, state?: string, limit?: number) => listIssues(state as any, limit))
-ipcMain.handle("github:currentBranchPr", () => getCurrentBranchPr())
-
-// --- Slash Commands ---
-ipcMain.handle("slashCommands:list", () => listSlashCommands())
-ipcMain.handle("slashCommands:get", (_e, shortcut: string) => getSlashCommand(shortcut))
-ipcMain.handle("slashCommands:save", (_e, input: any) => saveSlashCommand(input))
-ipcMain.handle("slashCommands:delete", (_e, shortcut: string) => deleteSlashCommand(shortcut))
-ipcMain.handle("slashCommands:resolve", (_e, shortcut: string, params: any) => resolveSlashCommand(shortcut, params))
-ipcMain.handle("slashCommands:validate", (_e, shortcut: string) => validateShortcut(shortcut))
-ipcMain.handle("slashCommands:conflict", (_e, shortcut: string) => checkConflict(shortcut))
+// GitHub, Slash Commands — moved to src/main/ipc/workflow-ipc.ts
 
 // --- Conversation Import ---
 ipcMain.handle("conversation:importFile", (_e, filePath: string) => importConversationFromFile(filePath))
@@ -1742,20 +1681,36 @@ ipcMain.handle("plugins:repositories", () => listPluginRepositories())
 ipcMain.handle("plugins:importRepository", (_e, input: any) => importPluginRepository(input))
 
 // --- Release Workspace ---
-// --- Project Map ---
-ipcMain.handle("projectMap:build", (_event, rootPath: string, maxDepth?: number) => buildProjectMap(rootPath, maxDepth))
-ipcMain.handle("projectMap:search", (_event, map: any, query: string) => searchProjectFiles(map, query))
+// Project Map — moved to src/main/ipc/workflow-ipc.ts
 
 ipcMain.handle("release:checks", async () => {
-  // R7 fix: no more placeholder — use null for "not run" status
+  // R7 fix: run real checks instead of hardcoded placeholders
+  const appVersion = resolveAppVersionFromMain()
+  let gitClean = false
+  let hasChangelog = false
+  let hasGitTag = false
+  try {
+    const { execSync } = require("child_process")
+    const cwd = join(__dirname, "..", "..")
+    // Check if working tree is clean
+    const status = execSync("git status --porcelain", { cwd, encoding: "utf-8", timeout: 10000 }).trim()
+    gitClean = status.length === 0
+    // Check for CHANGELOG.md
+    hasChangelog = existsSync(join(cwd, "CHANGELOG.md"))
+    // Check for version tag
+    try {
+      const tagOutput = execSync(`git tag -l v${appVersion}`, { cwd, encoding: "utf-8", timeout: 5000 }).trim()
+      hasGitTag = tagOutput.length > 0
+    } catch { hasGitTag = false }
+  } catch { /* git not available or not a git repo */ }
   return runReleaseChecks({
-    appVersion: resolveAppVersionFromMain(),
-    typecheckPass: null as any, // null = not run yet
+    appVersion,
+    typecheckPass: null as any, // null = not run yet — UI shows "Not run"
     testPass: null as any,
     buildPass: null as any,
-    hasChangelog: false,
-    hasGitTag: false,
-    gitClean: true
+    hasChangelog,
+    hasGitTag,
+    gitClean
   })
 })
 

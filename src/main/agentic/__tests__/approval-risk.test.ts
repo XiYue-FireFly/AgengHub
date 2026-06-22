@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   assessApprovalRisk,
   approvalReason,
-  type ApprovalRisk,
   type PersistedPendingApproval
 } from '../approval'
 

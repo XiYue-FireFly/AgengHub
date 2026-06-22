@@ -8,7 +8,7 @@
  * Pure functions — no side effects, no store dependency.
  */
 
-import type { ModelDefinition, ProviderDefinition, ThinkingLevel } from '../providers/types'
+import type { ProviderDefinition, ThinkingLevel } from '../providers/types'
 
 export interface ModelCapability {
   providerId: string

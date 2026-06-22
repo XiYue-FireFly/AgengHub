@@ -69,10 +69,6 @@ function pathCandidate(name: string): AgentBinaryCandidate | null {
   return p ? { source: 'terminal', label: '终端版 (PATH)', path: p, kind: 'path-detected' } : null
 }
 
-function exeName(name: string): string {
-  return process.platform === 'win32' ? name + '.exe' : name
-}
-
 function manualCandidates(cands: AgentBinaryCandidate[], note: string): AgentBinaryCandidate[] {
   return cands.map(c => ({ ...c, verification: 'manual' as const, note }))
 }

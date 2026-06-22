@@ -211,7 +211,7 @@ export function SkillsTab() {
   )
 }
 
-function LocalSkillImport({ skills, localSkills, onChanged }: {
+function _LocalSkillImport({ skills, localSkills, onChanged }: {
   skills: SkillDef[]
   localSkills: LocalSkillCandidate[]
   onChanged: () => void
@@ -461,7 +461,7 @@ function ApprovalPolicyPanel({ caps }: { caps: CapState[] }) {
 }
 
 /* ---------- 技能目录 + 添加 ---------- */
-function LegacySkillCatalog({ skills, onChanged, onRemove, onEdit, onInstallAll, installs, agentIds }: {
+function _LegacySkillCatalog({ skills, onChanged, onRemove, onEdit, onInstallAll, installs, agentIds }: {
   skills: SkillDef[]; onChanged: () => void; onRemove: (id: string, name: string) => void
   onEdit: (id: string, patch: { name: string; description: string; instructions: string; tags: string[] }) => void
   onInstallAll: (skillId: string, on: boolean) => void; installs: Installs; agentIds: string[]

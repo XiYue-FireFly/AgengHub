@@ -8,7 +8,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react'
-import { Icon, IC } from '../glass/ui'
+// IC reserved for future icon usage
 import { AGENT_META } from '../glass/meta'
 import { tr } from '../glass/i18n'
 

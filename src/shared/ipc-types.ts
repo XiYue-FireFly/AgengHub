@@ -324,6 +324,10 @@ export interface ProviderDef {
   capabilities: any
   defaultThinking: any
   health?: any
+  createdAt?: number
+  sortOrder?: number
+  modelMapping?: { main?: string; haiku?: string; sonnet?: string; opus?: string }
+  modelFetch?: any
 }
 
 export interface ModelDef {

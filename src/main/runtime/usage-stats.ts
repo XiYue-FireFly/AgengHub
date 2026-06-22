@@ -24,11 +24,15 @@ const CHARS_PER_TOKEN = 4
 const PRICING_KEY = "usage.pricing.v1"
 const LEDGER_KEY = "usage.ledger.v1"
 const PRICING_SEEDED_KEY = "usage.pricing.seeded.v1"
-// Ledger 保留上限：超过则裁剪最旧记录（安全阀，防止 electron-store 无限膨胀）。
-// 不再按 TTL 自动裁剪——usage 历史不应被动丢失，用户可手动清理。
-const LEDGER_MAX_RECORDS = 10_000
 
 // --- Persistent usage ledger (survives runtime event trimming) ---
+// P1-2: Monthly sharding support for long-term scalability
+
+function _ledgerKeyForMonth(date: Date): string {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  return `usage.ledger.v1.${y}-${m}`
+}
 
 function loadLedger(): UsageRequestRecord[] {
   const raw: any = store.get(LEDGER_KEY)
@@ -39,47 +43,71 @@ function saveLedger(records: UsageRequestRecord[]): void {
   store.set(LEDGER_KEY, records)
 }
 
+/** Load ledger for a specific month (YYYY-MM format). */
+export function loadLedgerForMonth(yearMonth: string): UsageRequestRecord[] {
+  const key = `usage.ledger.v1.${yearMonth}`
+  const raw: any = store.get(key)
+  return Array.isArray(raw) ? raw : []
+}
+
+/** Save ledger for a specific month. */
+function _saveLedgerForMonth(yearMonth: string, records: UsageRequestRecord[]): void {
+  const key = `usage.ledger.v1.${yearMonth}`
+  store.set(key, records)
+}
+
+/** Get the year-month string for a timestamp. */
+function yearMonthForTimestamp(ts: number): string {
+  const d = new Date(ts)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+
+/** Get all available year-month keys from the store. */
+export function getAvailableLedgerMonths(): string[] {
+  const months = new Set<string>()
+  // Check main ledger
+  for (const record of loadLedger()) {
+    if (record.createdAt) months.add(yearMonthForTimestamp(record.createdAt))
+  }
+  return [...months].sort().reverse()
+}
+
 /**
  * Merge new records into the ledger and return the full merged list.
- * Reads, deduplicates, saves, and returns in a single synchronous operation
- * to avoid stale reads when called from buildUsageRecords.
- *
- * 同时执行 TTL（30 天）与上限（10000 条）剪枝，避免 electron-store 无限膨胀。
- * 参照 cc-switch usage_rollup.rs:57-179 的剪枝策略。
+ * Reads, deduplicates, saves, and returns in a single synchronous operation.
+ * The persistent ledger is not silently trimmed; if it grows too large, add
+ * explicit export/cleanup or monthly shards instead of deleting history.
  */
 function appendLedgerEntries(newRecords: UsageRequestRecord[]): UsageRequestRecord[] {
   const existing = loadLedger()
-  if (!newRecords.length) return pruneLedger(existing, false)
-  const existingIds = new Set(existing.map(r => r.eventId))
-  const toAdd = newRecords.filter(r => !existingIds.has(r.eventId))
-  if (!toAdd.length) return pruneLedger(existing, false)
-  const merged = [...toAdd, ...existing].sort((a, b) => b.createdAt - a.createdAt)
-  // 写盘：即使无剪枝也要保存，因为新增了 toAdd
-  const pruned = pruneLedgerSilent(merged)
-  saveLedger(pruned)
-  return pruned
-}
-
-/**
- * Ledger 剪枝：仅按上限（10000 条）裁剪最旧记录，不再按 TTL 自动删除。
- * 历史 usage 不应被动丢失；用户可通过 UI 手动清理。
- * 不写盘，仅返回剪枝后的数组（写盘由调用方决定）。
- */
-function pruneLedger(records: UsageRequestRecord[], persistIfChanged: boolean): UsageRequestRecord[] {
-  if (records.length === 0) return records
-  const pruned = pruneLedgerSilent(records)
-  if (pruned.length === records.length) return records
-  if (persistIfChanged) saveLedger(pruned)
-  return pruned
-}
-
-function pruneLedgerSilent(records: UsageRequestRecord[]): UsageRequestRecord[] {
-  if (records.length === 0) return records
-  // Only apply max-records limit as safety valve. No TTL-based auto-deletion.
-  if (records.length > LEDGER_MAX_RECORDS) {
-    return records.slice(0, LEDGER_MAX_RECORDS)
+  if (!newRecords.length) return existing
+  const byEventId = new Map(existing.map(record => [record.eventId, record]))
+  let changed = false
+  for (const record of newRecords) {
+    const current = byEventId.get(record.eventId)
+    if (!current || shouldReplaceLedgerRecord(current, record)) {
+      byEventId.set(record.eventId, record)
+      changed = true
+    }
   }
-  return records
+  if (!changed) return existing
+  const merged = [...byEventId.values()].sort((a, b) => b.createdAt - a.createdAt)
+  saveLedger(merged)
+  return merged
+}
+
+function shouldReplaceLedgerRecord(current: UsageRequestRecord, next: UsageRequestRecord): boolean {
+  const currentRank = usageSourceRank(current.source)
+  const nextRank = usageSourceRank(next.source)
+  if (nextRank !== currentRank) return nextRank > currentRank
+  if (next.status === "completed" && current.status !== "completed") return true
+  return false
+}
+
+function usageSourceRank(source: UsageSource): number {
+  if (source === "actual") return 3
+  if (source === "estimated") return 2
+  return 1
 }
 
 interface UsageBucket {
@@ -276,7 +304,7 @@ export function isModelUsageEvent(event: RuntimeEvent): boolean {
  */
 function buildUsageRecords(): UsageRequestRecord[] {
   const ledger = loadLedger()
-  const ledgerEventIds = new Set(ledger.map(r => r.eventId))
+  const ledgerByEventId = new Map(ledger.map(record => [record.eventId, record]))
 
   // Build from runtime events (same logic as before)
   const runtime = getWorkbenchRuntimeStore()
@@ -293,7 +321,7 @@ function buildUsageRecords(): UsageRequestRecord[] {
   const newRecords: UsageRequestRecord[] = []
 
   for (const event of doneEvents) {
-    if (ledgerEventIds.has(event.id)) continue // already in ledger
+    if (ledgerByEventId.get(event.id)?.source === "actual") continue
     const usage = normalizeUsage(event.payload?.usage)
     // 闸门：过滤全 0 usage，避免上游合成空事件污染统计（参照 cc-switch parser.rs:46-51）
     if (!hasBillableTokens(usage)) continue
@@ -303,7 +331,8 @@ function buildUsageRecords(): UsageRequestRecord[] {
   }
 
   for (const event of doneEvents) {
-    if (ledgerEventIds.has(event.id) || actualEventIds.has(event.id)) continue
+    const existingRecord = ledgerByEventId.get(event.id)
+    if ((existingRecord && existingRecord.source !== "none") || actualEventIds.has(event.id)) continue
     const turn = turnById.get(event.turnId)
     if (!turn) continue
     const _modelId = modelIdForEvent(event)
@@ -314,7 +343,7 @@ function buildUsageRecords(): UsageRequestRecord[] {
   }
 
   for (const event of errorEvents) {
-    if (ledgerEventIds.has(event.id)) continue
+    if (ledgerByEventId.has(event.id)) continue
     newRecords.push(emptyRecordFromEvent(event, turnById.get(event.turnId)))
   }
 
@@ -322,7 +351,7 @@ function buildUsageRecords(): UsageRequestRecord[] {
     if (turn.status !== "cancelled" || errorTurnIds.has(turn.id)) continue
     const threadEvents = runtime.eventsSince(turn.threadId, 0)
     const event = [...threadEvents].reverse().find(item => item.turnId === turn.id && item.kind === "turn:status" && item.payload?.status === "cancelled")
-    if (event && !ledgerEventIds.has(event.id)) newRecords.push(emptyRecordFromTurnStatus(event, turn))
+    if (event && !ledgerByEventId.has(event.id)) newRecords.push(emptyRecordFromTurnStatus(event, turn))
   }
 
   // Write-through: persist new records to ledger, return merged
@@ -366,6 +395,7 @@ function recordFromEvent(event: RuntimeEvent, usage: UsageTokenBreakdown, source
     estimatedTokens: source === "estimated" ? totalTokens : 0,
     hasEstimated: source === "estimated",
     reasoningTokens: usage.reasoningTokens,
+    cacheHitRate: computeCacheHitRate(usage),
     costUsd: priced.costUsd,
     hasUnpriced: priced.hasUnpriced,
     cacheSavingsUsd: priced.cacheSavingsUsd,
@@ -933,6 +963,20 @@ function providerIdForEvent(event: RuntimeEvent): string {
 
 function modelIdForEvent(event: RuntimeEvent, usageModelId?: string): string {
   return String(usageModelId || event.payload?.modelId || event.payload?.requestModelId || "unknown")
+}
+
+/** Compute cache hit rate from usage breakdown. Returns null when unknown. */
+function computeCacheHitRate(usage: UsageTokenBreakdown): number | null {
+  // If explicit cacheHitTokens/cacheMissTokens are available, use them
+  if (usage.cacheHitTokens !== undefined && usage.cacheMissTokens !== undefined) {
+    const total = usage.cacheHitTokens + usage.cacheMissTokens
+    return total === 0 ? null : usage.cacheHitTokens / total
+  }
+  // If cacheReadTokens and inputTokens are available, compute approximate rate
+  if (usage.cacheReadTokens > 0 && usage.inputTokens > 0) {
+    return Math.min(1, usage.cacheReadTokens / usage.inputTokens)
+  }
+  return null
 }
 
 function heatLevel(tokens: number, turns: number, maxTokens: number): UsageHeatmapDay["level"] {

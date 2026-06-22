@@ -6,7 +6,7 @@
  */
 
 import { existsSync, readdirSync, statSync, readFileSync } from 'node:fs'
-import { join, relative, extname, basename } from 'node:path'
+import { join, extname } from 'node:path'
 
 export interface FileEntry {
   path: string

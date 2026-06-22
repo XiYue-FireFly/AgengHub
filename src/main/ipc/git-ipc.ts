@@ -28,8 +28,7 @@ import {
   gitStatus,
   gitSync,
   gitUnstageFile,
-  gitUpdateBranch,
-  runGitQuery
+  gitUpdateBranch
 } from '../runtime/git'
 
 export function registerGitIpc(): void {

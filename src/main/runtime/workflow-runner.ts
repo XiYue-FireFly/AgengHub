@@ -7,7 +7,7 @@
  * Phase 3.1: Agent orchestration enhancement.
  */
 
-import { EventEmitter } from 'events'
+// EventEmitter reserved for future workflow event emission
 
 export interface WorkflowStepResult {
   stepId: string

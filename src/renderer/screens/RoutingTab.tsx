@@ -8,7 +8,8 @@
  */
 
 import React, { useState, useEffect } from 'react'
-import { Icon, IC } from '../glass/ui'
+// IC reserved for future icon usage
+import { AgentMark } from '../glass/ui'
 import { AGENT_META, BindingDef, ProviderDef } from '../glass/meta'
 import { tr } from '../glass/i18n'
 
@@ -82,7 +83,7 @@ function settingsBindingRows(bindings: BindingDef[]): BindingDef[] {
   return result
 }
 
-function BindingRow({ binding, providers, configuredProviders, candidates, onChange }: {
+function BindingRow({ binding, providers: _providers, configuredProviders, candidates: _candidates, onChange }: {
   binding: BindingDef
   providers: ProviderDef[]
   configuredProviders: ProviderDef[]
@@ -93,9 +94,17 @@ function BindingRow({ binding, providers, configuredProviders, candidates, onCha
   return (
     <div className="glass wb-binding-row">
       <div className="wb-binding-head">
-        <span>{meta?.name || binding.agentId}</span>
-        {binding.protocol === 'acp' && <span className="ah-chip">ACP</span>}
-        {binding.protocol === 'stdio-plain' && <span className="ah-chip">CLI</span>}
+        <div className="wb-binding-agent-head">
+          {meta ? <AgentMark id={binding.agentId} size={34} radius={10} /> : <span className="wb-agent-fallback">{binding.agentId.slice(0, 1).toUpperCase()}</span>}
+          <div>
+            <strong>{meta?.name || binding.agentId}</strong>
+            <span>{meta?.desc || binding.agentId}</span>
+          </div>
+        </div>
+        <div className="wb-binding-badges">
+          {binding.protocol === 'acp' && <span className="ah-chip">ACP</span>}
+          {binding.protocol === 'stdio-plain' && <span className="ah-chip">CLI</span>}
+        </div>
       </div>
       {binding.protocol === 'stdio-plain' && (
         <label className="wb-field">

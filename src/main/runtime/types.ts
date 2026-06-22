@@ -265,6 +265,13 @@ export interface UsageTokenBreakdown {
   cacheReadInputIncluded?: boolean
   reasoningTokens?: number
   modelId?: string
+  /** Kun-aligned: explicit cache hit/miss counts (optional — not all providers report these) */
+  cacheHitTokens?: number
+  cacheMissTokens?: number
+  /** Kun-aligned: cache hit rate as 0-1 ratio (null when unknown) */
+  cacheHitRate?: number | null
+  /** Kun-aligned: tokens saved by context compression / token economy */
+  tokenEconomySavingsTokens?: number
 }
 
 export interface UsageHeatmapDay {
@@ -279,6 +286,7 @@ export interface UsageHeatmapDay {
   cacheReadTokens: number
   cacheCreationTokens: number
   cacheSavingsTokens: number
+  cacheSavingsUsd: number | null
   costUsd: number | null
   hasUnpriced: boolean
   level: 0 | 1 | 2 | 3 | 4
@@ -300,6 +308,7 @@ export interface UsageModelRow {
   cacheReadTokens: number
   cacheCreationTokens: number
   cacheSavingsTokens: number
+  cacheSavingsUsd: number | null
   costUsd: number | null
   hasUnpriced: boolean
 }
@@ -317,6 +326,7 @@ export interface UsageProviderRow {
   cacheReadTokens: number
   cacheCreationTokens: number
   cacheSavingsTokens: number
+  cacheSavingsUsd: number | null
   costUsd: number | null
   hasUnpriced: boolean
 }
@@ -346,8 +356,11 @@ export interface UsageRequestRecord {
   estimatedTokens: number
   hasEstimated: boolean
   reasoningTokens?: number
+  /** Cache hit rate as 0-1 ratio (null when unknown) */
+  cacheHitRate?: number | null
   costUsd: number | null
   hasUnpriced: boolean
+  cacheSavingsUsd: number | null
   promptPreview?: string
   responsePreview?: string
   errorMessage?: string
@@ -402,6 +415,7 @@ export interface UsageStats {
   cacheReadTokens: number
   cacheCreationTokens: number
   cacheSavingsTokens: number
+  cacheSavingsUsd: number | null
   billableInputTokens: number
   activeDays: number
   currentStreak: number

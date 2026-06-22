@@ -28,7 +28,7 @@ interface WorkflowIpcDeps {
 }
 
 export function registerWorkflowIpc(deps: WorkflowIpcDeps): void {
-  const { resolveAppVersionFromMain, getWorkspaceManager } = deps
+  const { resolveAppVersionFromMain } = deps
 
   // Workflows
   ipcMain.handle("workflows:list", (_e, category?: string) => listWorkflows(category as any))

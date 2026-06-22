@@ -91,19 +91,39 @@ export function validateEditResult(
 
 /**
  * Apply an edit to full file content by replacing the selected range.
+ *
+ * Returns the new content plus the resulting line span of the replacement,
+ * so callers that need to re-select or navigate after the edit can locate
+ * the new range without recomputing it.
+ *
+ * Line-ending safety: detects the dominant line ending (CRLF on Windows,
+ * LF elsewhere) from the original content and re-applies it to the
+ * replacement, so editing a CRLF file does not produce mixed line endings.
  */
 export function applyInlineEdit(
   fullContent: string,
   startLine: number,
   endLine: number,
   replacement: string
-): { ok: boolean; content?: string; error?: string } {
+): { ok: boolean; content?: string; newStartLine?: number; newEndLine?: number; error?: string } {
   const lines = fullContent.split('\n')
   if (startLine < 1 || endLine > lines.length || startLine > endLine) {
     return { ok: false, error: `Invalid range: ${startLine}-${endLine} (file has ${lines.length} lines)` }
   }
-  const before = lines.slice(0, startLine - 1)
-  const after = lines.slice(endLine)
-  const newContent = [...before, replacement, ...after].join('\n')
-  return { ok: true, content: newContent }
+  // Detect dominant line ending: if any original line ends with \r, treat as CRLF.
+  const isCrlf = lines.some(l => l.endsWith('\r'))
+  const eol = isCrlf ? '\r\n' : '\n'
+  // Normalize the replacement to the detected EOL so we never produce mixed endings.
+  const normalizedReplacement = replacement === '' ? '' : replacement.replace(/\r?\n/g, eol)
+  // Trim trailing \r from original lines so joining with the chosen eol is clean.
+  const cleanLines = isCrlf ? lines.map(l => (l.endsWith('\r') ? l.slice(0, -1) : l)) : lines
+  const before = cleanLines.slice(0, startLine - 1)
+  const after = cleanLines.slice(endLine)
+  const newContent = [...before, normalizedReplacement, ...after].join(eol)
+  // replacement may itself span multiple lines; expose the resulting range
+  // so callers can update selections/cursors after the edit.
+  const replacementLineCount = normalizedReplacement === '' ? 0 : normalizedReplacement.split(eol).length
+  const newStartLine = startLine
+  const newEndLine = replacementLineCount === 0 ? startLine - 1 : startLine + replacementLineCount - 1
+  return { ok: true, content: newContent, newStartLine, newEndLine }
 }

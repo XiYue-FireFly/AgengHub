@@ -222,8 +222,8 @@ export function GitWorkbenchPanel({ workspaceId, onClose }: GitWorkbenchPanelPro
         <div className="wb-git-workbench-actions">
           <button onClick={() => runAction('fetch', () => window.electronAPI.git.fetch(workspaceId))} disabled={!status?.isRepo || !!actionLoading}>{tr('Fetch', 'Fetch')}</button>
           <button onClick={() => runAction('pull', () => window.electronAPI.git.pull(workspaceId))} disabled={!status?.isRepo || !!actionLoading}>{tr('Pull', 'Pull')}</button>
-          <button onClick={() => runAction('push', () => window.electronAPI.git.push(workspaceId))} disabled={!status?.isRepo || !!actionLoading}>{tr('Push', 'Push')}</button>
-          <button onClick={() => runAction('sync', () => window.electronAPI.git.sync(workspaceId))} disabled={!status?.isRepo || !!actionLoading}>{tr('同步', 'Sync')}</button>
+          <button onClick={async () => { const ok = await styledConfirm({ message: tr('确认推送到远程仓库？', 'Push to remote?') }); if (ok) void runAction('push', () => window.electronAPI.git.push(workspaceId)) }} disabled={!status?.isRepo || !!actionLoading}>{tr('Push', 'Push')}</button>
+          <button onClick={async () => { const ok = await styledConfirm({ message: tr('确认同步（pull + push）到远程仓库？', 'Sync (pull + push) to remote?') }); if (ok) void runAction('sync', () => window.electronAPI.git.sync(workspaceId)) }} disabled={!status?.isRepo || !!actionLoading}>{tr('同步', 'Sync')}</button>
           <button onClick={refresh} disabled={loading}><Icon d={IC.refresh} size={14} /></button>
           <button onClick={onClose}><Icon d={IC.x} size={14} /></button>
         </div>

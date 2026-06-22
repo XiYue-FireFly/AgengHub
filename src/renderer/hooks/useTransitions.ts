@@ -7,7 +7,7 @@
  * Phase 4.2: Animation system.
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 
 export interface TransitionConfig {
   /** CSS transition property */

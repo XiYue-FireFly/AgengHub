@@ -532,7 +532,7 @@ export async function listMcpServerTools(id: string, workspaceId?: string | null
     })
     let stdout = ''
     let stderr = ''
-    let initialized = false
+    let _initialized = false
     let requestId = 1
     const pending = new Map<number, (result: any) => void>()
     let settled = false
@@ -592,7 +592,7 @@ export async function listMcpServerTools(id: string, workspaceId?: string | null
         finish({ ok: false, tools: [], error: `Initialize failed: ${JSON.stringify(initResult.error)}` })
         return
       }
-      initialized = true
+      _initialized = true
       // Step 2: Send initialized notification
       child.stdin?.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n')
       // Step 3: List tools

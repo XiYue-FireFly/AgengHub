@@ -13,7 +13,9 @@ import {
   ProvidersConfig,
   ProviderDefinition,
   AgentRouteBinding,
-  ThinkingConfig
+  ThinkingConfig,
+  ProviderKind,
+  ModelDefinition
 } from './types'
 import { BUILTIN_PROVIDERS, THINKING_BUDGET_TOKENS } from './presets'
 import { createLogger } from '../logger'
@@ -25,7 +27,12 @@ const CONFIG_VERSION = 1
 
 function defaultConfig(): ProvidersConfig {
   return {
-    providers: BUILTIN_PROVIDERS.map(p => ({ ...p, models: p.models.map(m => ({ ...m })) })),
+    providers: BUILTIN_PROVIDERS.map((p, index) => ({
+      ...p,
+      createdAt: p.createdAt ?? index,
+      sortOrder: p.sortOrder ?? index,
+      models: p.models.map(m => ({ ...m }))
+    })),
     routing: {
       bindings: defaultBindings(),
       fallbackChain: [],
@@ -45,6 +52,25 @@ const DEFAULT_CODEX_PROVIDER_ID = 'openai'
 const DEFAULT_CODEX_MODEL_ID = 'gpt-4o'
 const DEFAULT_CLAUDE_PROVIDER_ID = 'anthropic'
 const DEFAULT_CLAUDE_MODEL_ID = 'claude-sonnet-4-5'
+const LOCAL_CLAUDE_CONFIG_PROVIDER_ID = '__claude_local_config__'
+const DEFAULT_CONTEXT_WINDOW = 258_000
+const COMPAT_SUFFIXES = [
+  "/api/claudecode",
+  "/api/anthropic",
+  "/apps/anthropic",
+  "/api/coding",
+  "/claudecode",
+  "/anthropic",
+  "/step_plan",
+  "/coding",
+  "/claude"
+] as const
+
+export type FetchModelsOverride = {
+  baseUrl?: string
+  apiKey?: string
+  kind?: ProviderKind
+}
 
 /**
  * 默认 Agent 路由，绑定到对应预设的官方模型。
@@ -111,6 +137,183 @@ export function defaultBindings(): AgentRouteBinding[] {
   ]
 }
 
+export function claudeCurrentProviderId(config: ProvidersConfig): string | null {
+  return config.routing.bindings.find(binding => binding.agentId === 'claude')?.providerId ?? null
+}
+
+export function sortProvidersForClaude(providers: ProviderDefinition[], currentProviderId: string | null): ProviderDefinition[] {
+  const withIndex = providers.map((provider, index) => ({ provider, index }))
+  return withIndex
+    .sort((a, b) => {
+      const aLocal = isClaudeLocalConfigProvider(a.provider)
+      const bLocal = isClaudeLocalConfigProvider(b.provider)
+      if (aLocal !== bLocal) return aLocal ? -1 : 1
+
+      const aCurrent = !!currentProviderId && a.provider.id === currentProviderId
+      const bCurrent = !!currentProviderId && b.provider.id === currentProviderId
+      if (aCurrent !== bCurrent) return aCurrent ? -1 : 1
+
+      return providerSortKey(a.provider, a.index) - providerSortKey(b.provider, b.index)
+        || String(a.provider.createdAt ?? '').localeCompare(String(b.provider.createdAt ?? ''))
+        || a.provider.id.localeCompare(b.provider.id)
+    })
+    .map(entry => entry.provider)
+}
+
+function isClaudeLocalConfigProvider(provider: ProviderDefinition): boolean {
+  return provider.id === LOCAL_CLAUDE_CONFIG_PROVIDER_ID
+}
+
+function providerSortKey(provider: ProviderDefinition, fallbackIndex: number): number {
+  if (typeof provider.sortOrder === 'number' && Number.isFinite(provider.sortOrder)) return provider.sortOrder
+  if (typeof provider.createdAt === 'number' && Number.isFinite(provider.createdAt)) return provider.createdAt
+  return fallbackIndex
+}
+
+export function buildClaudeProviderReorderIds(
+  regularProviders: Array<{ id: string; isActive?: boolean }>,
+  sourceIndex: number,
+  destinationIndex: number
+): string[] {
+  const activeProvider = regularProviders.find(provider => provider.isActive) ?? null
+  const others = regularProviders.filter(provider => !provider.isActive)
+  const nextOthers = Array.from(others)
+  const [moved] = nextOthers.splice(sourceIndex, 1)
+  if (!moved) return regularProviders.map(provider => provider.id)
+  const safeDestinationIndex = Math.min(Math.max(destinationIndex, 0), nextOthers.length)
+  nextOthers.splice(safeDestinationIndex, 0, moved)
+  if (!activeProvider) return nextOthers.map(provider => provider.id)
+  const homeIndex = regularProviders.findIndex(provider => provider.id === activeProvider.id)
+  const safeHomeIndex = Math.min(Math.max(homeIndex, 0), nextOthers.length)
+  const nextFull = Array.from(nextOthers)
+  nextFull.splice(safeHomeIndex, 0, activeProvider)
+  return nextFull.map(provider => provider.id)
+}
+
+export function deriveModelListCandidates(baseUrl: string, kind: ProviderKind, apiKey = ''): string[] {
+  const base = baseUrl.trim().replace(/\/+$/, '')
+  if (!base) return []
+  const candidates: string[] = []
+  const push = (candidate: string) => {
+    const trimmed = candidate.trim()
+    if (trimmed && !candidates.includes(trimmed)) candidates.push(trimmed)
+  }
+
+  if (kind === 'gemini') {
+    push(`${base}/models?key=${encodeURIComponent(apiKey)}&pageSize=200`)
+    return candidates
+  }
+
+  if (kind === 'anthropic') {
+    if (base.endsWith('/v1')) {
+      push(`${base}/models`)
+      push(`${base}/v1/models`)
+    } else {
+      push(`${base}/v1/models`)
+    }
+    push(`${base}/models?limit=200`)
+  } else {
+    push(`${base}/models`)
+    push(`${base}/v1/models`)
+  }
+
+  if (base.endsWith('/anthropic')) {
+    const stripped = base.slice(0, -'/anthropic'.length).replace(/\/+$/, '')
+    if (stripped) push(`${stripped}/v1/models`)
+  }
+
+  for (const suffix of COMPAT_SUFFIXES) {
+    if (suffix === '/anthropic') continue
+    if (kind === 'anthropic' && suffix.endsWith('/anthropic')) continue
+    if (!base.endsWith(suffix)) continue
+    const stripped = base.slice(0, -suffix.length).replace(/\/+$/, '')
+    if (stripped) {
+      push(`${stripped}/v1/models`)
+      if (kind !== 'anthropic') push(`${stripped}/models`)
+    }
+    break
+  }
+
+  try {
+    const url = new URL(base)
+    const origin = url.origin.replace(/\/+$/, '')
+    push(`${origin}/v1/models`)
+  } catch {
+    // Non-URL input is validated by the request path; keep deterministic candidates above.
+  }
+
+  return candidates
+}
+
+export function parseFetchedModels(value: any, kind: ProviderKind): Array<{ id: string; label?: string; contextWindow?: number }> {
+  const rawItems = Array.isArray(value?.data)
+    ? value.data
+    : Array.isArray(value)
+      ? value
+      : Array.isArray(value?.models)
+        ? value.models
+        : []
+
+  const seen = new Set<string>()
+  const result: Array<{ id: string; label?: string; contextWindow?: number }> = []
+  for (const item of rawItems) {
+    const id = modelIdFromFetchedItem(item, kind)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    const label = typeof item?.display_name === 'string'
+      ? item.display_name
+      : typeof item?.displayName === 'string'
+        ? item.displayName
+        : typeof item?.name === 'string' && kind !== 'gemini'
+          ? item.name
+          : id
+    const contextWindow =
+      numberValue(item?.context_window) ||
+      numberValue(item?.contextWindow) ||
+      numberValue(item?.max_context_window) ||
+      numberValue(item?.inputTokenLimit)
+    result.push({ id, label, contextWindow })
+  }
+  return result
+}
+
+function modelIdFromFetchedItem(item: any, kind: ProviderKind): string {
+  if (typeof item === 'string') return item.trim()
+  if (!item || typeof item !== 'object') return ''
+  if (typeof item.id === 'string') return item.id.trim()
+  if (kind === 'gemini' && typeof item.name === 'string') return item.name.replace(/^models\//, '').trim()
+  if (typeof item.name === 'string') return item.name.trim()
+  return ''
+}
+
+function numberValue(value: any): number | undefined {
+  const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  return Number.isFinite(n) && n > 0 ? n : undefined
+}
+
+function modelDefinitionFromFetched(
+  fetched: { id: string; label?: string; contextWindow?: number },
+  provider: ProviderDefinition,
+  previous?: ModelDefinition
+): ModelDefinition {
+  if (previous) {
+    return {
+      ...previous,
+      label: previous.label || fetched.label || fetched.id,
+      contextWindow: fetched.contextWindow || previous.contextWindow || DEFAULT_CONTEXT_WINDOW
+    }
+  }
+  const thinkRe = /think|reason|r1|o[134](-|$)|gpt-5|claude-(opus|sonnet)-4|gemini-2\.5/i
+  return {
+    id: fetched.id,
+    label: fetched.label || fetched.id,
+    contextWindow: fetched.contextWindow || DEFAULT_CONTEXT_WINDOW,
+    supportsTools: true,
+    supportsVision: /vision|4o|omni|gemini|claude/i.test(fetched.id),
+    supportsThinking: provider.capabilities.nativeThinking || thinkRe.test(fetched.id)
+  }
+}
+
 export function migrateLegacySwappedOfficialBindings(bindings: AgentRouteBinding[]): AgentRouteBinding[] {
   const codex = bindings.find(b => b.agentId === 'codex')
   const claude = bindings.find(b => b.agentId === 'claude')
@@ -149,19 +352,6 @@ export function migrateLegacySwappedOfficialBindings(bindings: AgentRouteBinding
 export class ProviderManager extends EventEmitter {
   private cfg: ProvidersConfig
   private secretsUnlocked = false
-
-  /** 已知的兼容子路径后缀（参照 cc-switch model_fetch.rs:39-49） */
-  private static readonly COMPAT_SUFFIXES = [
-    "/api/claudecode",
-    "/api/anthropic",
-    "/apps/anthropic",
-    "/api/coding",
-    "/claudecode",
-    "/anthropic",
-    "/step_plan",
-    "/coding",
-    "/claude"
-  ] as const
 
   constructor() {
     super()
@@ -232,6 +422,9 @@ export class ProviderManager extends EventEmitter {
         customHeaders: saved.customHeaders || def.customHeaders,
         note: saved.note || def.note,
         modelFetch: saved.modelFetch,
+        createdAt: saved.createdAt ?? def.createdAt,
+        sortOrder: saved.sortOrder ?? def.sortOrder,
+        modelMapping: saved.modelMapping || def.modelMapping,
         defaultThinking: saved.defaultThinking || def.defaultThinking,
         models: saved.models && saved.models.length > 0 ? saved.models : def.models
       }
@@ -274,7 +467,9 @@ export class ProviderManager extends EventEmitter {
   }
   // ---- 查询 ----
   getConfig(): ProvidersConfig {
-    return JSON.parse(JSON.stringify(this.cfg))
+    const config = JSON.parse(JSON.stringify(this.cfg)) as ProvidersConfig
+    config.providers = sortProvidersForClaude(config.providers, claudeCurrentProviderId(config))
+    return config
   }
 
   getProviders(): ProviderDefinition[] {
@@ -287,6 +482,10 @@ export class ProviderManager extends EventEmitter {
 
   getProvider(id: string): ProviderDefinition | undefined {
     return this.cfg.providers.find(p => p.id === id)
+  }
+
+  getClaudeCurrentProviderId(): string | null {
+    return claudeCurrentProviderId(this.cfg)
   }
 
   getBindings(): AgentRouteBinding[] {
@@ -327,9 +526,33 @@ export class ProviderManager extends EventEmitter {
   // ---- 修改 ----
   upsertProvider(p: ProviderDefinition): void {
     const idx = this.cfg.providers.findIndex(x => x.id === p.id)
-    if (idx >= 0) this.cfg.providers[idx] = p
-    else this.cfg.providers.push(p)
+    if (idx >= 0) {
+      this.cfg.providers[idx] = {
+        ...this.cfg.providers[idx],
+        ...p,
+        createdAt: this.cfg.providers[idx].createdAt ?? p.createdAt ?? Date.now()
+      }
+    } else {
+      this.cfg.providers.push({
+        ...p,
+        createdAt: p.createdAt ?? Date.now(),
+        sortOrder: p.sortOrder ?? this.nextProviderSortOrder()
+      })
+    }
     this.save()
+  }
+
+  reorderProvidersForClaude(orderedIds: string[]): ProviderDefinition[] {
+    const currentProviderId = this.getClaudeCurrentProviderId()
+    const order = orderedIds.filter(id => id && id !== LOCAL_CLAUDE_CONFIG_PROVIDER_ID)
+    for (const [index, id] of order.entries()) {
+      if (id === currentProviderId) continue
+      const provider = this.getProvider(id)
+      if (!provider) continue
+      provider.sortOrder = index
+    }
+    this.save()
+    return this.getConfig().providers
   }
 
   deleteProvider(id: string): boolean {
@@ -399,6 +622,13 @@ export class ProviderManager extends EventEmitter {
     this.save()
   }
 
+  private nextProviderSortOrder(): number {
+    return this.cfg.providers.reduce((max, provider, index) => {
+      const value = typeof provider.sortOrder === 'number' ? provider.sortOrder : index
+      return Math.max(max, value)
+    }, -1) + 1
+  }
+
   // ---- 健康检查 ----
   async checkProviderHealth(id: string): Promise<import('./types').ProviderHealth> {
     const p = this.getProvider(id)
@@ -447,71 +677,38 @@ export class ProviderManager extends EventEmitter {
    * 返回按优先级排列的 URL 列表，fetchModels 会逐一尝试，404/405 时 fallback 到下一个。
    */
   private buildModelsUrlCandidates(p: ProviderDefinition): string[] {
-    const base = p.baseUrl.replace(/\/$/, "")
-    const candidates: string[] = []
-
-    // 主候选：按 provider kind 选择标准端点
-    if (p.kind === "gemini") {
-      candidates.push(`${base}/models?key=${encodeURIComponent(p.apiKey)}&pageSize=200`)
-    } else if (p.kind === "anthropic") {
-      candidates.push(`${base}/models?limit=200`)
-    } else {
-      candidates.push(`${base}/models`)
-      // OpenAI 兼容：base 以 /vN 结尾时直接拼 /models（不再补 /v1）
-      const versionMatch = base.match(/\/v(\d+)(?:\/|$)/)
-      if (versionMatch && versionMatch[1] !== "1") {
-        candidates.push(`${base}/v1/models`) // 非 /v1 时保留 /v1/models 兜底
-      } else if (!versionMatch) {
-        candidates.push(`${base}/v1/models`) // 无版本段时补 /v1
-      }
-    }
-
-    // 兼容子路径剥离兜底（参照 cc-switch KNOWN_COMPAT_SUFFIXES）
-    if (p.kind !== "gemini" && p.kind !== "anthropic") {
-      for (const suffix of ProviderManager.COMPAT_SUFFIXES) {
-        if (base.endsWith(suffix)) {
-          const root = base.slice(0, -suffix.length).replace(/\/$/, "")
-          if (root.includes("://")) {
-            candidates.push(`${root}/v1/models`)
-            candidates.push(`${root}/models`)
-          }
-          break // 只匹配最长的后缀
-        }
-      }
-    }
-
-    // 去重并保持顺序
-    return [...new Set(candidates)]
+    return deriveModelListCandidates(p.baseUrl, p.kind, p.apiKey)
   }
 
-  async fetchModels(id: string): Promise<{ ok: boolean; count?: number; error?: string }> {
+  async fetchModels(id: string, override?: FetchModelsOverride): Promise<{ ok: boolean; count?: number; error?: string }> {
     const p = this.getProvider(id)
     if (!p) return { ok: false, error: 'Provider not found' }
-    if (!p.apiKey) return this.recordModelFetchFailure(p, '未配置 API Key')
+    const requestProvider: ProviderDefinition = {
+      ...p,
+      baseUrl: override?.baseUrl?.trim().replace(/\/+$/, '') || p.baseUrl,
+      apiKey: override?.apiKey ?? p.apiKey,
+      kind: override?.kind || p.kind
+    }
+    if (!requestProvider.apiKey) return this.recordModelFetchFailure(p, '未配置 API Key')
     try {
-      const candidates = this.buildModelsUrlCandidates(p)
+      const candidates = this.buildModelsUrlCandidates(requestProvider)
       let lastError = ""
       for (const url of candidates) {
-        const res = await fetch(url, { method: 'GET', headers: this.buildHeaders(p), signal: AbortSignal.timeout(10000) })
+        const res = await fetch(url, { method: 'GET', headers: this.buildHeaders(requestProvider), signal: AbortSignal.timeout(10000) })
         // 404/405 → 尝试下一个候选（参照 cc-switch model_fetch.rs:109-113）
         if (res.status === 404 || res.status === 405) {
-          lastError = `HTTP ${res.status} from ${url.replace(p.apiKey || "", "REDACTED")}`
+          lastError = `HTTP ${res.status} from ${url.replace(requestProvider.apiKey || "", "REDACTED")}`
           continue
         }
         if (res.status >= 400) return this.recordModelFetchFailure(p, `HTTP ${res.status}`)
         const j: any = await res.json()
 
-        let raw: Array<{ id: string; label?: string; contextWindow?: number }> = []
-        if (p.kind === "gemini") {
-          raw = (j.models || [])
-            .filter((m: any) => !m.supportedGenerationMethods || m.supportedGenerationMethods.includes("generateContent"))
-            .map((m: any) => ({
-              id: String(m.name || "").replace(/^models\//, ""),
-              label: m.displayName,
-              contextWindow: m.inputTokenLimit
-            }))
-        } else {
-          raw = (j.data || []).map((m: any) => ({ id: m.id, label: m.display_name }))
+        let raw = parseFetchedModels(j, requestProvider.kind)
+        if (requestProvider.kind === "gemini") {
+          raw = raw.filter(model => {
+            const source = (j.models || []).find((m: any) => String(m.name || '').replace(/^models\//, '') === model.id)
+            return !source?.supportedGenerationMethods || source.supportedGenerationMethods.includes("generateContent")
+          })
         }
         raw = raw.filter(m => m.id).slice(0, 300)
         if (raw.length === 0) return this.recordModelFetchFailure(p, "接口未返回模型")
@@ -522,24 +719,16 @@ export class ProviderManager extends EventEmitter {
             .filter(binding => binding.providerId === p.id)
             .map(binding => binding.modelId)
         )
-        const thinkRe = /think|reason|r1|o[134](-|$)|gpt-5|claude-(opus|sonnet)-4|gemini-2\.5/i
-        const nextModels = raw.map(m => {
-          const prev = old.get(m.id)
-          if (prev) return { ...prev, label: prev.label || m.label || m.id, contextWindow: m.contextWindow || prev.contextWindow }
-          return {
-            id: m.id,
-            label: m.label || m.id,
-            contextWindow: m.contextWindow || 128000,
-            supportsTools: true,
-            supportsVision: /vision|4o|omni|gemini|claude/i.test(m.id),
-            supportsThinking: thinkRe.test(m.id)
-          }
-        })
+        const nextModels = raw.map(m => modelDefinitionFromFetched(m, requestProvider, old.get(m.id)))
         for (const modelId of pinnedModelIds) {
           if (nextModels.some(model => model.id === modelId)) continue
           const previous = old.get(modelId)
           if (previous) nextModels.push({ ...previous, description: previous.description || "Kept because it is used by an agent route binding." })
         }
+        p.baseUrl = requestProvider.baseUrl
+        p.apiKey = requestProvider.apiKey
+        p.kind = requestProvider.kind
+        if (requestProvider.apiKey && !p.enabled) p.enabled = true
         p.models = nextModels
         p.modelFetch = {
           status: "ok",
@@ -589,8 +778,10 @@ export class ProviderManager extends EventEmitter {
       case 'openai-compatible':
       case 'custom':
         headers['authorization'] = `Bearer ${p.apiKey}`
+        headers['x-api-key'] = p.apiKey
         break
       case 'anthropic':
+        headers['authorization'] = `Bearer ${p.apiKey}`
         headers['x-api-key'] = p.apiKey
         headers['anthropic-version'] = '2023-06-01'
         break

@@ -66,12 +66,14 @@ export function WriteWorkspace({
   }, [storageKey])
 
   useEffect(() => {
+    let innerTimer: number | undefined
     const timer = window.setTimeout(() => {
       try { localStorage.setItem(storageKey, JSON.stringify({ title, content, updatedAt: Date.now() })) } catch { /* noop */ }
       setNotice(tr('已自动保存本地草稿', 'Local draft saved'))
-      window.setTimeout(() => setNotice(null), 1400)
+      // P2-9: Track inner timer so it's cleaned up if the effect re-runs.
+      innerTimer = window.setTimeout(() => setNotice(null), 1400)
     }, 450)
-    return () => window.clearTimeout(timer)
+    return () => { window.clearTimeout(timer); if (innerTimer !== undefined) window.clearTimeout(innerTimer) }
   }, [content, storageKey, title])
 
   const stats = useMemo(() => documentStats(content), [content])

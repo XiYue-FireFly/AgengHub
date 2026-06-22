@@ -26,7 +26,7 @@ function tr(zh: string, en: string): string {
   return lang === 'zh' ? zh : en
 }
 
-export function InlineEditAffordance({ code, filePath, startLine, endLine, workspaceRoot, onApply }: InlineEditAffordanceProps) {
+export function InlineEditAffordance({ code, filePath, startLine, endLine, workspaceRoot: _workspaceRoot, onApply }: InlineEditAffordanceProps) {
   const [editing, setEditing] = useState(false)
   const [instruction, setInstruction] = useState('')
   const [loading, setLoading] = useState(false)
@@ -49,9 +49,24 @@ export function InlineEditAffordance({ code, filePath, startLine, endLine, works
         instruction: instruction.trim()
       })
 
-      // TODO: Send prompt to AI model and get replacement
-      // For now, show a placeholder
-      const replacement = `[AI would replace based on: ${instruction}]\n${code}`
+      // Send the prompt to the active model and get a real replacement.
+      const result = await window.electronAPI.ai.quickComplete({ prompt })
+      if (result.error) {
+        setError(result.error)
+        return
+      }
+      // Models often wrap code in markdown fences; strip a single outer fence
+      // (```lang ... ```) so validate/apply see the raw code.
+      const stripFence = (text: string): string => {
+        const trimmed = text.trim()
+        const fence = /^```[^\n]*\n([\s\S]*?)\n```$/.exec(trimmed)
+        return fence ? fence[1] : trimmed
+      }
+      const replacement = stripFence(result.content)
+      if (!replacement) {
+        setError(tr('模型返回了空内容', 'Model returned empty content'))
+        return
+      }
 
       // Validate the replacement
       const validation = await window.electronAPI.inlineEdit.validate(code, replacement)

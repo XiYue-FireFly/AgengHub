@@ -29,7 +29,7 @@ interface CommandPaletteProps {
 }
 
 /** Simple fuzzy match: checks if query chars appear in order within target. */
-function fuzzyMatch(query: string, target: string): boolean {
+function _fuzzyMatch(query: string, target: string): boolean {
   const q = query.toLowerCase()
   const t = target.toLowerCase()
   let qi = 0
@@ -79,7 +79,7 @@ export function CommandPalette({ commands, onExecute, onClose }: CommandPaletteP
     const q = query.trim()
     return commands
       .map(cmd => {
-        const searchText = [cmd.label, cmd.labelZh, cmd.labelEn, cmd.description, cmd.descriptionZh, cmd.descriptionEn, cmd.category, ...(cmd.keywords || [])].filter(Boolean).join(' ')
+        const _searchText = [cmd.label, cmd.labelZh, cmd.labelEn, cmd.description, cmd.descriptionZh, cmd.descriptionEn, cmd.category, ...(cmd.keywords || [])].filter(Boolean).join(' ')
         const score = Math.max(
           fuzzyScore(q, cmd.label),
           fuzzyScore(q, cmd.labelZh || ''),

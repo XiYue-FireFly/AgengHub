@@ -50,7 +50,8 @@ const api = {
     setKey: (id: string, key: string) => ipcRenderer.invoke('providers:setKey', id, key),
     health: (id: string) => ipcRenderer.invoke('providers:health', id),
     healthAll: () => ipcRenderer.invoke('providers:healthAll'),
-    fetchModels: (id: string) => ipcRenderer.invoke('providers:fetchModels', id)
+    fetchModels: (id: string, override?: { baseUrl?: string; apiKey?: string; kind?: string }) => ipcRenderer.invoke('providers:fetchModels', id, override),
+    reorderForClaude: (orderedIds: string[]) => ipcRenderer.invoke('providers:reorderForClaude', orderedIds)
   },
   takeover: {
     status: () => ipcRenderer.invoke('takeover:status'),

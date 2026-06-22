@@ -7,7 +7,7 @@
  * feature with additional validation and conflict detection.
  */
 
-import { getSlashCommands, upsertPrompt, deletePrompt, type PromptEntry } from './prompt-library'
+import { getSlashCommands, upsertPrompt, deletePrompt } from './prompt-library'
 
 export interface SlashCommand {
   shortcut: string
@@ -57,7 +57,7 @@ export function validateShortcut(shortcut: string): { valid: boolean; error?: st
 }
 
 /** Check if a shortcut conflicts with existing commands. */
-export function checkConflict(shortcut: string, excludeId?: string): { conflict: boolean; conflictingName?: string } {
+export function checkConflict(shortcut: string, _excludeId?: string): { conflict: boolean; conflictingName?: string } {
   const commands = listSlashCommands()
   const existing = commands.find(cmd => cmd.shortcut === shortcut)
   if (existing) return { conflict: true, conflictingName: existing.name }

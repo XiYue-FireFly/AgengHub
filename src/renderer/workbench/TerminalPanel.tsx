@@ -89,8 +89,15 @@ export function TerminalPanel({ workspaceRoot, onClose }: TerminalPanelProps) {
 
       const prompt = await window.electronAPI.terminalAi.explainOutput(context)
       addLine('ai', tr('正在分析输出...', 'Analyzing output...'))
-      // TODO: Send prompt to AI model and get explanation
-      addLine('ai', tr('（AI 分析功能待接入模型）', '(AI analysis pending model integration)'))
+      const result = await window.electronAPI.ai.quickComplete({
+        prompt,
+        systemPrompt: 'You are a terminal assistant. Explain the command output concisely and helpfully. If there are errors, diagnose the likely cause and suggest a fix. Reply in the user\'s language.'
+      })
+      if (result.error) {
+        setAiError(result.error)
+      } else {
+        addLine('ai', result.content || tr('（无分析结果）', '(no analysis)'))
+      }
     } catch (err: any) {
       setAiError(err?.message || tr('分析失败', 'Analysis failed'))
     } finally {
@@ -111,8 +118,15 @@ export function TerminalPanel({ workspaceRoot, onClose }: TerminalPanelProps) {
 
       const prompt = await window.electronAPI.terminalAi.suggestCommand(intent, context)
       addLine('ai', tr('正在生成建议...', 'Generating suggestion...'))
-      // TODO: Send prompt to AI model and get suggestion
-      addLine('ai', tr('（AI 建议功能待接入模型）', '(AI suggestion pending model integration)'))
+      const result = await window.electronAPI.ai.quickComplete({
+        prompt,
+        systemPrompt: 'You are a terminal assistant. Suggest the most appropriate shell command for the user\'s intent. Respond with only the command (and a one-line explanation after it). Reply in the user\'s language.'
+      })
+      if (result.error) {
+        setAiError(result.error)
+      } else {
+        addLine('ai', result.content || tr('（无建议）', '(no suggestion)'))
+      }
     } catch (err: any) {
       setAiError(err?.message || tr('建议生成失败', 'Suggestion failed'))
     } finally {

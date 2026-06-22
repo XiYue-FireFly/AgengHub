@@ -45,7 +45,7 @@ export function analyzePage(snapshot: PageSnapshot): PageAnalysis {
   // Heuristics
   const lowerUrl = snapshot.url.toLowerCase()
   const lowerTitle = snapshot.title.toLowerCase()
-  const lowerText = snapshot.text.toLowerCase()
+  const _lowerText = snapshot.text.toLowerCase()
 
   const isDocumentation = /docs?|documentation|api|reference|guide|manual|wiki|readme/i.test(lowerUrl + ' ' + lowerTitle)
   const isCodeRepo = /github\.com|gitlab\.com|bitbucket|gitee|codeberg/i.test(lowerUrl)

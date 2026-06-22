@@ -25,9 +25,13 @@ export function registerProviderIpc(deps: ProviderIpcDeps): void {
     registerAgentsFromBindings()
     return providerMgr.getConfig()
   })
-  ipcMain.handle("providers:fetchModels", async (_e, id) => {
-    const r = await providerMgr.fetchModels(id)
+  ipcMain.handle("providers:fetchModels", async (_e, id, override) => {
+    const r = await providerMgr.fetchModels(id, override)
     return { ...r, config: providerMgr.getConfig() }
+  })
+  ipcMain.handle("providers:reorderForClaude", async (_e, orderedIds) => {
+    providerMgr.reorderProvidersForClaude(Array.isArray(orderedIds) ? orderedIds : [])
+    return providerMgr.getConfig()
   })
   ipcMain.handle("providers:health", async (_e, id) => providerMgr.checkProviderHealth(id))
   ipcMain.handle("providers:healthAll", async () => {

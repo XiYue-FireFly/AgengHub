@@ -170,6 +170,14 @@ export interface ProviderDef {
   builtIn: boolean
   models: ModelDef[]
   health?: { reachable: boolean; latencyMs?: number; error?: string } | null
+  createdAt?: number
+  sortOrder?: number
+  modelMapping?: {
+    main?: string
+    haiku?: string
+    sonnet?: string
+    opus?: string
+  }
   modelFetch?: {
     status: 'idle' | 'ok' | 'error'
     lastAttemptAt: number

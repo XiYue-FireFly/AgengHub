@@ -31,7 +31,7 @@ describe("settings MCP and Skills polish", () => {
   })
 
   it("labels MCP servers discovered from common local client configs", () => {
-    const settings = readFileSync(join(process.cwd(), "src/renderer/screens/Settings.tsx"), "utf8")
+    readFileSync(join(process.cwd(), "src/renderer/screens/Settings.tsx"), "utf8")
     const mcp = readFileSync(join(process.cwd(), "src/main/runtime/mcp.ts"), "utf8")
 
     expect(mcp).toContain('join(home, ".claude.json")')

@@ -119,14 +119,69 @@ function clip(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + `\n…(truncated, ${s.length - max} more chars)` : s
 }
 
-function runCommand(command: string, cwd: string): Promise<ToolResult> {
+/** Shell metacharacters that indicate a command needs shell interpretation. */
+const SHELL_META_REGEX = /[|&;><`$(){}!#~]/
+
+/**
+ * Split a command string into [program, ...args] for safe shell:false execution.
+ * Handles quoted strings. Returns null if the command contains shell metacharacters
+ * that cannot be safely split (pipes, redirects, chaining, etc.).
+ */
+function splitCommand(command: string): [string, string[]] | null {
+  const trimmed = command.trim()
+  if (!trimmed) return null
+  // If command contains shell metacharacters, it needs shell interpretation
+  if (SHELL_META_REGEX.test(trimmed)) return null
+  // Simple split on whitespace (respects basic quoting)
+  const parts: string[] = []
+  let current = ""
+  let inQuote: string | null = null
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i]
+    if (inQuote) {
+      if (ch === inQuote) { inQuote = null } else { current += ch }
+    } else if (ch === '"' || ch === "'") {
+      inQuote = ch
+    } else if (ch === " " || ch === "\t") {
+      if (current) { parts.push(current); current = "" }
+    } else {
+      current += ch
+    }
+  }
+  if (current) parts.push(current)
+  if (parts.length === 0) return null
+  return [parts[0], parts.slice(1)]
+}
+
+function runCommand(command: string, cwd: string, shellOverride?: boolean): Promise<ToolResult> {
   return new Promise<ToolResult>((resolve) => {
     let out = ''
     let done = false
     const finish = (ok: boolean, text: string) => { if (!done) { done = true; resolve({ ok, output: clip(text, MAX_OUTPUT_CHARS) }) } }
     try {
-      const child = spawn(command, { cwd, shell: true, windowsHide: true })
-      const timer = setTimeout(() => { try { child.kill() } catch { /* noop */ } finish(false, out + `\n[timed out after ${EXEC_TIMEOUT_MS / 1000}s]`) }, EXEC_TIMEOUT_MS)
+      // P0-2: Default to shell:false for security. Only use shell:true when
+      // explicitly requested (shellOverride=true) or when the command contains
+      // shell metacharacters that require shell interpretation.
+      const useShell = shellOverride === true
+      let child: ReturnType<typeof spawn>
+      if (useShell) {
+        child = spawn(command, { cwd, shell: true, windowsHide: true })
+      } else {
+        const split = splitCommand(command)
+        if (split) {
+          const [cmd, args] = split
+          child = spawn(cmd, args, { cwd, shell: false, windowsHide: true })
+        } else {
+          // Command has shell metacharacters but shell not approved — reject
+          finish(false, '[security] Command contains shell metacharacters (|, &, ;, >, <, $, etc.) and requires explicit shell approval. Use shellOverride=true after approval.')
+          return
+        }
+      }
+      const timer = setTimeout(() => {
+        try { child.kill() } catch { /* noop */ }
+        setTimeout(() => { try { child.kill('SIGKILL') } catch { /* noop */ } }, 500)
+        finish(false, out + `\n[timed out after ${EXEC_TIMEOUT_MS / 1000}s]`)
+      }, EXEC_TIMEOUT_MS)
       child.stdout?.on('data', d => { out += decodeProcessChunk(d) })
       child.stderr?.on('data', d => { out += decodeProcessChunk(d) })
       child.on('error', e => { clearTimeout(timer); finish(false, out + '\n[spawn error] ' + (e as Error).message) })
@@ -167,7 +222,9 @@ export async function executeTool(name: string, args: any, ctx: ToolContext): Pr
     if (name === 'exec') {
       if (ctx.readOnly) return { ok: false, output: 'Rejected: read-only (no workspace set). Set a workspace to allow command execution.' }
       if (typeof a.command !== 'string' || !a.command.trim()) return { ok: false, output: 'Rejected: empty command.' }
-      return await runCommand(a.command, ctx.root)
+      // P0-2: shellOverride must be explicitly approved via the approval system
+      const shellApproved = a.shellOverride === true
+      return await runCommand(a.command, ctx.root, shellApproved)
     }
     return { ok: false, output: 'Unknown tool: ' + name }
   } catch (e) {

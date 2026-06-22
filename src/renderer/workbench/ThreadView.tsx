@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Icon, IC, AgentMark } from '../glass/ui'
-import { ActivityTrail } from '../glass/activity-view'
+// ActivityTrail reserved for future activity view integration
+
 import { ToolCallStream } from '../glass/ToolCallStream'
 import { ExecutionReport } from '../glass/ExecutionReport'
 import { InlineEditAffordance } from './InlineEditAffordance'
@@ -124,7 +125,11 @@ function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, 
             />
             {summary.steps.length > 0 && (
               <div className="wb-tool-call-area">
-                <ToolCallStream calls={stepsToToolCalls(summary.steps)} />
+                <ToolCallStream
+                  calls={stepsToToolCalls(summary.steps)}
+                  defaultOpen={status === 'running'}
+                  collapseWhenComplete
+                />
               </div>
             )}
             {summary.orch.length > 0 && <OrchestrateCompact events={summary.orch} turnStatus={turn.status} workspaceRoot={workspaceRoot} />}
@@ -236,7 +241,7 @@ function ProcessDetails({
 }
 
 function CompletionSummary({
-  agentId,
+  agentId: _agentId,
   events,
   summary,
   status,
@@ -400,7 +405,7 @@ function doneSummaryText(summary: AgentEventSummary): string {
   return short(firstMeaningful.replace(/^[-*]\s*/, ''), 150)
 }
 
-function completionTitle(status: WorkbenchTurnStatus): string {
+function _completionTitle(status: WorkbenchTurnStatus): string {
   if (status === 'failed') return tr('执行未完成', 'Run did not complete')
   if (status === 'cancelled') return tr('已停止执行', 'Run stopped')
   return tr('执行完成总结', 'Completion summary')
@@ -804,7 +809,7 @@ function extractReferencedFiles(events: RuntimeEvent[], extraText = ''): string[
   const out: string[] = []
   const scan = (value: any) => {
     const text = String(value || '')
-    const matches = text.match(/(?:[A-Za-z]:[\\/][^\s'"`<>]+|(?:\.{1,2}[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+|[A-Za-z0-9_.-]+\.(?:tsx?|jsx?|mjs|cjs|json|ya?ml|toml|md|css|scss|html|py|go|rs|java|cs|cpp|c|h|hpp|vue|svelte))(?:\:\d+)?/g) || []
+    const matches = text.match(/(?:[A-Za-z]:[\\/][^\s'"`<>]+|(?:.{1,2}[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+|[A-Za-z0-9_.-]+\.(?:tsx?|jsx?|mjs|cjs|json|ya?ml|toml|md|css|scss|html|py|go|rs|java|cs|cpp|c|h|hpp|vue|svelte))(?::\d+)?/g) || []
     for (const match of matches) {
       const parsed = filePathFromText(match)
       if (!parsed || seen.has(parsed.path)) continue
@@ -826,12 +831,12 @@ function extractReferencedFiles(events: RuntimeEvent[], extraText = ''): string[
 }
 
 function filePathFromText(value: string): { path: string; line?: number } | null {
-  const match = value.match(/(?:^|\s|["'`])((?:[A-Za-z]:[\\/][^\s'"`<>]+|(?:\.{1,2}[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+|[A-Za-z0-9_.-]+\.(?:tsx?|jsx?|mjs|cjs|json|ya?ml|toml|md|css|scss|html|py|go|rs|java|cs|cpp|c|h|hpp|vue|svelte)))(?:\:(\d+))?/)
+  const match = value.match(/(?:^|\s|["'`])((?:[A-Za-z]:[\\/][^\s'"`<>]+|(?:\.{1,2}[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+|[A-Za-z0-9_.-]+\.(?:tsx?|jsx?|mjs|cjs|json|ya?ml|toml|md|css|scss|html|py|go|rs|java|cs|cpp|c|h|hpp|vue|svelte)))(?::(\d+))?/)
   if (!match) return null
   return { path: match[1], line: match[2] ? Number(match[2]) : undefined }
 }
 
-function describePlan(subtasks: any[]): string {
+function _describePlan(subtasks: any[]): string {
   const rows = subtasks
     .slice(0, 5)
     .map((task, index) => `${index + 1}. ${task.title || task.detail || task.id || tr('未命名子任务', 'Untitled subtask')}`)

@@ -7,7 +7,7 @@
  */
 
 import { writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+// join reserved for future path operations
 
 export type ExportFormat = 'markdown' | 'json' | 'html'
 

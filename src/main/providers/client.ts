@@ -425,7 +425,7 @@ function normFinish(raw: any): string | undefined {
   return 'stop'
 }
 
-function normalizeUsage(u: any): {
+export function normalizeUsage(u: any): {
   prompt_tokens: number
   completion_tokens: number
   total_tokens: number

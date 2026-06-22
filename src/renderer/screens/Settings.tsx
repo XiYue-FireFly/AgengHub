@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { Icon, IC, AgentMark, Seg, Switch } from '../glass/ui'
-import { AGENT_META, AGENT_IDS, BindingDef, DEFAULT_STDIO_ARGS, ProviderDef } from '../glass/meta'
-import { agentDesc, getLang, setLang, Lang, tr } from '../glass/i18n'
+import { AGENT_META, BindingDef, DEFAULT_STDIO_ARGS, ProviderDef } from '../glass/meta'
+import { getLang, setLang, Lang, tr } from '../glass/i18n'
 import { styledConfirm } from '../lib/confirm'
 import { ProvidersTab } from './ProvidersTab'
 import { RoutingTab } from './RoutingTab'
@@ -28,18 +28,7 @@ import {
   rememberDialogPath,
   saveAppearance
 } from '../appearance'
-import {
-  findKeyboardShortcutConflict,
-  KEYBOARD_SHORTCUT_COMMANDS,
-  KEYBOARD_SHORTCUT_STORE_KEY,
-  KEYBOARD_SHORTCUTS_CHANGED,
-  KeyboardShortcutCommandId,
-  KeyboardShortcutsConfigV1,
-  keyboardEventToShortcut,
-  normalizeKeyboardShortcuts,
-  resolveKeyboardShortcutBindings,
-  shortcutDisplay
-} from '../keyboard-shortcuts'
+// keyboard-shortcuts imports moved to ShortcutsSettingsTab
 // Phase 4 lazy loading: UsageStatsDashboard loaded on demand
 const UsageStatsTabFull = React.lazy(() => import('./UsageStatsDashboard').then(m => ({ default: m.UsageStatsDashboard })))
 
@@ -61,6 +50,7 @@ interface SettingsScreenProps {
   onReload: () => void
   onUpsertProvider: (provider: any) => void
   onDeleteProvider: (id: string) => void
+  onReorderProvidersForClaude: (orderedIds: string[]) => void
   motion: MotionLevel
   setMotion: (motion: MotionLevel) => void
   initialTab: TabKey
@@ -69,14 +59,6 @@ interface SettingsScreenProps {
   goChat: (agentId: string | null) => void
   openSetup: (tab?: TabKey) => void
 }
-
-interface BinaryCandidate {
-  source: 'desktop' | 'terminal'
-  label: string
-  path: string
-}
-
-type ApprovalPolicy = 'allow' | 'ask' | 'deny'
 
 const NAV_ITEMS: Array<{ value: TabKey; label: string; labelEn: string; description: string; descriptionEn: string; icon: React.ReactNode }> = [
   { value: 'appearance', label: '外观', labelEn: 'Appearance', description: '主题、字体、动效和界面显示偏好。', descriptionEn: 'Theme, fonts, motion, and display preferences.', icon: IC.gear },
@@ -169,11 +151,13 @@ export function SettingsScreen(props: SettingsScreenProps) {
         {visibleTab === 'providers' && (
           <ProvidersTab
             providers={props.providers}
+            bindings={props.bindings}
             onSetEnabled={props.onSetEnabled}
             onSetKey={props.onSetKey}
             onReload={props.onReload}
             onUpsert={props.onUpsertProvider}
             onDelete={props.onDeleteProvider}
+            onReorderForClaude={props.onReorderProvidersForClaude}
           />
         )}
         {visibleTab === 'local-agents' && <LocalAgentsTab />}
@@ -308,7 +292,7 @@ function LocalAgentsTab() {
           <div className="wb-local-model-grid">
             {localModels.map(config => (
               <div key={config.agentId} className="wb-local-model-item">
-                <strong>{config.agentId === 'codex' ? 'Codex' : 'Gemini'}</strong>
+                <strong>{localModelAgentLabel(config)}</strong>
                 <span>{localModelStatusLabel(config)} · {config.authMode || 'unknown'}</span>
                 <small>{config.modelId || config.models?.[0]?.id || tr('未读取到模型', 'No model found')}</small>
                 <code>{config.configPath}</code>
@@ -418,6 +402,13 @@ function localModelStatusLabel(config: LocalModelConfig): string {
   return tr('读取失败', 'Read failed')
 }
 
+function localModelAgentLabel(config: LocalModelConfig): string {
+  if (config.source === 'claude' || config.agentId === 'claude' || config.agentId === 'claude-cli') return 'Claude'
+  if (config.source === 'codex' || config.agentId === 'codex') return 'Codex'
+  if (config.source === 'gemini' || config.agentId === 'gemini') return 'Gemini'
+  return config.agentId
+}
+
 function localAgentStatusLabel(agent: LocalAgentStatus, needsPromptArg: boolean): string {
   if (agent.configured) return tr('可使用', 'Usable')
   if (agent.installed) return tr('已检测', 'Detected')
@@ -432,7 +423,7 @@ function localAgentDisplayLabel(agent: LocalAgentStatus): string {
   return agent.label.replace(/\s*\/\s*反重力/g, '')
 }
 
-function stdioArgsHint(agentId: string): string {
+function _stdioArgsHint(agentId: string): string {
   if (getLang() === 'zh') return DEFAULT_STDIO_ARGS[agentId] || tr('留空使用默认参数', 'Leave blank to use defaults')
   const englishHints: Record<string, string> = {
     hermes: 'No args; prompt is sent through stdin',
@@ -816,7 +807,7 @@ function MemorySettingsTab() {
   )
 }
 
-function LegacyMemorySettingsTab() {
+function _LegacyMemorySettingsTab() {
   const [statusFilter, setStatusFilter] = useState<'all' | MemoryEntryStatus>('all')
   const [query, setQuery] = useState('')
   const [entries, setEntries] = useState<MemoryEntry[]>([])
@@ -1246,16 +1237,16 @@ function PluginSettingsTab({ workspaceId }: { workspaceId: string | null }) {
         {error && <div className="glass wb-error-text">{error}</div>}
         {importMessage && <div className="glass" style={{ padding: 10, color: 'var(--ok)', fontSize: 12 }}>{importMessage}</div>}
 
-        <div className="wb-mcp-clean-list" style={{ marginTop: 12 }}>
+        <div className="wb-plugin-repo-list" style={{ marginTop: 12 }}>
           {repositories.map(repo => (
-            <div key={repo.id} className="wb-mcp-clean-row">
-              <div style={{ flex: 1 }}>
+            <div key={repo.id} className="wb-plugin-row">
+              <div className="wb-plugin-row-main">
                 <strong>{repo.name}</strong>
                 <small className="mono">{repo.source || 'builtin'}</small>
                 {repo.description && (
-                  <div style={{ fontSize: 12, color: 'var(--tx-2)', marginTop: 2 }}>{repo.description}</div>
+                  <div>{repo.description}</div>
                 )}
-                <div className="mono" style={{ fontSize: 11, color: 'var(--tx-3)', marginTop: 4 }}>{repo.url}</div>
+                <code>{repo.url}</code>
               </div>
               <button
                 className="ah-btn sm"
@@ -1266,8 +1257,8 @@ function PluginSettingsTab({ workspaceId }: { workspaceId: string | null }) {
               </button>
             </div>
           ))}
-          <div className="wb-mcp-clean-row" style={{ alignItems: 'stretch' }}>
-            <div style={{ flex: 1, display: 'grid', gap: 8 }}>
+          <div className="wb-plugin-import-row">
+            <div className="wb-plugin-row-main">
               <strong>{tr('从仓库 URL 导入', 'Import from repository URL')}</strong>
               <input
                 className="ah-input mono"
@@ -1281,7 +1272,7 @@ function PluginSettingsTab({ workspaceId }: { workspaceId: string | null }) {
                 onChange={event => setRepoBranch(event.target.value)}
                 placeholder={tr('分支，可选', 'Branch, optional')}
               />
-              <span style={{ fontSize: 11, color: 'var(--tx-3)' }}>
+              <span>
                 {tr('仅支持 HTTPS GitHub/GitCode 仓库。导入后只扫描 manifest 和 SKILL.md，不执行远程代码。', 'Only HTTPS GitHub/GitCode repositories are supported. AgentHub scans manifest and SKILL.md files only; remote code is not executed.')}
               </span>
             </div>
@@ -1306,18 +1297,18 @@ function PluginSettingsTab({ workspaceId }: { workspaceId: string | null }) {
           )}
         </div>
 
-        <div className="wb-mcp-clean-list">
+        <div className="wb-plugin-installed-list">
           {plugins.map((plugin, idx) => (
-            <div key={plugin.id || idx} className="wb-mcp-clean-row">
-              <div style={{ flex: 1 }}>
+            <div key={plugin.id || idx} className="wb-plugin-row">
+              <div className="wb-plugin-row-main">
                 <strong>{plugin.manifest?.name || plugin.id}</strong>
                 <small className="mono">{plugin.manifest?.version || '?'}</small>
                 {plugin.manifest?.description && (
-                  <div style={{ fontSize: 12, color: 'var(--tx-2)', marginTop: 2 }}>{plugin.manifest.description}</div>
+                  <div>{plugin.manifest.description}</div>
                 )}
-                <div style={{ fontSize: 11, color: 'var(--tx-3)', marginTop: 4 }}>
+                <code>
                   {tr('来源', 'Source')}: {plugin.source || 'unknown'} · {tr('路径', 'Path')}: {plugin.path || '?'}
-                </div>
+                </code>
               </div>
             </div>
           ))}
@@ -1766,7 +1757,7 @@ function EmptyState({ icon, title, detail }: { icon: React.ReactNode; title: str
   )
 }
 
-function formatToken(value: number): string {
+function _formatToken(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M tokens`
   if (value >= 1000) return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}k tokens`
   return `${value} tokens`

@@ -75,6 +75,20 @@ export class TerminalRuntime {
     this.children.delete(runId)
     return true
   }
+
+  /** Kill all still-running terminal children. Called on app quit to avoid
+   *  orphaning spawned shell processes (they would survive AgentHub closing). */
+  dispose(): void {
+    for (const [runId, child] of this.children) {
+      const run = this.runs.find(item => item.id === runId)
+      if (run && run.status === "running") {
+        run.status = "cancelled"
+        run.completedAt = Date.now()
+      }
+      try { child.kill() } catch { /* process may have already exited */ }
+    }
+    this.children.clear()
+  }
 }
 
 function resolveTerminalShell(): { command: string; args: (command: string) => string[] } {

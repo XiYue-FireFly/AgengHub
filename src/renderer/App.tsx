@@ -365,6 +365,13 @@ function AppInner() {
     loadConfig(); refreshStatus()
   }, [loadConfig, refreshStatus])
 
+  const onReorderProvidersForClaude = useCallback(async (orderedIds: string[]) => {
+    const byId = new Map(providers.map(provider => [provider.id, provider]))
+    setProviders(orderedIds.map(id => byId.get(id)).filter(Boolean) as ProviderDef[])
+    try { applyProviderConfig(await window.electronAPI.providers.reorderForClaude(orderedIds)) }
+    catch { loadConfig() }
+  }, [applyProviderConfig, loadConfig, providers])
+
   /* ---------- Agent 展示状态 ----------
      off：HTTP 绑定的提供商未启用或无 Key（如 hermes/gemini）；stdio 绑定不受影响 */
   // P1-6: useMemo prevents WorkbenchLayout (112KB subtree) from re-rendering
@@ -417,7 +424,8 @@ function AppInner() {
         onSetFallback,
         onReload: loadConfig,
         onUpsertProvider,
-        onDeleteProvider
+        onDeleteProvider,
+        onReorderProvidersForClaude
       }}
       motion={motion}
       setMotion={setMotion}

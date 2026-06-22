@@ -51,7 +51,7 @@ interface DiagDeps {
  */
 export async function runDiagnosticSuite(deps: DiagDeps): Promise<DiagnosticReport> {
   const checks: DiagnosticCheck[] = []
-  const now = Date.now()
+  const _now = Date.now()
 
   // System checks
   checks.push(checkVersion(deps))

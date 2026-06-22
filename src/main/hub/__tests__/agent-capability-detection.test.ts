@@ -30,7 +30,6 @@ describe("P1-9 agent CLI capability detection", () => {
   it("GUI-only binaries are distinguishable from terminal CLIs", () => {
     const candidates = minimaxCodeCandidates()
     const guiBinaries = candidates.filter(c => c.kind === "desktop-candidate")
-    const terminalBinaries = candidates.filter(c => c.kind === "path-detected" || c.source === "terminal" && c.kind !== "desktop-candidate")
     // Both categories may exist; the key is they're distinguishable
     for (const c of guiBinaries) {
       expect(c.verification).toBe("manual") // needs manual verification = not guaranteed CLI

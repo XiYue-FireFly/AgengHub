@@ -88,6 +88,7 @@ interface WorkbenchLayoutProps {
     onReload: () => void
     onUpsertProvider: (p: any) => void
     onDeleteProvider: (id: string) => void
+    onReorderProvidersForClaude: (orderedIds: string[]) => void
   }
   motion: MotionLevel
   setMotion: (m: MotionLevel) => void
@@ -118,7 +119,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const [projectError, setProjectError] = useState<string | null>(null)
   const [rightPanel, setRightPanel] = useState<RightPanel>(null)
   const [sendError, setSendError] = useState<string | null>(null)
-  const [agentSlots, setAgentSlots] = useState<string[]>([])
+  const [_agentSlots, setAgentSlots] = useState<string[]>([])
   const [inspectorWidth, setInspectorWidth] = useState(DEFAULT_INSPECTOR_WIDTH)
   const [viewportWidth, setViewportWidth] = useState(typeof window === 'undefined' ? 1280 : window.innerWidth)
   const [terminalRuns, setTerminalRuns] = useState<TerminalRun[]>([])
@@ -747,21 +748,21 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const title = activeThread?.title || (workspaceId ? tr('新对话', 'New chat') : tr('个人会话', 'Personal chat'))
   const activeWorkspace = workspaceId ? workspaces.find(w => w.id === workspaceId) ?? null : null
   const workspaceName = activeWorkspace?.name || (workspaceId ? tr('工作目录', 'Working folder') : tr('未绑定工作目录', 'No folder bound'))
-  const currentSchedule = schedules.find(schedule => schedule.preset === mode)
+  const _currentSchedule = schedules.find(schedule => schedule.preset === mode)
   const usableAgentIds = localAgentOptions(localAgents)
   const selectedAgentId = targetAgent && usableAgentIds.includes(targetAgent) ? targetAgent : null
   const visibleAgentIds = selectedAgentId
     ? [selectedAgentId, ...usableAgentIds.filter(id => id !== selectedAgentId)].slice(0, 3)
     : usableAgentIds.slice(0, 3)
-  const overflowAgentIds = usableAgentIds.filter(id => !visibleAgentIds.includes(id))
+  const _overflowAgentIds = usableAgentIds.filter(id => !visibleAgentIds.includes(id))
   const readyLocalAgents = usableAgentIds.length
-  const selectedAgentName = selectedAgentId ? agentShortName(selectedAgentId) : null
+  const _selectedAgentName = selectedAgentId ? agentShortName(selectedAgentId) : null
 
   useEffect(() => {
     if (targetAgent && !usableAgentIds.includes(targetAgent)) setTargetAgent(null)
   }, [targetAgent, usableAgentIds.join('|')])
 
-  const persistAgentSlots = useCallback((slots: string[]) => {
+  const _persistAgentSlots = useCallback((slots: string[]) => {
     const clean = normalizeAgentSlots(slots, usableAgentIds)
     setAgentSlots(clean)
     window.electronAPI.store.set(AGENT_SLOT_STORE_KEY, clean).catch(() => {})
@@ -1162,6 +1163,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
                 onReload={props.providerActions.onReload}
                 onUpsertProvider={props.providerActions.onUpsertProvider}
                 onDeleteProvider={props.providerActions.onDeleteProvider}
+                onReorderProvidersForClaude={props.providerActions.onReorderProvidersForClaude}
                 motion={props.motion}
                 setMotion={props.setMotion}
                 initialTab={settingsTab}
@@ -1434,7 +1436,7 @@ function NativeTitlebar({
   )
 }
 
-function AgentSlotBar({
+function _AgentSlotBar({
   usableAgentIds,
   slots,
   persistSlots,
@@ -2323,7 +2325,7 @@ async function watchTerminalRun(runId: string, setRuns: React.Dispatch<React.Set
   }
 }
 
-function modeLabel(mode: DispatchPreset): string {
+function _modeLabel(mode: DispatchPreset): string {
   return ({
     auto: tr('自动路由', 'Auto route'),
     broadcast: tr('广播', 'Broadcast'),

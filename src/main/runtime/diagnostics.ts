@@ -41,7 +41,7 @@ export async function runDiagnostics(context: {
   appVersion: string
 }): Promise<DiagnosticSuite> {
   const results: DiagnosticResult[] = []
-  const startAll = Date.now()
+  const _startAll = Date.now()
 
   // System checks
   results.push(checkStore(context))

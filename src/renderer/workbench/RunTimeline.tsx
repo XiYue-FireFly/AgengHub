@@ -189,7 +189,7 @@ export function RunTimeline({
   )
 }
 
-function agentRank(agent: LocalAgentStatus, usableIds: string[]): number {
+function _agentRank(agent: LocalAgentStatus, usableIds: string[]): number {
   if (usableIds.includes(agent.agentId)) return 0
   if (agent.configured) return 1
   if (agent.installed || agent.candidates.length > 0) return 2

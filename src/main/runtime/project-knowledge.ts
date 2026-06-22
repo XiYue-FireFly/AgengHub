@@ -86,7 +86,7 @@ export function deleteKnowledge(id: string): boolean {
 
 export function searchKnowledge(query: string, workspaceId?: string | null): KnowledgeEntry[] {
   const needle = query.trim().toLowerCase()
-  let entries = listKnowledge(workspaceId)
+  const entries = listKnowledge(workspaceId)
   if (!needle) return entries
   return entries.filter(e =>
     e.title.toLowerCase().includes(needle) ||

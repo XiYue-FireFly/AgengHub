@@ -311,7 +311,7 @@ describe('MemoryLibrary P0-3: noise filter and CJK recall', () => {
     const memory = new MemoryLibrary(tempRoot())
     // Short noise words should not become memory entries
     const noiseTexts = ['test', '继续', '随便', '收到', 'hello', 'ok']
-    for (const text of noiseTexts) {
+    for (const _text of noiseTexts) {
       // These are below the 12-char threshold or in the noise list
       // We test via upsertEntry + search: noise should not appear as results
       // (isMemoryWorthLine is not directly exported, but we can verify via the public API)

@@ -4,7 +4,7 @@
  * Phase 2.4: 全面使用 CSS 变量，参照 ccgui tool-block card 视觉
  */
 
-import React, { useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 
 interface ToolCall {
   id: string
@@ -20,6 +20,8 @@ interface ToolCall {
 interface ToolCallStreamProps {
   calls: ToolCall[]
   className?: string
+  defaultOpen?: boolean
+  collapseWhenComplete?: boolean
 }
 
 /** 状态 → CSS 变量映射（参照 codex GuardianRiskLevel + ccgui token 纪律） */
@@ -36,13 +38,19 @@ function formatDuration(ms: number): string {
   return `${Math.floor(ms / 60000)}m ${((ms % 60000) / 1000).toFixed(0)}s`
 }
 
-export function ToolCallStream({ calls, className = '' }: ToolCallStreamProps) {
+export function ToolCallStream({ calls, className = '', defaultOpen = true, collapseWhenComplete = false }: ToolCallStreamProps) {
+  const [streamOpen, setStreamOpen] = useState(defaultOpen)
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
+  const summary = useMemo(() => summarizeCalls(calls), [calls])
+
+  useEffect(() => {
+    if (collapseWhenComplete && summary.running === 0) setStreamOpen(false)
+  }, [collapseWhenComplete, summary.running])
 
   const toggleExpand = (id: string) => {
     setExpandedIds(prev => {
       const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
+      if (next.has(id)) { next.delete(id) } else { next.add(id) }
       return next
     })
   }
@@ -51,7 +59,21 @@ export function ToolCallStream({ calls, className = '' }: ToolCallStreamProps) {
 
   return (
     <div className={`tool-call-stream ${className}`} style={{ display: 'flex', flexDirection: 'column', gap: 6, fontFamily: 'var(--font-mono)', fontSize: 13 }}>
-      {calls.map(call => {
+      <button
+        type="button"
+        className="tool-call-stream-summary"
+        onClick={() => setStreamOpen(value => !value)}
+        aria-expanded={streamOpen}
+      >
+        <span className="tool-call-stream-chevron">{streamOpen ? '▼' : '▶'}</span>
+        <strong>{summary.total} tool{summary.total === 1 ? '' : 's'}</strong>
+        {summary.running > 0 && <em>{summary.running} running</em>}
+        {summary.succeeded > 0 && <em className="succeeded">{summary.succeeded} succeeded</em>}
+        {summary.failed > 0 && <em className="failed">{summary.failed} failed</em>}
+        {summary.declined > 0 && <em>{summary.declined} declined</em>}
+        {summary.duration != null && <small>⏱ {formatDuration(summary.duration)}</small>}
+      </button>
+      {streamOpen && calls.map(call => {
         const isExpanded = expandedIds.has(call.id)
         const duration = call.endTime ? call.endTime - call.startTime : null
         const s = STATUS_STYLES[call.status]
@@ -116,6 +138,20 @@ export function ToolCallStream({ calls, className = '' }: ToolCallStreamProps) {
       })}
     </div>
   )
+}
+
+function summarizeCalls(calls: ToolCall[]) {
+  const started = calls.map(call => call.startTime).filter(Number.isFinite)
+  const ended = calls.map(call => call.endTime || 0).filter(value => value > 0)
+  const total = calls.length
+  const running = calls.filter(call => call.status === 'started').length
+  const succeeded = calls.filter(call => call.status === 'succeeded').length
+  const failed = calls.filter(call => call.status === 'failed').length
+  const declined = calls.filter(call => call.status === 'declined').length
+  const duration = started.length && ended.length
+    ? Math.max(0, Math.max(...ended) - Math.min(...started))
+    : null
+  return { total, running, succeeded, failed, declined, duration }
 }
 
 export type { ToolCall, ToolCallStreamProps }

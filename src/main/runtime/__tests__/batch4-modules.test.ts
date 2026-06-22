@@ -105,6 +105,20 @@ describe("memory-graph", () => {
 // --- Plugin Manager ---
 
 describe("plugin-manager", () => {
+  it("lists the built-in EchoBird plugin repository", async () => {
+    const { listPluginRepositories } = await import("../plugin-manager")
+    const repos = listPluginRepositories()
+    expect(repos.some(repo => repo.id === "echobird-superpowers" && repo.url === "https://gitcode.com/edison7009/EchoBird-Superpowers.git")).toBe(true)
+  })
+
+  it("validates supported repository URLs", async () => {
+    const { validatePluginRepositoryUrl } = await import("../plugin-manager")
+    expect(validatePluginRepositoryUrl("https://github.com/openai/codex.git").valid).toBe(true)
+    expect(validatePluginRepositoryUrl("https://gitcode.com/edison7009/EchoBird-Superpowers.git").valid).toBe(true)
+    expect(validatePluginRepositoryUrl("ssh://github.com/openai/codex.git").valid).toBe(false)
+    expect(validatePluginRepositoryUrl("https://example.com/openai/codex.git").valid).toBe(false)
+  })
+
   it("scans plugins from directory", async () => {
     const { validateManifest, getPluginContributions } = await import("../plugin-manager")
     // Test manifest validation and contributions (directory scanning depends on homedir)
@@ -124,6 +138,49 @@ describe("plugin-manager", () => {
     const contribs = getPluginContributions(plugins)
     expect(contribs.commands).toHaveLength(1)
     expect(contribs.commands[0].id).toBe("test")
+  })
+
+  it("scans Codex-style skill repositories without manifest.json", async () => {
+    const { scanPlugins, getPluginContributions } = await import("../plugin-manager")
+    const root = mkdtempSync(join(tmpdir(), "agenthub-plugin-"))
+    const skillDir = join(root, ".agenthub", "codex-style", "skill-pack", "1.0.0", "skills", "sample-skill")
+    mkdirSync(skillDir, { recursive: true })
+    writeFileSync(join(skillDir, "SKILL.md"), "---\nname: sample-skill\n---\n# Sample\n", "utf-8")
+
+    const plugins = scanPlugins(root)
+    // scanPlugins also scans global ~/.agenthub/plugins, so filter to local only
+    const localPlugins = plugins.filter(p => p.source === 'local')
+    expect(localPlugins).toHaveLength(1)
+    expect(localPlugins[0].manifest.name).toBe("Codex Style")
+    const contribs = getPluginContributions(localPlugins)
+    expect(contribs.skills).toHaveLength(1)
+    expect(contribs.skills[0].id).toBe("sample-skill")
+    expect(contribs.skills[0].path.endsWith(join("sample-skill", "SKILL.md"))).toBe(true)
+    expect(contribs.skills[0].content).toContain("# Sample")
+  })
+
+  it("splits Codex-style plugin packages by .codex-plugin metadata", async () => {
+    const { scanPlugins, getPluginContributions } = await import("../plugin-manager")
+    const root = mkdtempSync(join(tmpdir(), "agenthub-plugin-"))
+    const packageRoot = join(root, ".agenthub", "codex-repo", "writing-plans", "5.1.0")
+    mkdirSync(join(packageRoot, ".codex-plugin"), { recursive: true })
+    mkdirSync(join(packageRoot, "skills", "writing-plans"), { recursive: true })
+    writeFileSync(join(packageRoot, ".codex-plugin", "plugin.json"), JSON.stringify({
+      name: "writing-plans",
+      version: "5.1.0",
+      interface: { displayName: "Writing Plans", shortDescription: "Plan work before coding." }
+    }), "utf-8")
+    writeFileSync(join(packageRoot, "skills", "writing-plans", "SKILL.md"), "# Writing Plans\n", "utf-8")
+
+    const plugins = scanPlugins(root)
+    const localPlugins = plugins.filter(p => p.source === 'local')
+    expect(localPlugins).toHaveLength(1)
+    expect(localPlugins[0].id).toBe("local::codex-repo/writing-plans")
+    expect(localPlugins[0].manifest.name).toBe("Writing Plans")
+    expect(localPlugins[0].manifest.version).toBe("5.1.0")
+    const contributions = getPluginContributions(localPlugins)
+    expect(contributions.skills[0].id).toBe("writing-plans")
+    expect(contributions.skills[0].content).toContain("# Writing Plans")
   })
 
   it("validates manifest", async () => {

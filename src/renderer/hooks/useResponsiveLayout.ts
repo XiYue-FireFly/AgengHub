@@ -7,7 +7,7 @@
  * Phase 4.3: Responsive layout.
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 
 export type LayoutMode = 'desktop' | 'tablet' | 'phone'
 
