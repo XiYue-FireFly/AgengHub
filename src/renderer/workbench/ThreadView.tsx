@@ -258,14 +258,19 @@ function CompletionSummary({
 
   // Use ExecutionReport for a richer completion summary
   const toolCalls = stepsToToolCalls(summary.steps, status, terminalEventTime(events))
-  const failedRunCount = status === 'failed' || summary.hasError || summary.hasOrchestrateError ? 1 : 0
+  const failedRunCount = status === 'failed' ? 1 : 0
   const successfulRunCount = failedRunCount || toolCalls.length > 0 ? 0 : status === 'completed' || summary.hasDone || summary.hasOrchestrateFinal ? 1 : 0
+  const visibleFailedTools = status === 'failed' ? toolCalls.filter(c => c.status === 'failed').length : 0
+  const historicalFailedAttempts = status === 'completed' ? toolCalls.filter(c => c.status === 'failed').length : 0
+  const hasReportableWork = toolCalls.length > 0 || successfulRunCount > 0 || failedRunCount > 0 || stats.files.length > 0 || stats.finalPreview
+  if (!hasReportableWork) return null
   const execReport = {
     totalTools: toolCalls.length + failedRunCount + successfulRunCount,
     successfulTools: toolCalls.filter(c => c.status === 'succeeded').length + successfulRunCount,
-    failedTools: toolCalls.filter(c => c.status === 'failed').length + failedRunCount,
+    failedTools: visibleFailedTools + failedRunCount + historicalFailedAttempts,
     totalDuration: eventDurationMs(events),
-    filesModified: stats.files || []
+    filesModified: stats.files || [],
+    outcome: status === 'failed' ? 'failed' as const : status === 'cancelled' ? 'cancelled' as const : 'completed' as const
   }
 
   return (
@@ -759,6 +764,10 @@ function outputStatus(turnStatus: WorkbenchTurnStatus, eventsOrSummary: RuntimeE
     if (eventsOrSummary.latestAgentStatus === 'completed') return 'completed'
     if (eventsOrSummary.hasError || eventsOrSummary.hasOrchestrateError) return 'failed'
     if (eventsOrSummary.hasDone || eventsOrSummary.hasOrchestrateFinal) return 'completed'
+    if (eventsOrSummary.routeEvents.length > 0 || eventsOrSummary.guardEvents.length > 0) {
+      const pendingGuard = eventsOrSummary.guardEvents.some(event => event.payload?.requiresUserDecision && !event.payload?.decision)
+      return pendingGuard && (turnStatus === 'running' || turnStatus === 'queued') ? 'running' : 'completed'
+    }
   }
   if (agentId === 'orchestrate' && turnStatus !== 'running' && turnStatus !== 'queued') return turnStatus
   return turnStatus === 'queued' ? 'running' : turnStatus

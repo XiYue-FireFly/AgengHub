@@ -52,8 +52,22 @@ vi.mock("../../providers/manager", () => ({
         }
       : undefined,
     getBindings: () => [{ agentId: "codex", providerId: "openai", modelId: "gpt-4o" }],
+    getBinding: (agentId: string) => ({ agentId, providerId: "openai", modelId: "gpt-4o" }),
     resolveBinding: () => null
   })
+}))
+
+vi.mock("../local-models", () => ({
+  readLocalModelConfig: (agentId: string) => agentId === "codex"
+    ? {
+        agentId: "codex",
+        source: "codex",
+        status: "ok",
+        modelId: "gpt-5.5",
+        configPath: "C:/Users/test/.codex/config.toml",
+        models: [{ id: "gpt-5.5" }]
+      }
+    : null
 }))
 
 vi.mock("../../providers/client", () => ({
@@ -139,6 +153,55 @@ describe("usageStats dispatcher integration (isolated)", () => {
       source: "actual",
       inputTokens: 13,
       outputTokens: 17
+    })
+  }, 30_000)
+
+  it("records local CLI usage details with the locally configured CLI model", async () => {
+    const { getWorkbenchRuntimeStore } = await import("../store")
+    const { usageRecords } = await import("../usage-stats")
+    const { AgentRegistry } = await import("../../hub/registry")
+    const { EventPipeline } = await import("../../hub/pipeline")
+    const { Dispatcher } = await import("../../hub/dispatcher")
+    const runtime = getWorkbenchRuntimeStore()
+    ;(runtime as any).state = null
+    runtimes.push(runtime)
+    const { thread, turn } = runtime.createTurn({
+      prompt: "hello local model",
+      mode: "auto",
+      workspaceId: null,
+      targetAgent: "codex"
+    })
+    const send = vi.fn()
+    const registry = new AgentRegistry()
+    registry.register({
+      id: "codex",
+      name: "codex",
+      binary: "mock",
+      protocol: "stdio-plain",
+      mode: "oneshot",
+      status: "idle",
+      onOutput: null,
+      onError: null,
+      start: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+      send
+    } as any, ["code"], "openai", "gpt-4o")
+    const dispatcher = new Dispatcher(registry, new EventPipeline())
+    dispatcher.on("stream", event => runtime.appendStreamEvent(turn.id, event))
+
+    await dispatcher.dispatch("hello local model", "auto", "codex", { turnId: turn.id })
+
+    const page = usageRecords({ range: "all", providerId: "local-cli" }, 1, 10)
+    expect(send).toHaveBeenCalled()
+    expect(page.total).toBe(1)
+    expect(page.records[0]).toMatchObject({
+      threadId: thread.id,
+      turnId: turn.id,
+      providerId: "local-cli",
+      agentId: "codex",
+      modelId: "gpt-5.5",
+      requestModelId: "gpt-5.5",
+      source: "estimated"
     })
   }, 30_000)
 })

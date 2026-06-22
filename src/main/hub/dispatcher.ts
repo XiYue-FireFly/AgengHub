@@ -21,6 +21,7 @@ import { isHttpAgenticEnabled } from "../agentic/capabilities"
 import { getApprovalConfig, ApprovalRequest, GuardedTool, savePendingApproval, resolvePendingApproval, expireStalePendingApprovals, assessApprovalRisk, approvalReason, type PersistedPendingApproval } from "../agentic/approval"
 import { getRunTimeoutMs } from "../runtime/run-preferences"
 import { pushNotification } from "../runtime/notifications"
+import { readLocalModelConfig } from "../runtime/local-models"
 // --- /AgentHub skills + native agentic ---
 
 export type DispatchMode = "auto" | "broadcast" | "chain" | "orchestrate"
@@ -65,6 +66,25 @@ function messagesForDerivedPrompt(opts: DispatchOptions, prompt: string): ChatCo
     ...opts.messages.slice(0, -1),
     { role: "user", content: prompt } as ChatCompletionMessage
   ]
+}
+
+function localModelConfigAgentId(agentId: string): string {
+  const normalized = agentId.trim().toLowerCase()
+  if (normalized === "codex-cli" || normalized === "codex-code") return "codex"
+  if (normalized === "gemini-cli") return "gemini"
+  if (normalized === "claude-cli" || normalized === "claude-code") return "claude"
+  return agentId
+}
+
+function localCliModelLabelForAgent(agentId: string): { providerId: "local-cli"; modelId: string } | null {
+  try {
+    const config = readLocalModelConfig(localModelConfigAgentId(agentId))
+    const modelId = typeof config?.modelId === "string" ? config.modelId.trim() : ""
+    if (!modelId || config?.status === "missing" || config?.status === "error") return null
+    return { providerId: "local-cli", modelId }
+  } catch {
+    return null
+  }
 }
 
 export function providerDirectAgentId(providerId: string): string {
@@ -857,8 +877,9 @@ export class Dispatcher extends EventEmitter {
     const localModelSelection = opts.modelSelection?.source === "local-cli" && opts.modelSelection.agentId === agentId
       ? opts.modelSelection
       : undefined
-    const providerId = binding?.providerId ?? resolved?.provider?.id ?? "local-cli"
-    const modelId = localModelSelection?.modelId ?? binding?.modelId ?? resolved?.model?.id ?? "stdio"
+    const localConfigModel = localModelSelection ? null : localCliModelLabelForAgent(agentId)
+    const providerId = localModelSelection ? "local-cli" : localConfigModel?.providerId ?? binding?.providerId ?? resolved?.provider?.id ?? "local-cli"
+    const modelId = localModelSelection?.modelId ?? localConfigModel?.modelId ?? binding?.modelId ?? resolved?.model?.id ?? "stdio"
     let usage: any = undefined
     this.emit("stream", { kind: "start", taskId: task.id, agentId, providerId, modelId, mode: "content" })
     const start = Date.now()
@@ -1008,8 +1029,9 @@ export class Dispatcher extends EventEmitter {
    */
   private async sendToAgentAcp(task: DispatchTask, agentId: string, text: string, opts: DispatchOptions, adapter: any): Promise<{ content: string; error?: string }> {
     this.registry.setStatus(agentId, "busy")
-    const providerId = "local-acp"
-    const modelId = "acp"
+    const localConfigModel = localCliModelLabelForAgent(agentId)
+    const providerId = localConfigModel?.providerId ?? "local-acp"
+    const modelId = localConfigModel?.modelId ?? "acp"
     this.emit("stream", { kind: "start", taskId: task.id, agentId, providerId, modelId, mode: "content" })
     const start = Date.now()
     let content = ""
