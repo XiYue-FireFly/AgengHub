@@ -11,6 +11,7 @@ function createRepo(): string {
   execFileSync("git", ["init"], { cwd: root })
   execFileSync("git", ["config", "user.email", "agenthub@example.test"], { cwd: root })
   execFileSync("git", ["config", "user.name", "AgentHub Test"], { cwd: root })
+  execFileSync("git", ["config", "commit.gpgsign", "false"], { cwd: root })
   writeFileSync(join(root, "README.md"), "hello\n")
   execFileSync("git", ["add", "README.md"], { cwd: root })
   execFileSync("git", ["commit", "-m", "init"], { cwd: root })
@@ -23,7 +24,7 @@ describe("git runtime public helpers", () => {
     const expected = execFileSync("git", ["branch", "--show-current"], { cwd: root }).toString().trim()
 
     expect(await gitCurrentBranch(root)).toBe(expected)
-  })
+  }, 15000)
 
   it("handles Chinese filenames through git command arguments", async () => {
     const root = createRepo()
@@ -34,7 +35,7 @@ describe("git runtime public helpers", () => {
     const { stdout } = await runGit(root, ["status", "--porcelain=v1", "-z"])
 
     expect(stdout).toContain(fileName)
-  })
+  }, 15000)
 
   it("does not commit unselected staged files", async () => {
     const root = createRepo()

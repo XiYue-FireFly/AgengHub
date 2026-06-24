@@ -136,7 +136,7 @@ export function GitWorkbenchPanel({ workspaceId, onClose }: GitWorkbenchPanelPro
         setWorkingDiffCache(current => ({ ...current, [selectedPath]: '' }))
       })
     return () => { cancelled = true }
-  }, [workspaceId, diffMode, selectedPath, workingDiffCache])
+  }, [workspaceId, diffMode, selectedPath])
 
   const runAction = async (label: string, action: () => Promise<any>, after?: () => void) => {
     setActionLoading(label)

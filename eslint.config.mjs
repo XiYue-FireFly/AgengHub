@@ -10,6 +10,7 @@ export default tseslint.config(
       'out/**',
       'dist/**',
       'build/**',
+      '__neko_temp/**',
       'node_modules/**',
       'AgentHub UI设计/**',
       'scripts/**',

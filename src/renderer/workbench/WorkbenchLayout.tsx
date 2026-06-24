@@ -52,6 +52,8 @@ const DEFAULT_INSPECTOR_WIDTH = 460
 const MIN_INSPECTOR_WIDTH = 340
 const MAX_INSPECTOR_WIDTH = 760
 
+const MAX_EVENTS = 5000
+
 function mergeRuntimeEventLists(base: RuntimeEvent[], incoming: RuntimeEvent[]): RuntimeEvent[] {
   if (incoming.length === 0) return base
   const seen = new Set(base.map(event => event.id || `${event.threadId}:${event.seq}`))
@@ -64,7 +66,9 @@ function mergeRuntimeEventLists(base: RuntimeEvent[], incoming: RuntimeEvent[]):
   if (additions.length === 0) return base
   const last = base[base.length - 1]
   const ordered = !last || additions.every(event => event.seq > last.seq)
-  return ordered ? [...base, ...additions] : [...base, ...additions].sort((a, b) => a.seq - b.seq)
+  const merged = ordered ? [...base, ...additions] : [...base, ...additions].sort((a, b) => a.seq - b.seq)
+  if (merged.length > MAX_EVENTS) return merged.slice(merged.length - MAX_EVENTS)
+  return merged
 }
 
 interface WorkbenchLayoutProps {
@@ -121,6 +125,8 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const [projectError, setProjectError] = useState<string | null>(null)
   const [rightPanel, setRightPanel] = useState<RightPanel>(null)
   const [sendError, setSendError] = useState<string | null>(null)
+
+  useEffect(() => { setSendError(null) }, [view])
   const [_agentSlots, setAgentSlots] = useState<string[]>([])
   const [inspectorWidth, setInspectorWidth] = useState(DEFAULT_INSPECTOR_WIDTH)
   const [viewportWidth, setViewportWidth] = useState(typeof window === 'undefined' ? 1280 : window.innerWidth)
@@ -135,6 +141,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const pendingRuntimeEvents = useRef<RuntimeEvent[]>([])
   const seenImmediateStreamKeys = useRef<Set<string>>(new Set())
   const loadingThreadIdRef = useRef<string | null>(null)
+  const selectThreadGenRef = useRef(0)
   const runtimeEventFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const threadScrollRef = useRef<HTMLElement | null>(null)
   const shouldStickToBottom = useRef(true)
@@ -294,7 +301,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   useEffect(() => {
     if (props.runtimeRefreshNonce === undefined) return
     loadWorkbench(workspaceId).catch(() => {})
-  }, [props.runtimeRefreshNonce])
+  }, [props.runtimeRefreshNonce, loadWorkbench, workspaceId])
 
   useEffect(() => {
     const onResize = () => setViewportWidth(window.innerWidth)
@@ -350,6 +357,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     })
     return () => {
       unsubscribe()
+      if (snapshotRefreshTimer.current) clearTimeout(snapshotRefreshTimer.current)
       clearRuntimeEventBuffer()
     }
   }, [activeThreadId, workspaceId, refreshThreadTodos, appendRuntimeEvents, enqueueRuntimeEvent, flushRuntimeEvents, clearRuntimeEventBuffer])
@@ -413,10 +421,10 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     return scheduleOverrides[preset]
   }, [customSchedule, smartSchedule, scheduleOverrides])
 
-  const openSetup = (tab: SettingsTabKey = 'providers') => {
+  const openSetup = useCallback((tab: SettingsTabKey = 'providers') => {
     setSettingsTab(tab)
     setView('settings')
-  }
+  }, [setView])
 
   const closeAnnouncement = () => {
     try { localStorage.setItem(ANNOUNCEMENT_STORE_KEY, 'seen') } catch { /* noop */ }
@@ -436,6 +444,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   }
 
   const selectThread = async (threadId: string | null) => {
+    const gen = ++selectThreadGenRef.current
     loadingThreadIdRef.current = threadId
     const thread = allThreads.find(t => t.id === threadId)
     const threadWorkspaceId = thread ? thread.workspaceId : workspaceId
@@ -445,13 +454,17 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     }
 
     const selected = await window.electronAPI.threads.select(threadId)
+    if (selectThreadGenRef.current !== gen) return // stale — newer call in progress
     const [snap, allSnap] = await Promise.all([
       window.electronAPI.runtime.snapshot(threadWorkspaceId),
       window.electronAPI.runtime.snapshot(undefined)
     ])
+    if (selectThreadGenRef.current !== gen) return // stale
     const loadedEvents = selected ? await window.electronAPI.runtime.eventsSince(selected, 0) : []
+    if (selectThreadGenRef.current !== gen) return // stale
     const pendingForSelected = selected ? pendingRuntimeEvents.current.filter(event => event.threadId === selected) : []
     clearRuntimeEventBuffer()
+    if (selectThreadGenRef.current !== gen) return // stale — newer call before final writes
     setSnapshot(snap)
     setAllThreads(allSnap.threads)
     setEvents(prev => selected ? mergeRuntimeEventLists(
@@ -461,8 +474,13 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         ...pendingForSelected
       ]
     ) : [])
-    setThreadTodosState(selected ? await window.electronAPI.todos.list(selected).catch(() => []) : [])
-    setActiveGoal(selected ? await window.electronAPI.goals.get(selected).catch(() => null) : null)
+    const [todos, goal] = await Promise.all([
+      selected ? window.electronAPI.todos.list(selected).catch(() => []) : Promise.resolve([]),
+      selected ? window.electronAPI.goals.get(selected).catch(() => null) : Promise.resolve(null)
+    ])
+    if (selectThreadGenRef.current !== gen) return // stale
+    setThreadTodosState(todos)
+    setActiveGoal(goal)
     if (loadingThreadIdRef.current === threadId) loadingThreadIdRef.current = null
     shouldStickToBottom.current = true
     setView('chat')
@@ -545,7 +563,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         openSetup(params.tab as SettingsTabKey)
       }
     })
-  }, [createThread, openCreateProject])
+  }, [createThread, openCreateProject, setView, openSetup])
 
   const shortcutBindings = useMemo(() => resolveKeyboardShortcutBindings(keyboardShortcuts), [keyboardShortcuts])
 
@@ -615,7 +633,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       }))
     ]
     return [...fromShortcuts, ...extra]
-  }, [])
+  }, [localAgents])
 
   const executePaletteCommand = useCallback((id: string) => {
     // Try shortcut handler first
@@ -1053,6 +1071,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
 
         <main className="wb-main">
           {view === 'write' && (
+            <ErrorBoundary label="Write">
             <WriteWorkspace
               workspace={activeWorkspace}
               hasWorkspace={!!workspaceId}
@@ -1069,6 +1088,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
               turns={activeTurns}
               events={events}
             />
+            </ErrorBoundary>
           )}
 
           {view === 'chat' && (
@@ -1169,6 +1189,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
           )}
 
           {view === 'tasks' && (
+            <ErrorBoundary label="Tasks">
             <div className="wb-scroll-surface">
               <TasksScreen
                 tasks={props.tasks}
@@ -1179,9 +1200,11 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
                 openSetup={openSetup}
               />
             </div>
+            </ErrorBoundary>
           )}
 
           {view === 'settings' && (
+            <ErrorBoundary label="Settings">
             <div className="wb-scroll-surface wb-settings-surface">
               <React.Suspense fallback={<div className="wb-muted-box">{tr('加载设置...', 'Loading settings...')}</div>}>
               <SettingsScreen
@@ -1206,13 +1229,16 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
               />
               </React.Suspense>
             </div>
+            </ErrorBoundary>
           )}
           {view === 'workflows' && (
+            <ErrorBoundary label="Workflows">
             <div className="wb-scroll-surface wb-settings-surface">
               <React.Suspense fallback={<div className="wb-muted-box">{tr('加载工作流...', 'Loading workflows...')}</div>}>
               <WorkflowsPanel onClose={() => setView('chat')} />
               </React.Suspense>
             </div>
+            </ErrorBoundary>
           )}
         </main>
 
@@ -1391,6 +1417,17 @@ function NativeTitlebar({
 }) {
   const win = window.electronAPI?.win
   const [openMenu, setOpenMenu] = useState<'file' | 'view' | 'help' | null>(null)
+  const [uiStyle, setUiStyle] = useState<'mac' | 'win'>(() => readAppearanceLocal().uiStyle)
+  const isMacStyle = uiStyle === 'mac'
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const next = (e as CustomEvent).detail
+      if (next?.uiStyle) setUiStyle(next.uiStyle)
+    }
+    window.addEventListener('agenthub:appearance-change', handler)
+    return () => window.removeEventListener('agenthub:appearance-change', handler)
+  }, [])
 
   useEffect(() => {
     if (!openMenu) return
@@ -1411,6 +1448,13 @@ function NativeTitlebar({
 
   return (
     <div className="wb-titlebar app-drag" onDoubleClick={() => win?.maximizeToggle()}>
+      {isMacStyle && (
+        <div className="wb-traffic-lights app-no-drag">
+          <span className="tl-dot tl-close" onClick={() => win?.close()} />
+          <span className="tl-dot tl-min" onClick={() => win?.minimize()} />
+          <span className="tl-dot tl-max" onClick={() => win?.maximizeToggle()} />
+        </div>
+      )}
       <TitlebarMenu
         id="file"
         label={tr('文件', 'File')}

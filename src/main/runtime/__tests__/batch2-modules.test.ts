@@ -101,4 +101,11 @@ describe("backup", () => {
     const tmpDir = join(tmpdir(), `agenthub-backup-test-${Date.now()}`)
     expect(listBackups(tmpDir)).toEqual([])
   })
+
+  it("handles backup creation failure gracefully", async () => {
+    const { createBackup } = await import("../backup")
+    // Passing an invalid directory like empty string or invalid path structure to cause an error
+    const result = createBackup(() => ({}), "/invalid-dir/that/does/not/exist/and/cannot/be/created/???", "1.0.0")
+    expect(result).toHaveProperty("error")
+  })
 })

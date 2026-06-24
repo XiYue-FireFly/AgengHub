@@ -26,7 +26,7 @@ export default defineConfig({
     }
   ],
   webServer: {
-    command: 'npm run preview',
+    command: 'npx vite --config src/renderer/vite.config.mjs --host 127.0.0.1 --port 4173',
     port: 4173,
     timeout: 30_000,
     reuseExistingServer: true

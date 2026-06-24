@@ -51,7 +51,7 @@ export function ApprovalsTab() {
     await load()
   }
 
-  if (!config) return <div className="wb-muted-box">{error || tr('正在加载权限策略...', 'Loading approval policies...')}</div>
+  if (!config || !config.default) return <div className="wb-muted-box">{error || tr('正在加载权限策略...', 'Loading approval policies...')}</div>
 
   const currentPreset = config.preset || 'auto'
 

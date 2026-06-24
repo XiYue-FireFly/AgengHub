@@ -4,41 +4,41 @@ import { describe, expect, it } from "vitest"
 
 describe("smart five-role custom schedule integration", () => {
   it("isolates router prompts and marks non-chat schedule output as run-only", () => {
-    const source = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
+    const scheduleHelpers = readFileSync(join(process.cwd(), "src/main/runtime/schedule-helpers.ts"), "utf8")
 
-    expect(source).toContain('step.role === "router"')
-    expect(source).toContain('{ role: "user", content: stepPrompt }')
-    expect(source).toContain("scheduleStepsWithRouteDecision")
-    expect(source).toContain("serialFireflySteps")
-    expect(source).toContain("const fireflyHandoff = input.schedule.preset === \"firefly-custom\"")
-    expect(source).toContain("const layers = fireflyHandoff ? validation.steps.map(step => [step]) : orderedCustomLayers(validation.steps)")
-    expect(source).toContain("if (fireflyHandoff && step.role === \"router\")")
-    expect(source).toContain("providerId: \"local-router\"")
-    expect(source).toContain("modelId: \"weighted-router\"")
-    expect(source).toContain("gatedCandidateStepIds")
-    expect(source).toContain("streamMetaForScheduleStep")
-    expect(source).toContain("forceRunOnly || gatedCandidateIds.has(step.id)")
-    expect(source).toContain("finalScheduleRelease")
-    expect(source).toContain("appendSyntheticChatRelease")
-    expect(source).toContain("const content = task.results.get(step.agentId) || \"\"")
-    expect(source).toContain('runtimeStore.appendSystemEvent(input.threadId, input.turnId, "agent:delta"')
-    expect(source).toContain('channel: "content"')
-    expect(source).toContain("text: content")
-    expect(source).toContain('item.step.role === "gatekeeper"')
-    expect(source).toContain("gatedRelease: true")
-    expect(source).toContain("scheduleStepId: input.step.id")
-    expect(source).toContain("usageExcluded: true")
+    expect(scheduleHelpers).toContain('step.role === "router"')
+    expect(scheduleHelpers).toContain('{ role: "user", content: stepPrompt }')
+    expect(scheduleHelpers).toContain("scheduleStepsWithRouteDecision")
+    expect(scheduleHelpers).toContain("serialFireflySteps")
+    expect(scheduleHelpers).toContain("const fireflyHandoff = input.schedule.preset === \"firefly-custom\"")
+    expect(scheduleHelpers).toContain("const layers = fireflyHandoff ? validation.steps.map(step => [step]) : orderedCustomLayers(validation.steps)")
+    expect(scheduleHelpers).toContain("if (fireflyHandoff && step.role === \"router\")")
+    expect(scheduleHelpers).toContain("providerId: \"local-router\"")
+    expect(scheduleHelpers).toContain("modelId: \"weighted-router\"")
+    expect(scheduleHelpers).toContain("gatedCandidateStepIds")
+    expect(scheduleHelpers).toContain("streamMetaForScheduleStep")
+    expect(scheduleHelpers).toContain("forceRunOnly || gatedCandidateIds.has(step.id)")
+    expect(scheduleHelpers).toContain("finalScheduleRelease")
+    expect(scheduleHelpers).toContain("appendSyntheticChatRelease")
+    expect(scheduleHelpers).toContain("const content = task.results.get(step.agentId) || \"\"")
+    expect(scheduleHelpers).toContain('runtimeStore.appendSystemEvent(input.threadId, input.turnId, "agent:delta"')
+    expect(scheduleHelpers).toContain('channel: "content"')
+    expect(scheduleHelpers).toContain("text: content")
+    expect(scheduleHelpers).toContain('item.step.role === "gatekeeper"')
+    expect(scheduleHelpers).toContain("gatedRelease: true")
+    expect(scheduleHelpers).toContain("scheduleStepId: input.step.id")
+    expect(scheduleHelpers).toContain("usageExcluded: true")
   })
 
   it("validates custom schedule dependencies instead of force-running invalid graphs", () => {
-    const source = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
+    const scheduleHelpers = readFileSync(join(process.cwd(), "src/main/runtime/schedule-helpers.ts"), "utf8")
 
-    expect(source).toContain("validateConcreteScheduleSteps")
-    expect(source).toContain("hasScheduleCycle")
-    expect(source).toContain("Executor step")
-    expect(source).toContain("requires a concrete reviewer or gatekeeper dependency")
-    expect(source).toContain("Schedule dependency cycle detected")
-    expect(source).not.toContain("const fallback = remaining.values().next().value")
+    expect(scheduleHelpers).toContain("validateConcreteScheduleSteps")
+    expect(scheduleHelpers).toContain("hasScheduleCycle")
+    expect(scheduleHelpers).toContain("Executor step")
+    expect(scheduleHelpers).toContain("requires a concrete reviewer or gatekeeper dependency")
+    expect(scheduleHelpers).toContain("Schedule dependency cycle detected")
+    expect(scheduleHelpers).not.toContain("const fallback = remaining.values().next().value")
   })
 
   it("does not add run-only schedule output to future assistant history", () => {
@@ -68,14 +68,15 @@ describe("smart five-role custom schedule integration", () => {
   })
 
   it("limits smart five-role router decisions to the same dispatchable local agent set", () => {
+    const scheduleHelpers = readFileSync(join(process.cwd(), "src/main/runtime/schedule-helpers.ts"), "utf8")
     const source = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
 
     expect(source).toContain("function availableRouteAgents(agentIds?: string[])")
     expect(source).toContain("const allowed = agentIds?.length ? new Set(agentIds) : null")
     expect(source).toContain("makeRouteDecision(thread.id, turn.id, dispatchUserPrompt, fireflyAgentIds)")
     expect(source).toContain("makeRouteDecision(thread.id, created.turn.id, retryUserPrompt, retryFireflyAgentIds)")
-    expect(source).toContain("function scheduleStepsWithRouteDecision(steps: ScheduleStep[], decision?: RouteDecision): ScheduleStep[]")
-    expect(source).toContain("void decision")
+    expect(scheduleHelpers).toContain("function scheduleStepsWithRouteDecision(steps: ScheduleStep[], decision?: RouteDecision): ScheduleStep[]")
+    expect(scheduleHelpers).toContain("void decision")
   })
 
   it("runs any supplied schedule graph instead of only custom and smart five-role modes", () => {
@@ -90,39 +91,38 @@ describe("smart five-role custom schedule integration", () => {
   })
 
   it("scores guard verdicts from agent output instead of guard prompt instructions", () => {
-    const source = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
+    const scheduleHelpers = readFileSync(join(process.cwd(), "src/main/runtime/schedule-helpers.ts"), "utf8")
     const guardService = readFileSync(join(process.cwd(), "src/main/runtime/guard-approval-service.ts"), "utf8")
 
     // evaluateGuardVerdict now lives in guard-approval-service.ts
     expect(guardService).toContain("explicitGuardVerdictFromText(reviewText) || riskVerdictForText(reviewText, role)")
-    expect(source).toContain("emitGuardVerdict(guardStore, input.threadId, input.turnId, step.agentId, step.role, content)")
-    expect(source).not.toContain("[stepContext, content].join")
+    expect(scheduleHelpers).toContain("emitGuardVerdict(guardStore, input.threadId, input.turnId, step.agentId, step.role, content)")
+    expect(scheduleHelpers).not.toContain("[stepContext, content].join")
   })
 
   it("asks before continuing through high-risk guard verdicts", () => {
-    const source = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
+    const scheduleHelpers = readFileSync(join(process.cwd(), "src/main/runtime/schedule-helpers.ts"), "utf8")
     const guardService = readFileSync(join(process.cwd(), "src/main/runtime/guard-approval-service.ts"), "utf8")
 
-    expect(source).toContain("requestGuardApproval")
-    expect(source).toContain("executorVerdictNeedsApproval")
-    expect(source).toContain("guardShouldBlockExecutor(verdict, step.role) || executorVerdictNeedsApproval(verdict, step.role)")
+    expect(scheduleHelpers).toContain("requestGuardApproval")
+    expect(scheduleHelpers).toContain("executorVerdictNeedsApproval")
+    expect(scheduleHelpers).toContain("guardShouldBlockExecutor(verdict, step.role) || executorVerdictNeedsApproval(verdict, step.role)")
     // Guard service now lives in guard-approval-service.ts
     expect(guardService).toContain("needs-confirmation")
     expect(guardService).toContain("requiresUserDecision")
-    expect(source).toContain('ipcMain.handle("turns:resolveGuard"')
-    expect(source).toContain('decision === "approved"')
+    expect(scheduleHelpers).toContain('decision === "approved"')
   })
 
   it("continues smart five-role runs when a reviewer or gatekeeper fails after main produced output", () => {
-    const source = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
+    const scheduleHelpers = readFileSync(join(process.cwd(), "src/main/runtime/schedule-helpers.ts"), "utf8")
 
-    expect(source).toContain("function isNonBlockingGuardStepFailure")
-    expect(source).toContain("source: \"guard-step-fallback\"")
-    expect(source).toContain("nonBlocking: true")
-    expect(source).toContain("failedStepId: failed.step.id")
-    expect(source).toContain("step.role !== \"reviewer\" && step.role !== \"gatekeeper\"")
-    expect(source).toContain("Continuing with the latest main-agent output")
-    expect(source).toContain("return outputs.some(item => (item.step.role === \"lead\" || item.step.role === \"synthesizer\") && item.content.trim())")
+    expect(scheduleHelpers).toContain("function isNonBlockingGuardStepFailure")
+    expect(scheduleHelpers).toContain("source: \"guard-step-fallback\"")
+    expect(scheduleHelpers).toContain("nonBlocking: true")
+    expect(scheduleHelpers).toContain("failedStepId: failed.step.id")
+    expect(scheduleHelpers).toContain("step.role !== \"reviewer\" && step.role !== \"gatekeeper\"")
+    expect(scheduleHelpers).toContain("Continuing with the latest main-agent output")
+    expect(scheduleHelpers).toContain("return outputs.some(item => (item.step.role === \"lead\" || item.step.role === \"synthesizer\") && item.content.trim())")
   })
 
   it("preserves completed stdio output when a local CLI exits non-zero after producing final text", () => {

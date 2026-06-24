@@ -30,6 +30,24 @@ interface WorkflowIpcDeps {
 export function registerWorkflowIpc(deps: WorkflowIpcDeps): void {
   const { resolveAppVersionFromMain } = deps
 
+  // Store access with key allowlist (defense-in-depth: block sensitive keys)
+  const ALLOWED_STORE_KEY_PREFIXES = ['agenthub.', 'appearance.']
+  const BLOCKED_STORE_KEY_PREFIXES = ['providers.', 'local.', 'routing.', 'runtime.mcp.', 'agentic.approval.', 'agentic.config.', 'usage.ledger.']
+  function isStoreKeyAllowed(key: string): boolean {
+    if (!key || typeof key !== 'string') return false
+    if (BLOCKED_STORE_KEY_PREFIXES.some(p => key.startsWith(p))) return false
+    return ALLOWED_STORE_KEY_PREFIXES.some(p => key.startsWith(p))
+  }
+  ipcMain.handle("store:get", (_e, key: string, defaultValue?: any) => {
+    if (!isStoreKeyAllowed(key)) return defaultValue
+    return deps.store?.get?.(key, defaultValue)
+  })
+  ipcMain.handle("store:set", (_e, key: string, value: any) => {
+    if (!isStoreKeyAllowed(key)) throw new Error(`Store key not allowed: ${key}`)
+    deps.store?.set?.(key, value)
+    return true
+  })
+
   // Workflows
   ipcMain.handle("workflows:list", (_e, category?: string) => listWorkflows(category as any))
   ipcMain.handle("workflows:get", (_e, id: string) => getWorkflow(id))

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * ProviderManager
  *
  * 职责：
@@ -15,10 +15,13 @@ import {
   AgentRouteBinding,
   ThinkingConfig,
   ProviderKind,
-  ModelDefinition
+  ModelDefinition,
+  ModelRouteSettings,
+  ThinkingLevel
 } from './types'
 import { BUILTIN_PROVIDERS, THINKING_BUDGET_TOKENS } from './presets'
 import { createLogger } from '../logger'
+import { appendAppEventLog } from '../runtime/app-event-log'
 
 const log = createLogger('Providers')
 const STORAGE_KEY = 'providers.config.v1'
@@ -38,6 +41,7 @@ function defaultConfig(): ProvidersConfig {
       fallbackChain: [],
       strategy: 'single'
     },
+    modelRoutes: { ...DEFAULT_MODEL_ROUTE_SETTINGS },
     activeBindingId: null,
     version: CONFIG_VERSION
   }
@@ -54,6 +58,11 @@ const DEFAULT_CLAUDE_PROVIDER_ID = 'anthropic'
 const DEFAULT_CLAUDE_MODEL_ID = 'claude-sonnet-4-5'
 const LOCAL_CLAUDE_CONFIG_PROVIDER_ID = '__claude_local_config__'
 const DEFAULT_CONTEXT_WINDOW = 258_000
+const DEFAULT_MODEL_ROUTE_SETTINGS: ModelRouteSettings = {
+  codexInjectionMode: 'official_account',
+  codexInternalModelLock: true,
+  codexSlots: []
+}
 const COMPAT_SUFFIXES = [
   "/api/claudecode",
   "/api/anthropic",
@@ -291,27 +300,111 @@ function numberValue(value: any): number | undefined {
   return Number.isFinite(n) && n > 0 ? n : undefined
 }
 
+function normalizeModelRouteSettings(value: any): ModelRouteSettings {
+  return {
+    fallbackModelId: typeof value?.fallbackModelId === 'string' ? value.fallbackModelId : undefined,
+    codexDefaultModel: typeof value?.codexDefaultModel === 'string' ? value.codexDefaultModel : undefined,
+    codexInjectionMode: value?.codexInjectionMode === 'third_party_api' || value?.codexInjectionMode === 'lan_share'
+      ? value.codexInjectionMode
+      : DEFAULT_MODEL_ROUTE_SETTINGS.codexInjectionMode,
+    codexInternalModelLock: typeof value?.codexInternalModelLock === 'boolean'
+      ? value.codexInternalModelLock
+      : DEFAULT_MODEL_ROUTE_SETTINGS.codexInternalModelLock,
+    codexSlots: Array.isArray(value?.codexSlots)
+      ? value.codexSlots
+        .filter((slot: any) => slot && typeof slot.slot === 'string' && typeof slot.targetModelId === 'string')
+        .map((slot: any) => ({
+          slot: slot.slot,
+          targetModelId: slot.targetModelId,
+          mode: slot.mode === 'official_account' || slot.mode === 'lan_share' ? slot.mode : 'third_party_api',
+          source: typeof slot.source === 'string' ? slot.source : 'agenthub'
+        }))
+      : []
+  }
+}
+
+function isCodexInternalModel(modelId: string): boolean {
+  const id = modelId.trim().toLowerCase()
+  return /^gpt-5(\.|-|$)/.test(id) || /^gpt-5\.[0-9]/.test(id) || /^o[0-9].*mini/.test(id)
+}
+
+function codexSlotCandidates(settings: ModelRouteSettings, requested: string): string[] {
+  if (settings.codexInjectionMode !== 'third_party_api' && settings.codexInjectionMode !== 'lan_share') return []
+  const explicit = settings.codexSlots
+    .filter(slot => slot.mode === settings.codexInjectionMode && slot.slot === requested)
+    .map(slot => slot.targetModelId)
+  const priority = [settings.codexDefaultModel, settings.fallbackModelId].filter(Boolean) as string[]
+  return [...explicit, ...priority]
+}
+
+function normalizeModel(model: ModelDefinition, providerId: string): ModelDefinition {
+  return {
+    ...model,
+    enabled: model.enabled ?? true,
+    providerId: model.providerId || providerId,
+    contextWindow: model.contextWindow || DEFAULT_CONTEXT_WINDOW,
+    timeoutMs: typeof model.timeoutMs === 'number' && model.timeoutMs > 0 ? Math.round(model.timeoutMs) : undefined,
+    retryCount: typeof model.retryCount === 'number' && model.retryCount > 0 ? Math.min(Math.round(model.retryCount), 5) : 0,
+    reasoningEnabled: model.reasoningEnabled ?? model.supportsThinking,
+    defaultReasoningLevel: model.defaultReasoningLevel || model.defaultThinkingLevel || (model.supportsThinking ? 'medium' : undefined),
+    supportedReasoningLevels: Array.isArray(model.supportedReasoningLevels) ? model.supportedReasoningLevels : (model.supportsThinking ? ['minimal', 'low', 'medium', 'high', 'xhigh'] : [])
+  }
+}
+
+function normalizeModels(models: ModelDefinition[], providerId: string): ModelDefinition[] {
+  return (models || []).filter(model => model?.id).map(model => normalizeModel(model, providerId))
+}
+
+function splitModelRef(ref: string, fallbackProviderId: string): [string, string] {
+  const index = ref.indexOf('/')
+  if (index <= 0) return [fallbackProviderId, ref]
+  return [ref.slice(0, index), ref.slice(index + 1)]
+}
+
+function modelRouteResult(
+  provider: ProviderDefinition,
+  model: ModelDefinition,
+  requestedModelId: string,
+  routeReason: 'direct' | 'upstream' | 'fallback_unknown' | 'codex_slot' | 'codex_internal_locked' | 'disabled'
+) {
+  const upstreamModelId = model.upstreamModel?.trim() || model.id
+  return {
+    provider,
+    model,
+    requestedModelId,
+    upstreamModelId,
+    routeReason: routeReason === 'direct' && upstreamModelId !== model.id ? 'upstream' as const : routeReason
+  }
+}
+
 function modelDefinitionFromFetched(
   fetched: { id: string; label?: string; contextWindow?: number },
   provider: ProviderDefinition,
   previous?: ModelDefinition
 ): ModelDefinition {
   if (previous) {
-    return {
+    return normalizeModel({
       ...previous,
       label: previous.label || fetched.label || fetched.id,
       contextWindow: fetched.contextWindow || previous.contextWindow || DEFAULT_CONTEXT_WINDOW
-    }
+    }, provider.id)
   }
   const thinkRe = /think|reason|r1|o[134](-|$)|gpt-5|claude-(opus|sonnet)-4|gemini-2\.5/i
-  return {
+  const supportsThinking = provider.capabilities.nativeThinking || thinkRe.test(fetched.id)
+  const defaultReasoningLevel: ThinkingLevel = /opus|o3|o4|r1|reason/i.test(fetched.id) ? 'high' : 'medium'
+  return normalizeModel({
     id: fetched.id,
     label: fetched.label || fetched.id,
+    enabled: true,
+    providerId: provider.id,
     contextWindow: fetched.contextWindow || DEFAULT_CONTEXT_WINDOW,
     supportsTools: true,
     supportsVision: /vision|4o|omni|gemini|claude/i.test(fetched.id),
-    supportsThinking: provider.capabilities.nativeThinking || thinkRe.test(fetched.id)
-  }
+    supportsThinking,
+    reasoningEnabled: supportsThinking,
+    defaultReasoningLevel,
+    supportedReasoningLevels: supportsThinking ? ['minimal', 'low', 'medium', 'high', 'xhigh'] : []
+  }, provider.id)
 }
 
 export function migrateLegacySwappedOfficialBindings(bindings: AgentRouteBinding[]): AgentRouteBinding[] {
@@ -390,6 +483,7 @@ export class ProviderManager extends EventEmitter {
         fallbackChain: Array.isArray(r.fallbackChain) ? r.fallbackChain : d.routing.fallbackChain,
         strategy: r.strategy || d.routing.strategy
       },
+      modelRoutes: normalizeModelRouteSettings(raw.modelRoutes),
       activeBindingId: typeof raw.activeBindingId === 'string' ? raw.activeBindingId : null,
       version: typeof raw.version === 'number' ? raw.version : undefined
     }
@@ -425,15 +519,16 @@ export class ProviderManager extends EventEmitter {
         createdAt: saved.createdAt ?? def.createdAt,
         sortOrder: saved.sortOrder ?? def.sortOrder,
         modelMapping: saved.modelMapping || def.modelMapping,
+        protocolOverride: saved.protocolOverride || def.protocolOverride,
         defaultThinking: saved.defaultThinking || def.defaultThinking,
-        models: saved.models && saved.models.length > 0 ? saved.models : def.models
+        models: normalizeModels(saved.models && saved.models.length > 0 ? saved.models : def.models, def.id)
       }
     })
 
     // 用户自定义的非内置 Provider 也要保留
     for (const sp of stored.providers) {
       if (!sp.builtIn && !providers.find(p => p.id === sp.id)) {
-        providers.push(sp)
+        providers.push({ ...sp, models: normalizeModels(sp.models || [], sp.id) })
       }
     }
 
@@ -452,6 +547,7 @@ export class ProviderManager extends EventEmitter {
         fallbackChain: stored.routing?.fallbackChain || defaults.routing.fallbackChain,
         strategy: stored.routing?.strategy || defaults.routing.strategy
       },
+      modelRoutes: normalizeModelRouteSettings(stored.modelRoutes),
       activeBindingId: stored.activeBindingId ?? defaults.activeBindingId
     }
   }
@@ -492,6 +588,16 @@ export class ProviderManager extends EventEmitter {
     return this.cfg.routing.bindings
   }
 
+  getModelRouteSettings(): ModelRouteSettings {
+    return JSON.parse(JSON.stringify(normalizeModelRouteSettings(this.cfg.modelRoutes)))
+  }
+
+  setModelRouteSettings(patch: Partial<ModelRouteSettings>): ModelRouteSettings {
+    this.cfg.modelRoutes = normalizeModelRouteSettings({ ...this.cfg.modelRoutes, ...patch })
+    this.save()
+    return this.getModelRouteSettings()
+  }
+
   getBinding(agentId: string): AgentRouteBinding | undefined {
     return this.cfg.routing.bindings.find(b => b.agentId === agentId)
   }
@@ -523,6 +629,116 @@ export class ProviderManager extends EventEmitter {
  return { provider, model, binding, thinking: binding.thinking }
  }
 
+  resolveModelRoute(providerId: string, modelId: string, opts: { allowFallback?: boolean; codexSlot?: string } = {}): {
+    provider: ProviderDefinition
+    model: ModelDefinition
+    requestedModelId: string
+    upstreamModelId: string
+    routeReason: 'direct' | 'upstream' | 'fallback_unknown' | 'codex_slot' | 'codex_internal_locked' | 'disabled'
+  } | null {
+    const provider = this.getProvider(providerId)
+    if (!provider || !provider.enabled || !provider.apiKey) return null
+    const settings = normalizeModelRouteSettings(this.cfg.modelRoutes)
+    let requestedModelId = modelId
+    let reason: 'direct' | 'upstream' | 'fallback_unknown' | 'codex_slot' | 'codex_internal_locked' | 'disabled' = 'direct'
+    if (opts.codexSlot) {
+      const slot = settings.codexSlots.find(item => item.slot === opts.codexSlot)
+      if (slot?.targetModelId) {
+        requestedModelId = slot.targetModelId
+        reason = 'codex_slot'
+      } else if (settings.codexInternalModelLock && settings.codexDefaultModel) {
+        requestedModelId = settings.codexDefaultModel
+        reason = 'codex_internal_locked'
+      }
+    }
+
+    const model = provider.models.find(item => item.id === requestedModelId)
+    if ((!model || model.enabled === false) && opts.allowFallback !== false && settings.fallbackModelId) {
+      const [fallbackProviderId, fallbackModelId] = splitModelRef(settings.fallbackModelId, provider.id)
+      const fallbackProvider = this.getProvider(fallbackProviderId)
+      const fallbackModel = fallbackProvider?.models.find(item => item.id === fallbackModelId)
+      if (fallbackProvider?.enabled && fallbackProvider.apiKey && fallbackModel && fallbackModel.enabled !== false) {
+        return modelRouteResult(fallbackProvider, fallbackModel, modelId, 'fallback_unknown')
+      }
+    }
+    if (!model) return null
+    if (model.enabled === false) return modelRouteResult(provider, model, requestedModelId, 'disabled')
+    return modelRouteResult(provider, model, requestedModelId, reason)
+  }
+
+  resolveGlobalModelRoute(modelId: string): {
+    provider: ProviderDefinition
+    model: ModelDefinition
+    requestedModelId: string
+    upstreamModelId: string
+    routeReason: 'direct' | 'upstream' | 'fallback_unknown' | 'codex_slot' | 'codex_internal_locked' | 'disabled'
+    lockedFromModel?: string
+  } | null {
+    const requested = modelId.trim()
+    if (!requested) return null
+    const settings = normalizeModelRouteSettings(this.cfg.modelRoutes)
+    const candidateRefs = codexSlotCandidates(settings, requested)
+    for (const ref of candidateRefs) {
+      const match = this.resolveConfiguredModelRef(ref)
+      if (match) return { ...modelRouteResult(match.provider, match.model, requested, 'codex_slot'), lockedFromModel: undefined }
+    }
+
+    if (settings.codexInternalModelLock && isCodexInternalModel(requested)) {
+      const target = settings.codexDefaultModel ? this.resolveConfiguredModelRef(settings.codexDefaultModel) : null
+      const fallback = settings.fallbackModelId ? this.resolveConfiguredModelRef(settings.fallbackModelId) : null
+      const match = target || fallback
+      if (match) {
+        const direct = match.model.id === requested
+        return {
+          ...modelRouteResult(match.provider, match.model, requested, direct ? 'direct' : 'codex_internal_locked'),
+          lockedFromModel: direct ? undefined : requested
+        }
+      }
+      return null
+    }
+
+    const direct = this.findEnabledModelById(requested)
+    if (direct) return modelRouteResult(direct.provider, direct.model, requested, 'direct')
+
+    if (settings.fallbackModelId) {
+      const fallback = this.resolveConfiguredModelRef(settings.fallbackModelId)
+      if (fallback && fallback.model.id !== requested) {
+        return modelRouteResult(fallback.provider, fallback.model, requested, 'fallback_unknown')
+      }
+    }
+    return null
+  }
+
+  private resolveConfiguredModelRef(ref: string): { provider: ProviderDefinition; model: ModelDefinition } | null {
+    const [providerId, modelId] = splitModelRef(ref, '')
+    if (providerId) {
+      const provider = this.getProvider(providerId)
+      const model = provider?.models.find(item => item.id === modelId)
+      if (provider?.enabled && provider.apiKey && model && model.enabled !== false) return { provider, model }
+    }
+    return this.findEnabledModelById(ref)
+  }
+
+  private findEnabledModelById(modelId: string): { provider: ProviderDefinition; model: ModelDefinition } | null {
+    for (const provider of this.cfg.providers) {
+      if (!provider.enabled || !provider.apiKey) continue
+      const model = provider.models.find(item => item.id === modelId && item.enabled !== false)
+      if (model) return { provider, model }
+    }
+    return null
+  }
+
+  updateModelRoute(providerId: string, modelId: string, patch: Partial<ModelDefinition>): ModelDefinition | null {
+    const provider = this.getProvider(providerId)
+    if (!provider) return null
+    const index = provider.models.findIndex(model => model.id === modelId)
+    if (index < 0) return null
+    const previous = provider.models[index]
+    provider.models[index] = normalizeModel({ ...previous, ...patch, id: previous.id, providerId }, provider.id)
+    this.save()
+    return JSON.parse(JSON.stringify(provider.models[index]))
+  }
+
   // ---- 修改 ----
   upsertProvider(p: ProviderDefinition): void {
     const idx = this.cfg.providers.findIndex(x => x.id === p.id)
@@ -530,11 +746,13 @@ export class ProviderManager extends EventEmitter {
       this.cfg.providers[idx] = {
         ...this.cfg.providers[idx],
         ...p,
+        models: normalizeModels(p.models || this.cfg.providers[idx].models || [], p.id),
         createdAt: this.cfg.providers[idx].createdAt ?? p.createdAt ?? Date.now()
       }
     } else {
       this.cfg.providers.push({
         ...p,
+        models: normalizeModels(p.models || [], p.id),
         createdAt: p.createdAt ?? Date.now(),
         sortOrder: p.sortOrder ?? this.nextProviderSortOrder()
       })
@@ -717,17 +935,7 @@ export class ProviderManager extends EventEmitter {
         }
 
         const old = new Map(p.models.map(m => [m.id, m]))
-        const pinnedModelIds = new Set(
-          this.cfg.routing.bindings
-            .filter(binding => binding.providerId === p.id)
-            .map(binding => binding.modelId)
-        )
         const nextModels = raw.map(m => modelDefinitionFromFetched(m, requestProvider, old.get(m.id)))
-        for (const modelId of pinnedModelIds) {
-          if (nextModels.some(model => model.id === modelId)) continue
-          const previous = old.get(modelId)
-          if (previous) nextModels.push({ ...previous, description: previous.description || "Kept because it is used by an agent route binding." })
-        }
         p.baseUrl = requestProvider.baseUrl
         p.apiKey = requestProvider.apiKey
         p.kind = requestProvider.kind
@@ -740,6 +948,7 @@ export class ProviderManager extends EventEmitter {
           lastSuccessCount: p.models.length
         }
         this.save()
+        appendAppEventLog('providers:fetchModels:ok', { providerId: p.id, baseUrl: p.baseUrl, kind: p.kind, count: p.models.length })
         return { ok: true, count: p.models.length }
       } // end for — 所有候选 URL 均返回 404/405
       if (lastError) return this.recordModelFetchFailure(p, lastError)
@@ -758,6 +967,7 @@ export class ProviderManager extends EventEmitter {
       error
     }
     this.save()
+    appendAppEventLog('providers:fetchModels:error', { providerId: p.id, baseUrl: p.baseUrl, kind: p.kind, error, count: p.models.length })
     return { ok: false, error, count: p.models.length }
   }
 
@@ -775,17 +985,23 @@ export class ProviderManager extends EventEmitter {
   }
 
   buildHeaders(p: ProviderDefinition): Record<string, string> {
-    const headers: Record<string, string> = { 'content-type': 'application/json', ...(p.customHeaders || {}) }
+    const sanitize = (v: string) => Array.from(v).filter((char) => char.charCodeAt(0) <= 0xff).join('')
+    const sanitizedCustom: Record<string, string> = {}
+    for (const [k, v] of Object.entries(p.customHeaders || {})) {
+      sanitizedCustom[k] = sanitize(v)
+    }
+    const headers: Record<string, string> = { 'content-type': 'application/json', ...sanitizedCustom }
+    const safeKey = sanitize(p.apiKey || '')
     switch (p.kind) {
       case 'openai':
       case 'openai-compatible':
       case 'custom':
-        headers['authorization'] = `Bearer ${p.apiKey}`
-        headers['x-api-key'] = p.apiKey
+        headers['authorization'] = `Bearer ${safeKey}`
+        headers['x-api-key'] = safeKey
         break
       case 'anthropic':
-        headers['authorization'] = `Bearer ${p.apiKey}`
-        headers['x-api-key'] = p.apiKey
+        headers['authorization'] = `Bearer ${safeKey}`
+        headers['x-api-key'] = safeKey
         headers['anthropic-version'] = '2023-06-01'
         break
       case 'gemini':

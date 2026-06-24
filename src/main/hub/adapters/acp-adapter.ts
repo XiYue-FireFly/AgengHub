@@ -56,7 +56,11 @@ export class AcpAgentAdapter {
   }
 
   async stop(): Promise<void> {
-    if (this.client) { this.client.stop(); this.client = null }
+    if (this.client) {
+      this.client.onCrash = null
+      this.client.stop()
+      this.client = null
+    }
     this.currentSession = null
     this.sessions.clear()
     this.status = 'idle'

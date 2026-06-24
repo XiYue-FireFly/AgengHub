@@ -105,18 +105,22 @@ export function UsageStatsDashboard() {
 
   const upsertPricing = async () => {
     if (!draft.modelId.trim()) return
-    await window.electronAPI.usage.pricingUpsert({
-      providerId: draft.providerId.trim() || undefined,
-      modelId: draft.modelId.trim(),
-      displayName: draft.displayName.trim() || undefined,
-      inputUsdPerMillion: Number(draft.inputUsdPerMillion || 0),
-      outputUsdPerMillion: Number(draft.outputUsdPerMillion || 0),
-      cacheReadUsdPerMillion: draft.cacheReadUsdPerMillion === '' ? undefined : Number(draft.cacheReadUsdPerMillion),
-      cacheCreationUsdPerMillion: draft.cacheCreationUsdPerMillion === '' ? undefined : Number(draft.cacheCreationUsdPerMillion)
-    })
-    setDraft(EMPTY_DRAFT)
-    await loadPricing()
-    await loadStats()
+    try {
+      await window.electronAPI.usage.pricingUpsert({
+        providerId: draft.providerId.trim() || undefined,
+        modelId: draft.modelId.trim(),
+        displayName: draft.displayName.trim() || undefined,
+        inputUsdPerMillion: Number(draft.inputUsdPerMillion || 0),
+        outputUsdPerMillion: Number(draft.outputUsdPerMillion || 0),
+        cacheReadUsdPerMillion: draft.cacheReadUsdPerMillion === '' ? undefined : Number(draft.cacheReadUsdPerMillion),
+        cacheCreationUsdPerMillion: draft.cacheCreationUsdPerMillion === '' ? undefined : Number(draft.cacheCreationUsdPerMillion)
+      })
+      setDraft(EMPTY_DRAFT)
+      await loadPricing()
+      await loadStats()
+    } catch (err: any) {
+      setError(err?.message || '保存定价失败')
+    }
   }
 
   const editPricing = (rule: UsagePricingRule) => {
@@ -132,9 +136,13 @@ export function UsageStatsDashboard() {
   }
 
   const deletePricing = async (rule: UsagePricingRule) => {
-    await window.electronAPI.usage.pricingDelete(rule.id)
-    await loadPricing()
-    await loadStats()
+    try {
+      await window.electronAPI.usage.pricingDelete(rule.id)
+      await loadPricing()
+      await loadStats()
+    } catch (err: any) {
+      setError(err?.message || '删除定价失败')
+    }
   }
 
   return (

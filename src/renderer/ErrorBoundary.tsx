@@ -20,12 +20,13 @@ interface State {
   hasError: boolean
   error: Error | null
   errorInfo: string | null
+  resetKey: number
 }
 
 export class ErrorBoundary extends Component<Props, State> {
   constructor(props: Props) {
     super(props)
-    this.state = { hasError: false, error: null, errorInfo: null }
+    this.state = { hasError: false, error: null, errorInfo: null, resetKey: 0 }
   }
 
   static getDerivedStateFromError(error: Error): Partial<State> {
@@ -39,7 +40,7 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   private handleReload = () => {
-    this.setState({ hasError: false, error: null, errorInfo: null })
+    this.setState(prev => ({ hasError: false, error: null, errorInfo: null, resetKey: prev.resetKey + 1 }))
   }
 
   private handleCopyError = () => {
@@ -64,6 +65,6 @@ export class ErrorBoundary extends Component<Props, State> {
         </div>
       )
     }
-    return this.props.children
+    return <div key={this.state.resetKey} style={{ display: 'contents' }}>{this.props.children}</div>
   }
 }

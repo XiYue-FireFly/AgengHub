@@ -6,6 +6,8 @@ export type StartupOpenTarget = 'chat' | 'last' | 'settings'
 export type DefaultDialogLocation = 'last' | 'workspace' | 'custom'
 export type AgentEnvironment = 'inherit' | 'clean' | 'login-shell'
 export type TerminalShell = 'system' | 'powershell' | 'cmd' | 'git-bash' | 'wsl'
+/** UI style: mac = macOS-style rounded/frosted, win = Windows-style sharp/material */
+export type UiStyle = 'mac' | 'win'
 
 export interface AppearancePreferences {
   themeMode: ThemeMode
@@ -30,6 +32,7 @@ export interface AppearancePreferences {
   agentEnvironment: AgentEnvironment
   terminalShell: TerminalShell
   language: 'zh' | 'en'
+  uiStyle: UiStyle
 }
 
 export const APPEARANCE_KEY = 'appearance.preferences'
@@ -59,7 +62,8 @@ export const DEFAULT_APPEARANCE: AppearancePreferences = {
   defaultFolderPath: '',
   agentEnvironment: 'inherit',
   terminalShell: 'system',
-  language: 'zh'
+  language: 'zh',
+  uiStyle: 'win'
 }
 
 export function normalizeAppearance(input: Partial<AppearancePreferences> | null | undefined): AppearancePreferences {
@@ -87,7 +91,8 @@ export function normalizeAppearance(input: Partial<AppearancePreferences> | null
     defaultFolderPath: textOrEmpty(value.defaultFolderPath),
     agentEnvironment: pick(value.agentEnvironment, ['inherit', 'clean', 'login-shell'], DEFAULT_APPEARANCE.agentEnvironment),
     terminalShell: pick(value.terminalShell, ['system', 'powershell', 'cmd', 'git-bash', 'wsl'], DEFAULT_APPEARANCE.terminalShell),
-    language: pick(value.language, ['zh', 'en'], DEFAULT_APPEARANCE.language)
+    language: pick(value.language, ['zh', 'en'], DEFAULT_APPEARANCE.language),
+    uiStyle: pick(value.uiStyle, ['mac', 'win'], DEFAULT_APPEARANCE.uiStyle)
   }
 }
 
@@ -123,12 +128,17 @@ export async function loadAppearance(): Promise<AppearancePreferences> {
   const local = readAppearanceLocal()
   try {
     const stored = await window.electronAPI?.store?.get?.(APPEARANCE_KEY)
-    const next = normalizeAppearance(stored || local)
+    // Prefer localStorage (primary source); use electron store only as fallback
+    const next = normalizeAppearance(stored && !hasLocalAppearance() ? stored : local)
     writeAppearanceLocal(next)
     return next
   } catch {
     return local
   }
+}
+
+function hasLocalAppearance(): boolean {
+  try { return localStorage.getItem('ah-appearance') !== null } catch { return false }
 }
 
 export async function saveAppearance(preferences: AppearancePreferences): Promise<AppearancePreferences> {
@@ -178,6 +188,23 @@ export function applyAppearance(preferences: AppearancePreferences): void {
   root.style.setProperty('--tx-2', palette.secondaryText)
   root.style.setProperty('--tx-3', palette.muted)
   root.style.setProperty('--ah-contrast', String(preferences.contrast / 100))
+  // UI style: mac = macOS traffic lights, win = Windows buttons. Visual style is identical.
+  // dataset.uiStyle serializes to data-ui-style; keep data-uistyle for older CSS/cache.
+  root.dataset.uiStyle = preferences.uiStyle
+  root.setAttribute('data-uistyle', preferences.uiStyle)
+  // Both styles share the same Neko Route-inspired visual design
+  root.style.setProperty('--radius-lg', '20px')
+  root.style.setProperty('--radius-md', '14px')
+  root.style.setProperty('--radius-sm', '10px')
+  root.style.setProperty('--glass-blur', '28px')
+  root.style.setProperty('--wb-shadow', '0 14px 40px rgba(47, 111, 235, 0.1)')
+  root.style.setProperty('--wb-shadow-lg', '0 24px 60px rgba(47, 111, 235, 0.16)')
+  root.style.setProperty('--wb-sidebar-width', '260px')
+  root.style.setProperty('--wb-titlebar-height', '40px')
+  root.style.setProperty('--wb-transition', 'all 0.25s cubic-bezier(0.22, 1, 0.36, 1)')
+  root.style.setProperty('--ease-spring', 'cubic-bezier(0.34, 1.56, 0.64, 1)')
+  root.style.setProperty('--wb-glow', '0 10px 30px rgba(47, 111, 235, 0.2)')
+  root.style.setProperty('--wb-blur-saturate', 'saturate(1.5)')
 }
 
 export function defaultDialogPath(kind: 'file' | 'folder', workspacePath?: string | null): string | undefined {

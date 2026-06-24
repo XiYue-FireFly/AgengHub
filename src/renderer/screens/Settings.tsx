@@ -438,27 +438,30 @@ function _stdioArgsHint(agentId: string): string {
   return englishHints[agentId] || DEFAULT_STDIO_ARGS[agentId] || 'Leave blank to use defaults'
 }
 
-function ModelsTab({ providers }: { providers: ProviderDef[] }) {
+function ModelsTab({ providers: _providers }: { providers: ProviderDef[] }) {
   const [filter, setFilter] = useState('')
-  const models = useMemo(() => {
-    const all: Array<{ providerId: string; providerName: string; modelId: string; label: string; contextWindow: number; supportsTools: boolean; supportsVision: boolean; supportsThinking: boolean }> = []
-    for (const provider of providers) {
-      if (!provider.enabled) continue
-      for (const model of provider.models) {
-        all.push({
-          providerId: provider.id,
-          providerName: provider.name,
-          modelId: model.id,
-          label: model.label,
-          contextWindow: model.contextWindow || 128_000,
-          supportsTools: !!model.supportsTools,
-          supportsVision: !!model.supportsVision,
-          supportsThinking: !!model.supportsThinking
-        })
-      }
+  const [models, setModels] = useState<ModelRouteInfo[]>([])
+  const [settings, setSettings] = useState<ModelRouteSettings | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [message, setMessage] = useState<string | null>(null)
+  const [testing, setTesting] = useState<string | null>(null)
+  const [testResult, setTestResult] = useState<Record<string, any>>({})
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    try {
+      const [list, routeSettings] = await Promise.all([
+        window.electronAPI.models.list(),
+        window.electronAPI.models.routeSettingsGet()
+      ])
+      setModels(Array.isArray(list) ? list : [])
+      setSettings(routeSettings)
+    } finally {
+      setLoading(false)
     }
-    return all
-  }, [providers])
+  }, [])
+
+  useEffect(() => { refresh().catch(error => setMessage(error?.message || String(error))) }, [refresh])
 
   const filtered = useMemo(() => {
     const needle = filter.trim().toLowerCase()
@@ -466,35 +469,114 @@ function ModelsTab({ providers }: { providers: ProviderDef[] }) {
     return models.filter(m =>
       m.modelId.toLowerCase().includes(needle) ||
       m.label.toLowerCase().includes(needle) ||
-      m.providerName.toLowerCase().includes(needle)
+      m.providerName.toLowerCase().includes(needle) ||
+      (m.upstreamModel || '').toLowerCase().includes(needle)
     )
   }, [models, filter])
 
   const formatContext = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${Math.round(n / 1_000)}K` : String(n)
+  const modelRef = (m: ModelRouteInfo) => `${m.providerId}/${m.modelId}`
+  const updateModel = async (m: ModelRouteInfo, patch: Partial<ModelRouteInfo>) => {
+    const next = await window.electronAPI.models.updateRoute(m.providerId, m.modelId, patch)
+    setModels(current => current.map(item => modelRef(item) === modelRef(m) ? { ...item, ...next } : item))
+  }
+  const updateSettings = async (patch: Partial<ModelRouteSettings>) => setSettings(await window.electronAPI.models.routeSettingsSet(patch))
+  const runTest = async (m: ModelRouteInfo) => {
+    const key = modelRef(m)
+    setTesting(key)
+    try {
+      const result = await window.electronAPI.models.test({ providerId: m.providerId, modelId: m.modelId, upstreamModel: m.upstreamModel })
+      setTestResult(current => ({ ...current, [key]: result }))
+    } finally {
+      setTesting(null)
+    }
+  }
+  const exportCatalog = async () => {
+    const result = await window.electronAPI.models.exportCodexCatalog()
+    setMessage(result.ok
+      ? tr(`已导出 ${result.count} 个模型到 ${result.path}`, `Exported ${result.count} model(s) to ${result.path}`)
+      : tr(`导出失败：${result.error || '未知错误'}`, `Export failed: ${result.error || 'Unknown error'}`))
+  }
 
   return (
     <div className="wb-settings-stack">
       <section className="glass">
         <div className="wb-settings-section-head">
           <div>
-            <strong>{tr('模型能力', 'Model capabilities')}</strong>
-            <span>{tr('所有已启用供应商的模型列表，含上下文窗口和支持的能力。', 'All enabled provider models with context windows and capabilities.')}</span>
+            <strong>{tr('模型路由中心', 'Model routing center')}</strong>
+            <span>{tr('按模型管理 provider、真实上游模型、上下文、推理、超时、重试和 Codex catalog。', 'Manage provider, upstream model, context, reasoning, timeout, retry, and Codex catalog per model.')}</span>
           </div>
-          <input className="ah-input" placeholder={tr('搜索模型...', 'Search models...')} value={filter} onChange={e => setFilter(e.target.value)} style={{ maxWidth: 220 }} />
+          <div className="wb-card-actions">
+            <input className="ah-input" placeholder={tr('搜索模型...', 'Search models...')} value={filter} onChange={e => setFilter(e.target.value)} style={{ maxWidth: 220 }} />
+            <button className="ah-btn sm" onClick={refresh} disabled={loading}>{tr('刷新', 'Refresh')}</button>
+            <button className="ah-btn sm primary" onClick={exportCatalog}>{tr('导出 Codex Catalog', 'Export Codex Catalog')}</button>
+          </div>
         </div>
-        <div className="wb-models-grid">
+        {settings && (
+          <div className="wb-model-route-settings">
+            <label className="wb-field">
+              <span>{tr('默认模型', 'Default model')}</span>
+              <input className="ah-input" value={settings.codexDefaultModel || ''} onChange={e => updateSettings({ codexDefaultModel: e.target.value || undefined })} placeholder="provider/model or model id" />
+            </label>
+            <label className="wb-field">
+              <span>{tr('Fallback 模型', 'Fallback model')}</span>
+              <input className="ah-input" value={settings.fallbackModelId || ''} onChange={e => updateSettings({ fallbackModelId: e.target.value || undefined })} placeholder="provider/model or model id" />
+            </label>
+            <label className="wb-field">
+              <span>{tr('Codex 注入模式', 'Codex injection mode')}</span>
+              <select className="ah-select" value={settings.codexInjectionMode} onChange={e => updateSettings({ codexInjectionMode: e.target.value as ModelRouteSettings['codexInjectionMode'] })}>
+                <option value="official_account">{tr('官方账号', 'Official account')}</option>
+                <option value="third_party_api">{tr('第三方 API', 'Third-party API')}</option>
+                <option value="lan_share">{tr('局域网共享', 'LAN share')}</option>
+              </select>
+            </label>
+            <PreferenceRow title={tr('Codex 内部模型锁定', 'Codex internal model lock')} detail={tr('Codex 辅助 slot 未配置时使用默认模型，避免误打到错误上游。', 'Use default model for unconfigured Codex slots to avoid accidental upstream routing.')}>
+              <Switch on={settings.codexInternalModelLock} onChange={value => updateSettings({ codexInternalModelLock: value })} />
+            </PreferenceRow>
+          </div>
+        )}
+        {message && <div className="wb-memory-kun-message">{message}</div>}
+        <div className="wb-model-route-table">
+          <div className="wb-model-route-item head">
+            <span>{tr('模型', 'Model')}</span>
+            <span>{tr('上游 / 能力', 'Upstream / Caps')}</span>
+            <span>{tr('上下文 / 超时', 'Context / Timeout')}</span>
+            <span>{tr('状态 / 测试', 'Status / Test')}</span>
+          </div>
           {filtered.map(m => (
-            <div key={`${m.providerId}::${m.modelId}`} className="wb-model-card glass">
-              <div className="wb-model-card-head">
+            <div key={`${m.providerId}::${m.modelId}`} className="wb-model-route-item">
+              <div className="wb-model-route-main">
                 <strong>{m.label}</strong>
-                <span className="ah-chip">{m.providerName}</span>
+                <small className="mono">{m.providerId}/{m.modelId}</small>
+                <div className="wb-chip-row">
+                  <span className="ah-chip">{m.providerName}</span>
+                  <span className="ah-chip">{m.providerProtocol}</span>
+                  {!m.providerEnabled && <span className="ah-chip">{tr('供应商关闭', 'Provider off')}</span>}
+                  {!m.providerHasKey && <span className="ah-chip">{tr('无 Key', 'No key')}</span>}
+                </div>
               </div>
-              <small className="mono">{m.modelId}</small>
-              <div className="wb-model-card-meta">
-                <span title="Context window">{formatContext(m.contextWindow)} ctx</span>
-                {m.supportsTools && <span className="wb-model-badge tools" title="Supports tool calls">tools</span>}
-                {m.supportsVision && <span className="wb-model-badge vision" title="Supports vision">vision</span>}
-                {m.supportsThinking && <span className="wb-model-badge thinking" title="Supports thinking/reasoning">thinking</span>}
+              <div className="wb-model-route-edit">
+                <input className="ah-input mono" value={m.upstreamModel || ''} placeholder={m.modelId} onChange={e => updateModel(m, { upstreamModel: e.target.value || undefined })} />
+                <div className="wb-model-card-meta">
+                  {m.supportsTools && <span className="wb-model-badge tools" title="Supports tool calls">tools</span>}
+                  {m.supportsVision && <span className="wb-model-badge vision" title="Supports vision">vision</span>}
+                  {m.supportsThinking && <span className="wb-model-badge thinking" title="Supports thinking/reasoning">thinking</span>}
+                </div>
+              </div>
+              <div className="wb-model-route-edit compact">
+                <input className="ah-input" type="number" min={1000} value={m.contextWindow || 258000} onChange={e => updateModel(m, { contextWindow: Number(e.target.value) || 258000 })} />
+                <input className="ah-input" type="number" min={0} placeholder="ms" value={m.timeoutMs || ''} onChange={e => updateModel(m, { timeoutMs: Number(e.target.value) || undefined })} />
+                <input className="ah-input" type="number" min={0} max={5} placeholder="retry" value={m.retryCount || 0} onChange={e => updateModel(m, { retryCount: Number(e.target.value) || 0 })} />
+                <span className="ah-hint">{formatContext(m.contextWindow)} ctx</span>
+              </div>
+              <div className="wb-model-route-actions">
+                <Switch on={m.enabled !== false} onChange={value => updateModel(m, { enabled: value })} />
+                <button className="ah-btn sm" onClick={() => runTest(m)} disabled={testing === modelRef(m) || !m.providerEnabled || !m.providerHasKey}>{testing === modelRef(m) ? tr('测试中', 'Testing') : tr('测试', 'Test')}</button>
+                {testResult[modelRef(m)] && (
+                  <small className={testResult[modelRef(m)].ok ? 'wb-model-test-ok' : 'wb-model-test-error'}>
+                    {testResult[modelRef(m)].ok ? `OK ${testResult[modelRef(m)].latencyMs}ms` : testResult[modelRef(m)].error}
+                  </small>
+                )}
               </div>
             </div>
           ))}
@@ -1445,14 +1527,15 @@ function AppearanceTab({ motion, setMotion }: { motion: MotionLevel; setMotion: 
   }, [])
 
   const update = useCallback((patch: Partial<AppearancePreferences>) => {
+    let next: AppearancePreferences
     setPrefs(current => {
-      const next = normalizeAppearance({ ...current, ...patch })
-      applyAppearance(next)
-      if (patch.motion) setMotion(next.motion)
-      if (patch.language) setLang(next.language as Lang)
-      void saveAppearance(next)
+      next = normalizeAppearance({ ...current, ...patch })
       return next
     })
+    applyAppearance(next!)
+    if (patch.motion) setMotion(next!.motion)
+    if (patch.language) setLang(next!.language as Lang)
+    void saveAppearance(next!)
   }, [setMotion])
 
   const reset = () => update(DEFAULT_APPEARANCE)
@@ -1504,6 +1587,40 @@ function AppearanceTab({ motion, setMotion }: { motion: MotionLevel; setMotion: 
         <div className="wb-appearance-theme-grid">
           <ThemePresetCard active={prefs.themeMode === 'light'} title="AgentHub Light" detail={tr('明亮桌面工作台', 'Bright desktop workbench')} colors={['#f7f8fb', '#ffffff', prefs.accentColor]} onClick={() => update({ themeMode: 'light', backgroundColor: '#f7f8fb', foregroundColor: '#20242c' })} />
           <ThemePresetCard active={prefs.themeMode === 'dark'} title="AgentHub Dark" detail={tr('低亮度专注模式', 'Low-light focus mode')} colors={['#10141c', '#161b24', prefs.accentColor]} onClick={() => update({ themeMode: 'dark', backgroundColor: '#10141c', foregroundColor: '#e7edf7' })} />
+        </div>
+        <div className="wb-appearance-row">
+          <div><strong>{tr('界面风格', 'UI Style')}</strong><span>{tr('窗口控制样式：macOS 红绿灯或 Windows 按钮。', 'Window controls: macOS traffic lights or Windows buttons.')}</span></div>
+          <Seg value={prefs.uiStyle} onChange={value => {
+            const next = normalizeAppearance({ ...prefs, uiStyle: value as 'mac' | 'win' })
+            setPrefs(next)
+            applyAppearance(next)
+            void saveAppearance(next)
+          }} options={[
+            { value: 'mac', label: 'macOS' },
+            { value: 'win', label: 'Windows' }
+          ]} />
+        </div>
+        <div className="wb-ui-style-preview-grid">
+          {(['mac', 'win'] as const).map(style => (
+            <button
+              key={style}
+              className={`wb-ui-style-preview ${prefs.uiStyle === style ? 'active' : ''}`}
+              data-preview-style={style}
+              onClick={() => update({ uiStyle: style })}
+            >
+              <div className="wb-ui-style-window">
+                <div className="wb-ui-style-titlebar">
+                  {style === 'mac' ? <span className="traffic"><i /><i /><i /></span> : <span className="win-controls"><i /><i /><i /></span>}
+                </div>
+                <div className="wb-ui-style-body">
+                  <aside><i /><i /><i /></aside>
+                  <main><strong>{style === 'mac' ? 'Mac Preview' : 'Windows Preview'}</strong><span /></main>
+                </div>
+              </div>
+              <strong>{style === 'mac' ? 'macOS' : 'Windows'}</strong>
+              <span>{style === 'mac' ? tr('红绿灯窗口控制', 'Traffic light controls') : tr('标准窗口按钮', 'Standard window buttons')}</span>
+            </button>
+          ))}
         </div>
       </div>
 

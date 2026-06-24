@@ -1,4 +1,4 @@
-﻿import { spawn } from "node:child_process"
+import { spawn } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
@@ -254,7 +254,7 @@ async function probeStdioServer(server: McpServerConfig): Promise<void> {
         clientInfo: { name: appName, version: appVersion }
       }
     }) + '\n'
-    child.stdin?.write(initRequest)
+    try { child.stdin?.write(initRequest) } catch (err) { console.error('[mcp] stdin write failed:', err) }
   })
 }
 
@@ -549,6 +549,9 @@ export async function listMcpServerTools(id: string, workspaceId?: string | null
     const finish = (result: McpServerToolsResult) => {
       if (settled) return
       settled = true
+      // Reject all pending promises to prevent memory leaks
+      for (const [, cb] of pending) cb({ error: { message: 'Operation cancelled' } })
+      pending.clear()
       try { child.kill() } catch { /* ignore */ }
       resolve(result)
     }
@@ -559,12 +562,17 @@ export async function listMcpServerTools(id: string, workspaceId?: string | null
       return new Promise(res => {
         const id = ++requestId
         pending.set(id, res)
-        child.stdin?.write(JSON.stringify({ jsonrpc: '2.0', id, method, params: params || {} }) + '\n')
+        try { child.stdin?.write(JSON.stringify({ jsonrpc: '2.0', id, method, params: params || {} }) + '\n') } catch (err) { console.error('[mcp] stdin write failed:', err) }
       })
     }
 
+    const MAX_MCP_STDOUT = 65536
     child.stdout?.on('data', (chunk: Buffer | string) => {
       stdout += String(chunk)
+      if (stdout.length > MAX_MCP_STDOUT) {
+        finish({ ok: false, tools: [], error: 'MCP server output exceeded buffer limit' })
+        return
+      }
       // Try to parse complete JSON responses from the accumulated stdout
       const lines = stdout.split('\n')
       stdout = lines.pop() || '' // keep incomplete last line
@@ -603,7 +611,7 @@ export async function listMcpServerTools(id: string, workspaceId?: string | null
       }
       _initialized = true
       // Step 2: Send initialized notification
-      child.stdin?.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n')
+      try { child.stdin?.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n') } catch (err) { console.error('[mcp] stdin write failed:', err) }
       // Step 3: List tools
       return sendRequest('tools/list')
     }).then(toolsResult => {

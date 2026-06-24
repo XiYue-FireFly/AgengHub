@@ -6,7 +6,7 @@
  * Backups are stored in the app's data directory under backups/.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, statSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 
 export interface BackupMeta {
@@ -49,43 +49,57 @@ export function createBackup(
   storeGetAll: () => Record<string, any>,
   dataDir: string,
   appVersion: string
-): BackupMeta {
-  const backupDir = join(dataDir, 'backups')
-  if (!existsSync(backupDir)) mkdirSync(backupDir, { recursive: true })
+): BackupMeta & { error?: string } {
+  try {
+    const backupDir = join(dataDir, 'backups')
+    if (!existsSync(backupDir)) mkdirSync(backupDir, { recursive: true })
 
-  const allData = storeGetAll()
-  const backupStore: Record<string, any> = {}
-  const includedKeys: string[] = []
+    const allData = storeGetAll()
+    const backupStore: Record<string, any> = {}
+    const includedKeys: string[] = []
 
-  for (const key of BACKUP_KEYS) {
-    if (allData[key] !== undefined) {
-      backupStore[key] = allData[key]
-      includedKeys.push(key)
+    for (const key of BACKUP_KEYS) {
+      if (allData[key] !== undefined) {
+        backupStore[key] = allData[key]
+        includedKeys.push(key)
+      }
     }
-  }
 
-  const now = new Date()
-  const timestamp = now.toISOString().replace(/[:.]/g, '-')
-  const filename = `agenthub-backup-${timestamp}.json`
-  const filePath = join(backupDir, filename)
+    const now = new Date()
+    const timestamp = now.toISOString().replace(/[:.]/g, '-')
+    const filename = `agenthub-backup-${timestamp}.json`
+    const filePath = join(backupDir, filename)
 
-  const backup: BackupData = {
-    version: 1,
-    createdAt: now.toISOString(),
-    appVersion,
-    store: backupStore
-  }
+    const backup: BackupData = {
+      version: 1,
+      createdAt: now.toISOString(),
+      appVersion,
+      store: backupStore
+    }
 
-  const content = JSON.stringify(backup, null, 2)
-  writeFileSync(filePath, content, 'utf-8')
+    const content = JSON.stringify(backup, null, 2)
+    const tmpPath = filePath + '.tmp'
+    writeFileSync(tmpPath, content, 'utf-8')
+    renameSync(tmpPath, filePath)
 
-  return {
-    id: `backup-${now.getTime().toString(36)}`,
-    filename,
-    createdAt: now.toISOString(),
-    sizeBytes: Buffer.byteLength(content, 'utf-8'),
-    keys: includedKeys,
-    version: BACKUP_VERSION
+    return {
+      id: `backup-${now.getTime().toString(36)}`,
+      filename,
+      createdAt: now.toISOString(),
+      sizeBytes: Buffer.byteLength(content, 'utf-8'),
+      keys: includedKeys,
+      version: BACKUP_VERSION
+    }
+  } catch (error: any) {
+    return {
+      id: 'backup-error',
+      filename: '',
+      createdAt: new Date().toISOString(),
+      sizeBytes: 0,
+      keys: [],
+      version: BACKUP_VERSION,
+      error: error?.message || String(error)
+    }
   }
 }
 
@@ -93,39 +107,43 @@ export function createBackup(
  * List all available backups in the data directory.
  */
 export function listBackups(dataDir: string): BackupMeta[] {
-  const backupDir = join(dataDir, 'backups')
-  if (!existsSync(backupDir)) return []
+  try {
+    const backupDir = join(dataDir, 'backups')
+    if (!existsSync(backupDir)) return []
 
-  const files = readdirSync(backupDir)
-    .filter(f => f.startsWith('agenthub-backup-') && f.endsWith('.json'))
-    .sort()
-    .reverse()
+    const files = readdirSync(backupDir)
+      .filter(f => f.startsWith('agenthub-backup-') && f.endsWith('.json'))
+      .sort()
+      .reverse()
 
-  return files.map(filename => {
-    const filePath = join(backupDir, filename)
-    try {
-      const stat = statSync(filePath)
-      const content = readFileSync(filePath, 'utf-8')
-      const data = JSON.parse(content)
-      return {
-        id: `backup-${stat.mtimeMs.toString(36)}`,
-        filename,
-        createdAt: data.createdAt || new Date(stat.mtimeMs).toISOString(),
-        sizeBytes: stat.size,
-        keys: Object.keys(data.store || {}),
-        version: data.version?.toString() || 'unknown'
+    return files.map(filename => {
+      const filePath = join(backupDir, filename)
+      try {
+        const stat = statSync(filePath)
+        const content = readFileSync(filePath, 'utf-8')
+        const data = JSON.parse(content)
+        return {
+          id: `backup-${stat.mtimeMs.toString(36)}`,
+          filename,
+          createdAt: data.createdAt || new Date(stat.mtimeMs).toISOString(),
+          sizeBytes: stat.size,
+          keys: Object.keys(data.store || {}),
+          version: data.version?.toString() || 'unknown'
+        }
+      } catch {
+        return {
+          id: `backup-unknown`,
+          filename,
+          createdAt: new Date().toISOString(),
+          sizeBytes: 0,
+          keys: [],
+          version: 'unknown'
+        }
       }
-    } catch {
-      return {
-        id: `backup-unknown`,
-        filename,
-        createdAt: new Date().toISOString(),
-        sizeBytes: 0,
-        keys: [],
-        version: 'unknown'
-      }
-    }
-  })
+    })
+  } catch {
+    return []
+  }
 }
 
 /**
@@ -137,6 +155,9 @@ export function restoreBackup(
   filename: string,
   storeSet: (key: string, value: any) => void
 ): { restored: string[]; error?: string } {
+  if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+    return { restored: [], error: 'Invalid filename: path separators not allowed' }
+  }
   const filePath = join(dataDir, 'backups', filename)
   if (!existsSync(filePath)) return { restored: [], error: `Backup file not found: ${filename}` }
 
@@ -164,6 +185,7 @@ export function restoreBackup(
  * Delete a backup file.
  */
 export function deleteBackup(dataDir: string, filename: string): boolean {
+  if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) return false
   const filePath = join(dataDir, 'backups', filename)
   if (!existsSync(filePath)) return false
   try {

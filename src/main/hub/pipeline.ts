@@ -1,4 +1,4 @@
-﻿import { createLogger } from '../logger'
+import { createLogger } from '../logger'
 
 const log = createLogger('Pipeline')
 
@@ -51,7 +51,7 @@ export class EventPipeline {
     }
 
     for (const mod of this.mods.filter(m => m.type === 'observe')) {
-      mod.handle(event).catch(() => {})
+      mod.handle(event).catch((err) => { console.warn('[pipeline] Module handle error:', err) })
     }
   }
 

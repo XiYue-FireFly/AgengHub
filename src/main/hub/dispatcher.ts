@@ -4,6 +4,7 @@ import { EventPipeline } from "./pipeline"
 import { KeywordRouter } from "./router"
 import { getProviderManager } from "../providers/manager"
 import { buildProviderClient } from "../providers/client"
+import { appendAppEventLog } from "../runtime/app-event-log"
 import { agentSystemPrompt } from "./agents"
 import { buildAgentRuntimeSystemPrompt, buildAgentTaskPrompt, RuntimeMemoryEntry } from "./agent-runtime"
 import { decompositionPrompt, parsePlan, synthesisPrompt, verifyPrompt, parseVerdict, retryPrompt, ORCHESTRATOR_LEAD_SYSTEM } from "./orchestrator"
@@ -141,9 +142,9 @@ export interface DispatchOptions {
 }
 
 export type StreamEvent =
-  | { kind: "start"; taskId: string; agentId: string; providerId: string; modelId: string; mode: "content" | "thinking" }
+  | { kind: "start"; taskId: string; agentId: string; providerId: string; modelId: string; mode: "content" | "thinking"; routeReason?: string }
   | { kind: "delta"; taskId: string; agentId: string; providerId: string; modelId: string; channel: "content" | "thinking"; text: string }
-  | { kind: "done"; taskId: string; agentId: string; providerId: string; modelId: string; content: string; thinking?: string; summary?: { level?: string; budget?: number; preview?: string }; durationMs: number; usage?: any }
+  | { kind: "done"; taskId: string; agentId: string; providerId: string; modelId: string; content: string; thinking?: string; summary?: { level?: string; budget?: number; preview?: string }; durationMs: number; usage?: any; routeReason?: string }
   | { kind: "error"; taskId: string; agentId: string; providerId?: string; modelId?: string; error: string; code?: string }
   // agentic 活动步骤（stdio stream-json / 未来 HTTP act-observe 解析所得）；UI 按 step.id upsert
   | { kind: "activity"; taskId: string; agentId: string; step: { id: string; kind?: string; tool?: string; label?: string; detail?: string; output?: string; status: string } }
@@ -170,6 +171,7 @@ export class Dispatcher extends EventEmitter {
   private approvalSeq = 0
   private activeAgentStops = new Map<string, () => void>()
   private streamMetaByTask = new Map<string, Record<string, any>>()
+  private busyCount = new Map<string, number>()
 
   constructor(
     private registry: AgentRegistry,
@@ -267,6 +269,7 @@ export class Dispatcher extends EventEmitter {
       task.error = e.message
     }
     this.streamMetaByTask.delete(task.id)
+    this.pruneTasks()
     return task
   }
 
@@ -295,8 +298,14 @@ export class Dispatcher extends EventEmitter {
     task.status = "running"
 
     const mgr = getProviderManager()
-    const provider = mgr.getProvider(providerId)
-    const model = provider?.models.find(item => item.id === modelId)
+    const routed = typeof (mgr as any).resolveGlobalModelRoute === "function"
+      ? mgr.resolveGlobalModelRoute(modelId) || (typeof (mgr as any).resolveModelRoute === "function" ? mgr.resolveModelRoute(providerId, modelId) : null)
+      : typeof (mgr as any).resolveModelRoute === "function"
+        ? mgr.resolveModelRoute(providerId, modelId)
+        : null
+    const fallbackProvider = mgr.getProvider(providerId)
+    const provider = routed?.provider || fallbackProvider
+    const model = routed?.model || fallbackProvider?.models.find(item => item.id === modelId)
     if (!provider || !provider.enabled || !provider.apiKey) {
       const err = `Selected model provider is unavailable: ${providerId}`
       task.status = "failed"
@@ -316,16 +325,19 @@ export class Dispatcher extends EventEmitter {
       return task
     }
 
+    const requestModelId = routed?.requestedModelId ?? modelId
+    const upstreamModelId = routed?.upstreamModelId ?? model.upstreamModel ?? modelId
+    const effectiveModel = { ...model, id: upstreamModelId }
     const binding: AgentRouteBinding = {
       agentId,
       providerId: provider.id,
-      modelId: model.id,
+      modelId: effectiveModel.id,
       thinkingAllow: ["off", "auto", "enabled"],
       thinking: opts.thinking || provider.defaultThinking,
       maxOutputTokens: 8192,
       temperature: 0.2
     }
-    const resolved = { provider, model, binding, thinking: opts.thinking || provider.defaultThinking }
+    const resolved = { provider, model: effectiveModel, binding, thinking: opts.thinking || provider.defaultThinking }
     const client = buildProviderClient(resolved)
     const messages: ChatCompletionMessage[] = opts.messages?.length
       ? opts.messages
@@ -336,7 +348,16 @@ export class Dispatcher extends EventEmitter {
     let summary: any = undefined
     let usage: any = undefined
     const start = Date.now()
-    this.emit("stream", { kind: "start", taskId: task.id, agentId, providerId: provider.id, modelId: model.id, mode: "content" })
+    const routeReason = routed?.routeReason || "provider_direct"
+    appendAppEventLog("model-route:provider-direct", {
+      taskId: task.id,
+      providerId: provider.id,
+      requestedModelId: requestModelId,
+      upstreamModelId,
+      routeReason,
+      modelSelection: selection
+    })
+    this.emit("stream", { kind: "start", taskId: task.id, agentId, providerId: provider.id, modelId: requestModelId, upstreamModelId, mode: "content", routeReason })
 
     try {
       await this.withAgentTimeout(task, agentId, () => new Promise<void>((resolve, reject) => {
@@ -345,11 +366,11 @@ export class Dispatcher extends EventEmitter {
           {
             onContent: (delta) => {
               content += delta
-              this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId: provider.id, modelId: model.id, channel: "content", text: delta })
+              this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId: provider.id, modelId: requestModelId, upstreamModelId, channel: "content", text: delta })
             },
             onThinking: (delta) => {
               thinkingTxt += delta
-              this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId: provider.id, modelId: model.id, channel: "thinking", text: delta })
+              this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId: provider.id, modelId: requestModelId, upstreamModelId, channel: "thinking", text: delta })
             },
             onDone: (final) => {
               summary = final.thinking
@@ -359,7 +380,7 @@ export class Dispatcher extends EventEmitter {
             onError: (err) => reject(err)
           }
         )
-      }))
+      }), undefined, model.timeoutMs)
       task.results.set(agentId, content)
       task.thinking.set(agentId, thinkingTxt)
       if (summary) task.thinkingSummary.set(agentId, summary)
@@ -369,22 +390,35 @@ export class Dispatcher extends EventEmitter {
         taskId: task.id,
         agentId,
         providerId: provider.id,
-        modelId: model.id,
+        modelId: requestModelId,
+        upstreamModelId,
+        requestModelId,
         content,
         thinking: thinkingTxt,
         summary,
         usage,
-        durationMs: Date.now() - start
+        durationMs: Date.now() - start,
+        routeReason
       })
       task.status = "completed"
     } catch (e: any) {
       const err = e?.message || String(e)
+      appendAppEventLog("model-route:provider-direct:error", {
+        taskId: task.id,
+        providerId: provider.id,
+        requestedModelId: requestModelId,
+        upstreamModelId,
+        routeReason,
+        error: err,
+        code: e?.code
+      })
       task.status = e === AGENT_CANCELLED || e?.code === "AGENT_CANCELLED" ? "cancelled" : "failed"
       task.error = err
       task.errors.set(agentId, err)
-      this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId: provider.id, modelId: model.id, error: err, code: e?.code, durationMs: Date.now() - start })
+      this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId: provider.id, modelId: requestModelId, upstreamModelId, error: err, code: e?.code, durationMs: Date.now() - start })
     }
     this.streamMetaByTask.delete(task.id)
+    this.pruneTasks()
     return task
   }
 
@@ -547,7 +581,21 @@ export class Dispatcher extends EventEmitter {
       return { content: "", error: err }
     }
     const effectiveResolved = this.applyModelSelection(resolved, opts.modelSelection)
+    const effectiveModelId = (effectiveResolved as any).requestedModelId || effectiveResolved.model.id
+    const effectiveUpstreamModelId = (effectiveResolved as any).upstreamModelId || effectiveResolved.model.id
+    const effectiveRouteReason = (effectiveResolved as any).routeReason
+    if (effectiveRouteReason || effectiveModelId !== effectiveUpstreamModelId) {
+      appendAppEventLog("model-route:agent", {
+        taskId: task.id,
+        agentId,
+        providerId: effectiveResolved.provider.id,
+        requestedModelId: effectiveModelId,
+        upstreamModelId: effectiveUpstreamModelId,
+        routeReason: effectiveRouteReason
+      })
+    }
     this.registry.setStatus(agentId, "busy")
+    this.busyCount.set(agentId, (this.busyCount.get(agentId) || 0) + 1)
     const messages: ChatCompletionMessage[] = opts.messages?.length
       ? opts.messages
       : [{ role: "user", content: text }]
@@ -571,23 +619,31 @@ export class Dispatcher extends EventEmitter {
       taskId: task.id,
       agentId,
       providerId: effectiveResolved.provider.id,
-      modelId: effectiveResolved.model.id,
-      mode: "content"
+      modelId: effectiveModelId,
+      upstreamModelId: effectiveUpstreamModelId,
+      mode: "content",
+      routeReason: effectiveRouteReason
     })
 
     try {
       await this.pipeline.process(text, agentId)
+      const abortController = new AbortController()
       await this.withAgentTimeout(task, agentId, () => new Promise<void>((resolve, reject) => {
+        const existingStop = this.activeAgentStops.get(`${task.id}:${agentId}`)
+        this.activeAgentStops.set(`${task.id}:${agentId}`, () => {
+          abortController.abort()
+          existingStop?.()
+        })
         client.stream(
-          { messages, systemPrompt, thinkingOverride: thinking },
+          { messages, systemPrompt, thinkingOverride: thinking, signal: abortController.signal },
           {
             onContent: (delta) => {
               content += delta
-              this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId: effectiveResolved.provider.id, modelId: effectiveResolved.model.id, channel: "content", text: delta })
+              this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId: effectiveResolved.provider.id, modelId: effectiveModelId, upstreamModelId: effectiveUpstreamModelId, channel: "content", text: delta })
             },
             onThinking: (delta) => {
               thinkingTxt += delta
-              this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId: effectiveResolved.provider.id, modelId: effectiveResolved.model.id, channel: "thinking", text: delta })
+              this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId: effectiveResolved.provider.id, modelId: effectiveModelId, upstreamModelId: effectiveUpstreamModelId, channel: "thinking", text: delta })
             },
             onDone: (final) => {
               summary = final.thinking
@@ -597,7 +653,7 @@ export class Dispatcher extends EventEmitter {
             onError: (err) => reject(err)
           }
         )
-      }))
+      }), undefined, effectiveResolved.model.timeoutMs)
       task.results.set(agentId, content)
       task.thinking.set(agentId, thinkingTxt)
       if (summary) task.thinkingSummary.set(agentId, summary)
@@ -606,44 +662,67 @@ export class Dispatcher extends EventEmitter {
         taskId: task.id,
         agentId,
         providerId: effectiveResolved.provider.id,
-        modelId: effectiveResolved.model.id,
+        modelId: effectiveModelId,
+        upstreamModelId: effectiveUpstreamModelId,
+        requestModelId: effectiveModelId,
         content,
         thinking: thinkingTxt,
         summary,
         usage,
-        durationMs: Date.now() - start
+        durationMs: Date.now() - start,
+        routeReason: effectiveRouteReason
       })
       task.usage.set(agentId, usage)
       return { content }
     } catch (e: any) {
       if (e === AGENT_CANCELLED || e?.code === "AGENT_CANCELLED") return { content, error: "已暂停该 Agent。" }
       task.errors.set(agentId, e.message)
-      this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId: effectiveResolved.provider.id, modelId: effectiveResolved.model.id, error: e.message, code: e?.code, durationMs: Date.now() - start })
+      this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId: effectiveResolved.provider.id, modelId: effectiveModelId, upstreamModelId: effectiveUpstreamModelId, error: e.message, code: e?.code, durationMs: Date.now() - start })
       return { content, error: e.message }
     } finally {
-      this.registry.setStatus(agentId, "idle")
+      const remaining = (this.busyCount.get(agentId) || 1) - 1
+      if (remaining <= 0) {
+        this.busyCount.delete(agentId)
+        this.registry.setStatus(agentId, "idle")
+      } else {
+        this.busyCount.set(agentId, remaining)
+      }
     }
   }
 
-  private applyModelSelection(resolved: NonNullable<ReturnType<ReturnType<typeof getProviderManager>["resolveBinding"]>>, selection?: ModelSelection) {
+  private applyModelSelection(
+    resolved: NonNullable<ReturnType<ReturnType<typeof getProviderManager>["resolveBinding"]>>,
+    selection?: ModelSelection
+  ): NonNullable<ReturnType<ReturnType<typeof getProviderManager>["resolveBinding"]>> & { requestedModelId?: string; upstreamModelId?: string; routeReason?: string } {
     if (!selection?.providerId || !selection.modelId) return resolved
     const mgr = getProviderManager()
-    const provider = mgr.getProvider(selection.providerId)
-    if (!provider || !provider.enabled || !provider.apiKey) {
-      throw new Error(`Selected model provider is unavailable: ${selection.providerId}`)
+    const routed = typeof (mgr as any).resolveModelRoute === "function"
+      ? mgr.resolveModelRoute(selection.providerId, selection.modelId)
+      : null
+    const fallbackProvider = mgr.getProvider(selection.providerId)
+    const provider = routed?.provider || fallbackProvider
+    if (!routed || !provider || !provider.enabled || !provider.apiKey) {
+      if (!fallbackProvider || !fallbackProvider.enabled || !fallbackProvider.apiKey) {
+        throw new Error(`Selected model provider is unavailable: ${selection.providerId}`)
+      }
     }
-    const model = provider.models.find(item => item.id === selection.modelId)
+    if (!provider) throw new Error(`Selected model provider is unavailable: ${selection.providerId}`)
+    const model = routed?.model || provider.models.find(item => item.id === selection.modelId)
     if (!model) throw new Error(`Selected model not found: ${selection.providerId}/${selection.modelId}`)
+    const effectiveModel = { ...model, id: routed?.upstreamModelId || model.upstreamModel || model.id }
     return {
       ...resolved,
       provider,
-      model,
+      model: effectiveModel,
       binding: {
         ...resolved.binding,
         providerId: provider.id,
-        modelId: model.id
+        modelId: effectiveModel.id
       },
-      thinking: resolved.thinking
+      thinking: resolved.thinking,
+      requestedModelId: routed?.requestedModelId || model.id,
+      upstreamModelId: routed?.upstreamModelId || effectiveModel.id,
+      routeReason: routed?.routeReason
     }
   }
 
@@ -784,9 +863,10 @@ export class Dispatcher extends EventEmitter {
     task: DispatchTask,
     agentId: string,
     run: () => Promise<T>,
-    onStop?: () => void
+    onStop?: () => void,
+    timeoutOverrideMs?: number
   ): Promise<T> {
-    const timeoutMs = getRunTimeoutMs()
+    const timeoutMs = timeoutOverrideMs && timeoutOverrideMs > 0 ? timeoutOverrideMs : getRunTimeoutMs()
     const key = `${task.id}:${agentId}`
     let timer: ReturnType<typeof setTimeout> | null = null
     let settled = false

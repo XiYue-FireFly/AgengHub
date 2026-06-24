@@ -15,7 +15,7 @@
 .wb-context-ledger-summary > button {
   min-width: 0;
   border: 1px solid var(--wb-line-soft);
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   background: #fff;
   padding: 9px;
 }

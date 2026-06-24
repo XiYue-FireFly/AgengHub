@@ -110,5 +110,6 @@ function sanitize(value: string): string {
 function isInside(targetPath: string, rootPath: string): boolean {
   const root = resolve(rootPath)
   const target = resolve(targetPath)
-  return target === root || target.startsWith(root.endsWith("\\") || root.endsWith("/") ? root : `${root}\\`)
+  const sep = process.platform === 'win32' ? '\\' : '/'
+  return target === root || target.startsWith(root.endsWith(sep) ? root : root + sep)
 }

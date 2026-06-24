@@ -10,9 +10,9 @@ function installStyleHealthCheck(): void {
     *, *::before, *::after { box-sizing: border-box; }
     html, body, #root { height: 100%; margin: 0; overflow: hidden; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
-      background: #f7f8fb;
-      color: #20242c;
+      font-family: var(--font-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif);
+      background: var(--wb-bg, #f7f8fb);
+      color: var(--wb-text, #20242c);
     }
     button, input, textarea, select { font: inherit; letter-spacing: 0; }
     .wb-root {
@@ -20,33 +20,33 @@ function installStyleHealthCheck(): void {
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      background: #f7f8fb;
-      color: #20242c;
+      background: var(--wb-bg, #f7f8fb);
+      color: var(--wb-text, #20242c);
     }
     .wb-titlebar {
-      height: 46px;
+      height: var(--wb-titlebar-height, 32px);
       flex: none;
       display: flex;
       align-items: center;
       gap: 18px;
       padding: 0 12px 0 16px;
-      border-bottom: 1px solid #e7ebf1;
-      background: #fbfcfe;
+      border-bottom: 1px solid var(--wb-line, #dfe5ee);
+      background: var(--wb-panel, #fff);
     }
     .wb-shell {
       flex: 1;
       min-height: 0;
       display: grid;
-      grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+      grid-template-columns: minmax(var(--wb-sidebar-width, 240px), 320px) minmax(0, 1fr);
       overflow: hidden;
-      background: #f7f8fb;
+      background: var(--wb-bg, #f7f8fb);
     }
     .wb-sidebar {
       min-width: 0;
       overflow: auto;
       padding: 18px 14px;
-      border-right: 1px solid #dfe5ee;
-      background: #eef2f7;
+      border-right: 1px solid var(--wb-line, #dfe5ee);
+      background: var(--wb-sidebar, #eef2f7);
     }
     .wb-main {
       min-width: 0;
@@ -54,7 +54,7 @@ function installStyleHealthCheck(): void {
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      background: #fff;
+      background: var(--wb-panel, #fff);
     }
     .wb-chat-head {
       flex: none;
@@ -62,8 +62,8 @@ function installStyleHealthCheck(): void {
       display: flex;
       align-items: center;
       padding: 16px 28px;
-      border-bottom: 1px solid #edf0f5;
-      background: #fff;
+      border-bottom: 1px solid var(--wb-line-soft, #edf0f5);
+      background: var(--wb-panel, #fff);
     }
     .wb-thread {
       flex: 1;
@@ -75,12 +75,12 @@ function installStyleHealthCheck(): void {
       flex: 1;
       min-height: 0;
       overflow: auto;
-      background: #fff;
+      background: var(--wb-panel, #fff);
     }
     .wb-composer-wrap {
       flex: none;
       padding: 10px 28px 18px;
-      background: linear-gradient(180deg, transparent 0%, #fff 34%);
+      background: linear-gradient(180deg, transparent 0%, var(--wb-panel, #fff) 34%);
     }
     .wb-composer {
       width: min(940px, 100%);
@@ -89,10 +89,10 @@ function installStyleHealthCheck(): void {
       flex-direction: column;
       gap: 8px;
       padding: 10px;
-      border: 1px solid #dfe5ee;
-      border-radius: 16px;
-      background: #fff;
-      box-shadow: 0 18px 48px rgba(31, 44, 72, 0.12);
+      border: 1px solid var(--wb-line, #dfe5ee);
+      border-radius: var(--radius-lg, 20px);
+      background: var(--wb-panel, #fff);
+      box-shadow: var(--wb-shadow, 0 1px 4px rgba(0, 0, 0, 0.1));
     }
     .wb-composer-input-layer {
       display: flex;
@@ -107,7 +107,7 @@ function installStyleHealthCheck(): void {
       border: 0;
       outline: none;
       background: transparent;
-      color: #20242c;
+      color: var(--wb-text, #20242c);
     }
     .wb-turn-attachments,
     .wb-attachment-strip {
@@ -132,17 +132,17 @@ function installStyleHealthCheck(): void {
       max-width: 32px;
       max-height: 32px;
       object-fit: cover;
-      border-radius: 8px;
+      border-radius: var(--radius-sm, 10px);
       display: block;
     }
     .wb-composer button,
     .wb-composer select,
     .wb-titlebar button,
     .wb-sidebar button {
-      border: 1px solid #dfe5ee;
-      border-radius: 8px;
-      background: #fff;
-      color: #20242c;
+      border: 1px solid var(--wb-line, #dfe5ee);
+      border-radius: var(--radius-sm, 10px);
+      background: var(--wb-panel, #fff);
+      color: var(--wb-text, #20242c);
     }
     .wb-agent-picker,
     .wb-menu-dropdown,
@@ -150,10 +150,10 @@ function installStyleHealthCheck(): void {
     .wb-git-branch-popover {
       position: absolute;
       z-index: 100;
-      border: 1px solid #dfe5ee;
-      border-radius: 12px;
-      background: #fff;
-      box-shadow: 0 22px 58px rgba(15, 23, 42, 0.18);
+      border: 1px solid var(--wb-line, #dfe5ee);
+      border-radius: var(--radius-md, 14px);
+      background: var(--wb-panel, #fff);
+      box-shadow: var(--wb-shadow-lg, 0 4px 16px rgba(0, 0, 0, 0.15));
     }
   `
 

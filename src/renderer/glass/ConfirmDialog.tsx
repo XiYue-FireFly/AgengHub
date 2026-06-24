@@ -2,7 +2,7 @@
  * ConfirmDialog: React confirmation dialog.
  */
 
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useState, useRef } from 'react'
 import { tr } from './i18n'
 
 interface ConfirmDialogProps {
@@ -17,21 +17,40 @@ interface ConfirmDialogProps {
 }
 
 export function ConfirmDialog({ open, title, message, confirmLabel, cancelLabel, danger, onConfirm, onCancel }: ConfirmDialogProps) {
+  const containerRef = useRef<HTMLDivElement>(null)
+
   useEffect(() => {
-    if (!open) return
+    if (!open || !containerRef.current) return
+    const el = containerRef.current
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCancel()
-      if (e.key === 'Enter') onConfirm()
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        onCancel()
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        e.stopPropagation()
+        onConfirm()
+      }
     }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    el.addEventListener('keydown', onKeyDown)
+    el.focus()
+    return () => el.removeEventListener('keydown', onKeyDown)
   }, [open, onConfirm, onCancel])
 
   if (!open) return null
 
   return (
     <div className="wb-confirm-overlay" onClick={onCancel}>
-      <div className="wb-confirm-container" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true">
+      <div
+        className="wb-confirm-container"
+        onClick={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        ref={containerRef}
+        tabIndex={-1}
+      >
         <div className="wb-confirm-title">
           <strong>{title}</strong>
         </div>

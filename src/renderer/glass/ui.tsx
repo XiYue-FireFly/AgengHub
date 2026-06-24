@@ -98,8 +98,22 @@ export function Collapse({ open, children }: { open: boolean; children: ReactNod
 
 /* ---------- 通用控件 ---------- */
 export function Switch({ on, onChange, disabled }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
-  return <div className={'ah-switch' + (on ? ' on' : '')} style={disabled ? { opacity: 0.35, pointerEvents: 'none' } : undefined}
-    onClick={() => onChange(!on)}></div>
+  return (
+    <div
+      className={'ah-switch' + (on ? ' on' : '')}
+      style={disabled ? { opacity: 0.35, pointerEvents: 'none' } : undefined}
+      role="switch"
+      aria-checked={on}
+      tabIndex={disabled ? -1 : 0}
+      onClick={() => onChange(!on)}
+      onKeyDown={event => {
+        if (event.key === ' ' || event.key === 'Enter') {
+          event.preventDefault()
+          onChange(!on)
+        }
+      }}
+    />
+  )
 }
 
 export interface SegOption { value: string; label: string }

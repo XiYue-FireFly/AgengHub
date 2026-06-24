@@ -352,7 +352,7 @@ function dependencyLabel(count: number): string {
   return ` / ${tr('依赖', 'depends on')} ${count} ${tr('步', 'step(s)')}`
 }
 
-function localizedStepLabel(step: SchedulePreview['steps'][number]): string {
+function _localizedStepLabel(step: SchedulePreview['steps'][number]): string {
   const lang = getLang()
   if (lang === 'zh') return step.labelZh || step.label || step.labelEn || step.id
   return step.labelEn || step.label || step.labelZh || step.id

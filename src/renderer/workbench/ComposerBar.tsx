@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Icon, IC, AgentMark } from '../glass/ui'
 import { getLang, tr } from '../glass/i18n'
 import { AGENT_META } from '../glass/meta'
@@ -152,6 +152,12 @@ export function ComposerBar({
     : tr('请先在设置里配置本地 Agent 或 API 厂商', 'Configure a local agent or API provider in Settings first')
   const activeModelRows = filterPickerModelRows(activeProviderId ? apiModelRows : [], modelQuery)
   const selectedPickerModelKey = modelSelectionKey(modelSelection)
+
+  const refreshApprovalMode = useCallback(async () => {
+    const config = await window.electronAPI.agentic.getApprovalConfig()
+    setApprovalMode(modeFromApprovalDefaults(config.default))
+  }, [])
+
   useEffect(() => {
     const el = textareaRef.current
     if (!el) return
@@ -162,7 +168,7 @@ export function ComposerBar({
   useEffect(() => {
     window.electronAPI.commands.list().then(setCommands).catch(() => {})
     refreshApprovalMode().catch(() => {})
-  }, [])
+  }, [refreshApprovalMode])
 
   useEffect(() => {
     let alive = true
@@ -444,11 +450,6 @@ export function ComposerBar({
     }
   }
 
-  const refreshApprovalMode = async () => {
-    const config = await window.electronAPI.agentic.getApprovalConfig()
-    setApprovalMode(modeFromApprovalDefaults(config.default))
-  }
-
   const applyApprovalMode = async (nextMode: ApprovalMode) => {
     const policies = approvalPoliciesForMode(nextMode)
     setApprovalMode(nextMode)
@@ -595,6 +596,7 @@ export function ComposerBar({
         <div className="wb-composer-input-layer">
           <textarea
             ref={textareaRef}
+            className="wb-composer-input"
             value={text}
             onChange={e => {
               setText(e.target.value)

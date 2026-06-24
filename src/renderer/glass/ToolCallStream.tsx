@@ -97,6 +97,15 @@ export function ToolCallStream({ calls, className = '', defaultOpen = true, coll
             <div
               style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', cursor: 'pointer', userSelect: 'none' }}
               onClick={() => toggleExpand(call.id)}
+              role="button"
+              tabIndex={0}
+              aria-expanded={isExpanded}
+              onKeyDown={event => {
+                if (event.key === ' ' || event.key === 'Enter') {
+                  event.preventDefault()
+                  toggleExpand(call.id)
+                }
+              }}
             >
               <span style={{ fontSize: 11, color: 'var(--tx-3)', width: 16, textAlign: 'center' }}>{isExpanded ? '▼' : '▶'}</span>
               <span style={{ color: s.text, fontSize: 14, width: 18, textAlign: 'center' }}>{s.icon}</span>

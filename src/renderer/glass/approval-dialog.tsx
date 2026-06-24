@@ -37,7 +37,7 @@ export function ApprovalDialog({ items, onDecide }: {
 
   return (
     <div style={{
-      position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center',
+      position: 'fixed', inset: 0, zIndex: 10001, display: 'flex', alignItems: 'center', justifyContent: 'center',
       background: 'var(--overlay-bg)', backdropFilter: 'blur(2px)'
     }}>
       <div className="glass" style={{

@@ -23,7 +23,7 @@
   max-height: min(480px, 60vh);
   display: flex;
   flex-direction: column;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   overflow: hidden;
   background: var(--surface-1, #1e1e1e);
   border: 1px solid var(--border-subtle, rgba(255,255,255,0.08));
@@ -88,7 +88,7 @@
   font: inherit;
   font-size: 13px;
   cursor: pointer;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   text-align: left;
   transition: background 0.08s;
 }

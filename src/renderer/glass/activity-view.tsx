@@ -37,7 +37,19 @@ function StepRow({ step }: { step: ActivityStep }) {
   const expandable = !!(step.detail || step.output)
   return (
     <div className="ah-act-step">
-      <div className={`ah-act-row${expandable ? ' clickable' : ''}`} onClick={expandable ? () => setOpen(o => !o) : undefined}>
+      <div
+        className={`ah-act-row${expandable ? ' clickable' : ''}`}
+        onClick={expandable ? () => setOpen(o => !o) : undefined}
+        role={expandable ? "button" : undefined}
+        tabIndex={expandable ? 0 : undefined}
+        aria-expanded={expandable ? open : undefined}
+        onKeyDown={expandable ? event => {
+          if (event.key === ' ' || event.key === 'Enter') {
+            event.preventDefault()
+            setOpen(o => !o)
+          }
+        } : undefined}
+      >
         <span className="ah-act-ico"><Icon d={IC[stepIcon(step)]} size={13} /></span>
         <span className="ah-act-label" title={step.label}>{step.label}</span>
         {expandable && <Icon d={IC.chev} size={11} style={{ color: 'var(--tx-3)' }} />}
@@ -59,7 +71,19 @@ export function ActivityTrail({ steps, running }: { steps: ActivityStep[]; runni
     : tr(`${steps.length} 步活动`, `${steps.length} ${steps.length === 1 ? 'step' : 'steps'}`)
   return (
     <div className="ah-act">
-      <div className="ah-act-head" onClick={() => setOpen(o => !o)}>
+      <div
+        className="ah-act-head"
+        onClick={() => setOpen(o => !o)}
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        onKeyDown={event => {
+          if (event.key === ' ' || event.key === 'Enter') {
+            event.preventDefault()
+            setOpen(o => !o)
+          }
+        }}
+      >
         <span className={`ah-act-chev${open ? ' open' : ''}`}><Icon d={IC.chev} size={11} /></span>
         {running
           ? <span className="ah-act-dot ah-act-running-dot" style={{ background: 'var(--st-busy)' }} />

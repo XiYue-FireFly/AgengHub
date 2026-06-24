@@ -57,7 +57,9 @@ export class KeywordRouter {
    */
   route(text: string, availableAgents: AgentInfo[]): string | null {
     const best = this.routeScores(text, availableAgents)[0]
-    return best ? best.id : (availableAgents[0]?.id || null)
+    if (best) return best.id
+    const healthy = availableAgents.find(a => a.status !== 'error')
+    return healthy?.id || availableAgents[0]?.id || null
   }
 
   /** 返回各可用 agent 的得分（降序，仅含命中者）；供路由决策与调试/可视化。 */

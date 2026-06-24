@@ -72,10 +72,13 @@ export const AGENTIC_TOOLS = [
     type: 'function',
     function: {
       name: 'exec',
-      description: 'Run a shell command in the workspace root. Use for builds, tests, git, etc.',
+      description: 'Run a shell command in the workspace root. Use for builds, tests, git, etc. Set shellOverride=true if the command needs shell features (pipes, redirects, etc.).',
       parameters: {
         type: 'object',
-        properties: { command: { type: 'string', description: 'The shell command line to run.' } },
+        properties: {
+          command: { type: 'string', description: 'The shell command line to run.' },
+          shellOverride: { type: 'boolean', description: 'Set to true to run via shell (needed for pipes, redirects, &&, etc.). Requires approval.' }
+        },
         required: ['command']
       }
     }

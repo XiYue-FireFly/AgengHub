@@ -1,4 +1,4 @@
-﻿import { app, safeStorage } from 'electron'
+import { app, safeStorage } from 'electron'
 import { join } from 'path'
 import * as fs from 'fs'
 import { randomBytes } from 'crypto'
@@ -39,9 +39,11 @@ class AppStore {
   private data: Record<string, any> = {}
   private filePath: string = ''
   private initialized: boolean = false
+  private initFailed: boolean = false
+  private saveTimer: ReturnType<typeof setTimeout> | null = null
 
   init(): void {
-    if (this.initialized) return
+    if (this.initialized || this.initFailed) return
     try {
       const userDataPath = app.getPath('userData')
       this.filePath = join(userDataPath, 'config.json')
@@ -49,6 +51,7 @@ class AppStore {
       this.initialized = true
     } catch (e) {
       log.error(' Init failed:', e)
+      this.initFailed = true
     }
   }
 
@@ -63,10 +66,34 @@ class AppStore {
   }
 
   private save(): void {
-    try {
-      fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2))
-    } catch (e: any) {
-      log.error(`[Store] Save failed (${this.filePath}):`, e?.message || String(e))
+    if (this.saveTimer) clearTimeout(this.saveTimer)
+    this.saveTimer = setTimeout(() => {
+      try {
+        const tmp = this.filePath + '.tmp'
+        // WARNING: writeFileSync blocks the main thread. Switching to fs.promises
+        // requires changing set() and all downstream callers to be asynchronous,
+        // which risks race conditions and breaks the synchronous get/set API contract.
+        fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2))
+        fs.renameSync(tmp, this.filePath)
+      } catch (e: any) {
+        log.error(`[Store] Save failed (${this.filePath}):`, e?.message || String(e))
+      }
+      this.saveTimer = null
+    }, 200)
+  }
+
+  flush(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer)
+      this.saveTimer = null
+      try {
+        const tmp = this.filePath + '.tmp'
+        // WARNING: writeFileSync blocks the main thread.
+        fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2))
+        fs.renameSync(tmp, this.filePath)
+      } catch (e: any) {
+        log.error(`[Store] Flush failed (${this.filePath}):`, e?.message || String(e))
+      }
     }
   }
 

@@ -332,28 +332,36 @@ function AppInner() {
 
   /* ---------- 设置操作 ---------- */
   const onSetEnabled = useCallback(async (id: string, enabled: boolean) => {
+    const prev = providers
     setProviders(ps => ps.map(p => p.id === id ? { ...p, enabled } : p))
-    try { applyProviderConfig(await window.electronAPI.providers.setEnabled(id, enabled)) } catch { /* noop */ }
+    try { applyProviderConfig(await window.electronAPI.providers.setEnabled(id, enabled)) }
+    catch { setProviders(prev) }
     loadConfig(); refreshStatus()
-  }, [applyProviderConfig, loadConfig, refreshStatus])
+  }, [applyProviderConfig, loadConfig, refreshStatus, providers])
 
   const onSetKey = useCallback(async (id: string, key: string) => {
+    const prev = providers
     setProviders(ps => ps.map(p => p.id === id ? { ...p, apiKey: key, enabled: p.enabled || !!key } : p))
-    try { applyProviderConfig(await window.electronAPI.providers.setKey(id, key)) } catch { /* noop */ }
+    try { applyProviderConfig(await window.electronAPI.providers.setKey(id, key)) }
+    catch { setProviders(prev) }
     loadConfig(); refreshStatus()
-  }, [applyProviderConfig, loadConfig, refreshStatus])
+  }, [applyProviderConfig, loadConfig, refreshStatus, providers])
 
   const onSetBinding = useCallback(async (b: BindingDef) => {
+    const prev = bindings
     setBindings(bs => bs.some(x => x.agentId === b.agentId) ? bs.map(x => x.agentId === b.agentId ? b : x) : [...bs, b])
-    try { setBindings(await window.electronAPI.routing.setBinding(b)) } catch { /* noop */ }
+    try { setBindings(await window.electronAPI.routing.setBinding(b)) }
+    catch { setBindings(prev) }
     loadConfig(); refreshStatus()
-  }, [loadConfig, refreshStatus])
+  }, [loadConfig, refreshStatus, bindings])
 
   const onSetFallback = useCallback(async (chain: string[]) => {
+    const prev = fallbackChain
     setFallbackChain(chain)
-    try { await window.electronAPI.routing.setFallback(chain) } catch { /* noop */ }
+    try { await window.electronAPI.routing.setFallback(chain) }
+    catch { setFallbackChain(prev) }
     loadConfig()
-  }, [loadConfig])
+  }, [loadConfig, fallbackChain])
 
   const onUpsertProvider = useCallback(async (p: any) => {
     try { await window.electronAPI.providers.upsert(p) } catch { /* noop */ }

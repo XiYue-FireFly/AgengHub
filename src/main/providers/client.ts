@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 协议转换 & HTTP 客户端
  *
  * 支持：
@@ -14,6 +14,10 @@
 
 import { AgentRouteBinding, ChatCompletionChunk, ChatCompletionMessage, ChatCompletionRequest, ModelDefinition, ProviderDefinition, ThinkingConfig, ThinkingSummary } from './types'
 import { THINKING_BUDGET_TOKENS } from './presets'
+
+function sanitizeHeaderValue(value: string): string {
+  return Array.from(value).filter((char) => char.charCodeAt(0) <= 0xff).join('')
+}
 
 export interface StreamCallbacks {
   onContent?: (delta: string) => void
@@ -119,7 +123,7 @@ export class ProviderClient {
           accumulateToolCalls(toolAcc, delta.tool_calls)
           cb.onToolCallDelta?.(delta.tool_calls)
         }
-      } catch {}
+      } catch (err) { console.warn('[provider-client] OpenAI stream chunk parse error:', err) }
     })
     cb.onDone?.({ content, usage, finishReason, toolCalls: toolAcc.length ? toolAcc : undefined })
   }
@@ -175,22 +179,20 @@ export class ProviderClient {
           }
         }
         if (obj.type === 'content_block_delta') {
-          if (obj.delta?.type === 'thinking_delta' && obj.delta?.thinking) {
-            thinkingTxt += obj.delta.thinking
-            cb.onThinking?.(obj.delta.thinking)
-          }
-          if (obj.delta?.type === 'text_delta' && obj.delta?.text) {
+          if (obj.delta?.text) {
             content += obj.delta.text
             cb.onContent?.(obj.delta.text)
           }
-          if (obj.delta?.type === 'input_json_delta' && toolAcc[obj.index]) {
-            toolAcc[obj.index].function.arguments += obj.delta.partial_json || ''
+          if (obj.delta?.thinking) {
+            thinkingTxt += obj.delta.thinking
+            cb.onThinking?.(obj.delta.thinking)
+          }
+          if (obj.delta?.partial_json && obj.index !== undefined && toolAcc[obj.index]) {
+            toolAcc[obj.index].function.arguments += obj.delta.partial_json
           }
         }
-        // usage：message_start 带 input_tokens，message_delta 带累计 output_tokens
         if (obj.type === 'message_start' && obj.message?.usage) {
           inputTokens = obj.message.usage.input_tokens ?? inputTokens
-          outputTokens = obj.message.usage.output_tokens ?? outputTokens
           accumulatedUsage = { ...accumulatedUsage, ...obj.message.usage, input_tokens: inputTokens, output_tokens: outputTokens }
           usage = normalizeUsage({ ...accumulatedUsage, modelId: model.id, providerId: provider.id })
         }
@@ -202,15 +204,13 @@ export class ProviderClient {
           }
           if (obj.delta?.stop_reason) stopReason = obj.delta.stop_reason
         }
-      } catch {}
+      } catch (err) { console.warn('[provider-client] Anthropic stream chunk parse error:', err) }
     })
-
-    const toolCalls = toolAcc.filter(Boolean)
     cb.onDone?.({
       content,
       usage: usage || normalizeUsage({ ...accumulatedUsage, input_tokens: inputTokens, output_tokens: outputTokens, modelId: model.id, providerId: provider.id }),
       finishReason: normFinish(stopReason),
-      toolCalls: toolCalls.length ? toolCalls : undefined,
+      toolCalls: toolAcc.length ? toolAcc : undefined,
       thinking: thinkingTxt ? {
         enabled: true,
         level: thinking.level,
@@ -230,8 +230,8 @@ export class ProviderClient {
     const body: any = { contents }
     if (sysText) body.systemInstruction = { role: 'system', parts: [{ text: sysText }] }
     if (opts.tools && opts.tools.length) body.tools = [{ functionDeclarations: openaiToolsToGemini(opts.tools) }]  // 工具支持（Claude-B 新增）
+    const budget = thinking.budgetTokens ?? THINKING_BUDGET_TOKENS[thinking.level] ?? THINKING_BUDGET_TOKENS.medium
     if (model.supportsThinking && thinking.mode !== 'off') {
-      const budget = thinking.budgetTokens ?? THINKING_BUDGET_TOKENS[thinking.level] ?? THINKING_BUDGET_TOKENS.medium
       body.generationConfig = { thinkingConfig: { thinkingBudget: budget }, maxOutputTokens: this.binding.maxOutputTokens ?? 8192 }
     } else if (this.binding.maxOutputTokens) {
       body.generationConfig = { maxOutputTokens: this.binding.maxOutputTokens }
@@ -269,7 +269,7 @@ export class ProviderClient {
             cb.onContent?.(part.text)
           }
         }
-      } catch {}
+      } catch (err) { console.warn('[provider-client] Gemini stream chunk parse error:', err) }
     })
     cb.onDone?.({
       content,
@@ -279,14 +279,20 @@ export class ProviderClient {
       thinking: thinkingTxt ? {
         enabled: true,
         level: thinking.level,
+        budget,
         preview: thinkingTxt.slice(0, 280)
       } : undefined
     })
   }
 
   private headersFor(p: ProviderDefinition): Record<string, string> {
-    const h: Record<string, string> = { 'content-type': 'application/json', ...(p.customHeaders || {}) }
-    if (p.kind === 'openai' || p.kind === 'openai-compatible' || p.kind === 'custom') { if (p.apiKey) { h['authorization'] = 'Bearer ' + p.apiKey } else { delete h['authorization'] } } else if (p.kind === 'anthropic') { if (p.apiKey) { h['x-api-key'] = p.apiKey } else { delete h['x-api-key'] } h['anthropic-version'] = '2023-06-01' }
+    const sanitizedCustom: Record<string, string> = {}
+    for (const [k, v] of Object.entries(p.customHeaders || {})) {
+      sanitizedCustom[k] = sanitizeHeaderValue(v)
+    }
+    const h: Record<string, string> = { 'content-type': 'application/json', ...sanitizedCustom }
+    const safeKey = sanitizeHeaderValue(p.apiKey || '')
+    if (p.kind === 'openai' || p.kind === 'openai-compatible' || p.kind === 'custom') { if (safeKey) { h['authorization'] = 'Bearer ' + safeKey } else { delete h['authorization'] } } else if (p.kind === 'anthropic') { if (safeKey) { h['x-api-key'] = safeKey } else { delete h['x-api-key'] } h['anthropic-version'] = '2023-06-01' }
     return h
   }
 
@@ -294,18 +300,29 @@ export class ProviderClient {
     const reader = body.getReader()
     const decoder = new TextDecoder('utf-8')
     let buffer = ''
-    while (true) {
-      const { value, done } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      let idx: number
-      while ((idx = buffer.indexOf('\n\n')) >= 0) {
-        const evt = buffer.slice(0, idx)
-        buffer = buffer.slice(idx + 2)
-        const dataLine = evt.split('\n').filter(l => l.startsWith('data: ')).join('\n')
-        const cleaned = dataLine.replace(/^data: /gm, '').trim()
-        onEvent(cleaned)
+    try {
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
+        let idx: number
+        while ((idx = buffer.indexOf('\n\n')) >= 0) {
+          const evt = buffer.slice(0, idx)
+          buffer = buffer.slice(idx + 2)
+          const dataLine = evt.split('\n').filter(l => l.startsWith('data: ')).join('\n')
+          const cleaned = dataLine.replace(/^data: /gm, '').trim()
+          if (cleaned) onEvent(cleaned)
+        }
       }
+      // Flush remaining buffer (some SSE servers omit trailing \n\n)
+      const remaining = buffer.replace(/\r\n/g, '\n').trim()
+      if (remaining) {
+        const dataLine = remaining.split('\n').filter(l => l.startsWith('data: ')).join('\n')
+        const cleaned = dataLine.replace(/^data: /gm, '').trim()
+        if (cleaned) onEvent(cleaned)
+      }
+    } finally {
+      reader.releaseLock()
     }
   }
 }

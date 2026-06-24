@@ -1,6 +1,7 @@
 import React from 'react'
 import { readAppearanceLocal } from '../appearance'
 import { renderMarkdown } from './markdown-renderer'
+import { sanitizeHtml } from '../lib/sanitize'
 
 export function MarkdownBlock({ content, emptyText, workspaceRoot }: { content: string; emptyText?: string; workspaceRoot?: string | null }) {
   const source = content.trim()
@@ -68,7 +69,7 @@ export function MarkdownBlock({ content, emptyText, workspaceRoot }: { content: 
   }
   return (
     <>
-      <div className="wb-markdown" onClick={onClick} onContextMenu={onContextMenu} dangerouslySetInnerHTML={{ __html: html }} />
+      <div className="wb-markdown" onClick={onClick} onContextMenu={onContextMenu} dangerouslySetInnerHTML={{ __html: sanitizeHtml(html) }} />
       {fileMenu && (
         <div
           className="wb-file-context-menu"
