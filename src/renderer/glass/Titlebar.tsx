@@ -25,9 +25,19 @@ export function Titlebar({ search, onSearch, hubRunning }:
       onDoubleClick={() => win?.maximizeToggle()}>
       <div className="app-no-drag" style={{ display: 'flex', gap: 8 }}>
         {dots.map(d => (
-          <span key={d.c} title={d.title} onClick={d.act} style={{
-            width: 12, height: 12, borderRadius: '50%', background: d.c, opacity: 0.92, cursor: 'pointer'
-          }}></span>
+          <span key={d.c} title={d.title} onClick={d.act}
+            role="button"
+            tabIndex={0}
+            onKeyDown={event => {
+              if (event.key === ' ' || event.key === 'Enter') {
+                event.preventDefault()
+                d.act()
+              }
+            }}
+            style={{
+              width: 12, height: 12, borderRadius: '50%', background: d.c, opacity: 0.92, cursor: 'pointer'
+            }}
+          ></span>
         ))}
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600 }}>

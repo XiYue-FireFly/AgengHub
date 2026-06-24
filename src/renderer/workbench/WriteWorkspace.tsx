@@ -4,6 +4,7 @@ import { tr } from '../glass/i18n'
 import type { AgentUIStatus } from '../glass/meta'
 import { WorkspaceItem, AgentMap } from './types'
 import { renderMarkdown } from './markdown-renderer'
+import { sanitizeHtml } from '../lib/sanitize'
 import { localAgentLabel, localAgentOptions } from './localAgentOptions'
 
 type WriteViewMode = 'source' | 'preview' | 'split'
@@ -162,7 +163,7 @@ export function WriteWorkspace({
             />
           )}
           {viewMode !== 'source' && (
-            <article className="wb-write-preview" dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }} />
+            <article className="wb-write-preview" dangerouslySetInnerHTML={{ __html: sanitizeHtml(renderMarkdown(content)) }} />
           )}
         </main>
 

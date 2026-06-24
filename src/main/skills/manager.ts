@@ -259,7 +259,7 @@ function findSkillFiles(root: string): string[] {
 
 function shouldDescendIntoSkillDirectory(name: string): boolean {
   const lower = name.toLowerCase()
-  if (name.startsWith('.')) return false
+  if (name.startsWith('.') && lower !== '.system') return false
   return !['node_modules', 'dist', 'build', 'target', 'out', '.git', 'cache'].includes(lower)
 }
 

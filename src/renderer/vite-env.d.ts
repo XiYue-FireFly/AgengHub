@@ -273,6 +273,7 @@ interface ElectronAPI {
   }
   diagnostics: {
     run: () => Promise<{ timestamp: string; results: Array<{ id: string; name: string; status: string; message: string }>; summary: { pass: number; warn: number; fail: number; skip: number; total: number } }>
+    logPath: () => Promise<{ path: string }>
   }
   backup: {
     create: () => Promise<{ id: string; filename: string; createdAt: string; sizeBytes: number; keys: string[] }>
@@ -334,6 +335,18 @@ interface ElectronAPI {
   ai: {
     quickComplete: (input: { prompt: string; systemPrompt?: string; providerId?: string; modelId?: string; timeoutMs?: number }) =>
       Promise<{ content: string; error?: string }>
+  }
+  models: {
+    list: (providers?: any[]) => Promise<ModelRouteInfo[]>
+    routeSettingsGet: () => Promise<ModelRouteSettings>
+    routeSettingsSet: (patch: Partial<ModelRouteSettings>) => Promise<ModelRouteSettings>
+    updateRoute: (providerId: string, modelId: string, patch: Partial<ModelRouteInfo>) => Promise<any>
+    test: (input: { providerId: string; modelId: string; upstreamModel?: string }) => Promise<{ ok: boolean; latencyMs: number; error?: string; contentPreview?: string; usage?: any; upstreamModel?: string; routeReason?: string }>
+    exportCodexCatalog: () => Promise<{ ok: boolean; path?: string; content: string; count: number; error?: string }>
+    toggleFavorite: (providerId: string, modelId: string) => Promise<boolean>
+    toggleHidden: (providerId: string, modelId: string) => Promise<boolean>
+    favorites: () => Promise<string[]>
+    hidden: () => Promise<string[]>
   }
   memoryGraph: {
     build: (entries: any[]) => Promise<any>
@@ -422,6 +435,39 @@ interface ModelSelection {
   modelId: string
   agentId?: string
   source?: 'provider' | 'local-cli'
+}
+
+interface ModelRouteInfo {
+  providerId: string
+  providerName: string
+  providerEnabled: boolean
+  providerHasKey: boolean
+  providerProtocol: string
+  modelId: string
+  label: string
+  contextWindow: number
+  enabled: boolean
+  upstreamModel?: string
+  timeoutMs?: number
+  retryCount?: number
+  reasoningEnabled?: boolean
+  defaultReasoningLevel?: string
+  supportedReasoningLevels?: string[]
+  codexAlias?: string
+  description?: string
+  supportsTools: boolean
+  supportsVision: boolean
+  supportsThinking: boolean
+  isFavorite: boolean
+  isHidden: boolean
+}
+
+interface ModelRouteSettings {
+  fallbackModelId?: string
+  codexDefaultModel?: string
+  codexInjectionMode: 'official_account' | 'third_party_api' | 'lan_share'
+  codexInternalModelLock: boolean
+  codexSlots: Array<{ slot: string; targetModelId: string; mode: 'official_account' | 'third_party_api' | 'lan_share'; source: string }>
 }
 
 interface LocalModelConfig {

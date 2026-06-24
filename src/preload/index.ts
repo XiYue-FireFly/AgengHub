@@ -323,7 +323,8 @@ const api = {
   },
   // --- Diagnostics ---
   diagnostics: {
-    run: () => ipcRenderer.invoke('diagnostics:run')
+    run: () => ipcRenderer.invoke('diagnostics:run'),
+    logPath: () => ipcRenderer.invoke('logs:path')
   },
   // --- Backup ---
   backup: {
@@ -428,7 +429,12 @@ const api = {
   },
   // --- P4-F1: Models Center ---
   models: {
-    list: (providers: any[]) => ipcRenderer.invoke('models:list', providers),
+    list: (providers?: any[]) => ipcRenderer.invoke('models:list', providers),
+    routeSettingsGet: () => ipcRenderer.invoke('models:routeSettings:get'),
+    routeSettingsSet: (patch: any) => ipcRenderer.invoke('models:routeSettings:set', patch),
+    updateRoute: (providerId: string, modelId: string, patch: any) => ipcRenderer.invoke('models:updateRoute', providerId, modelId, patch),
+    test: (input: { providerId: string; modelId: string; upstreamModel?: string }) => ipcRenderer.invoke('models:test', input),
+    exportCodexCatalog: () => ipcRenderer.invoke('models:exportCodexCatalog'),
     toggleFavorite: (providerId: string, modelId: string) => ipcRenderer.invoke('models:toggleFavorite', providerId, modelId),
     toggleHidden: (providerId: string, modelId: string) => ipcRenderer.invoke('models:toggleHidden', providerId, modelId),
     favorites: () => ipcRenderer.invoke('models:favorites'),

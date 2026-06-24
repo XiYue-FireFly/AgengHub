@@ -7,6 +7,7 @@ import { appendDecodedProcessChunk } from "./process-decoder"
 import { store } from "../store"
 
 const MAX_OUTPUT = 96 * 1024
+const MAX_RUNS = 200
 const APPEARANCE_KEY = "appearance.preferences"
 type TerminalShell = "system" | "powershell" | "cmd" | "git-bash" | "wsl"
 
@@ -40,6 +41,7 @@ export class TerminalRuntime {
       createdAt: Date.now()
     }
     this.runs.unshift(run)
+    if (this.runs.length > MAX_RUNS) this.runs.length = MAX_RUNS
 
     const shell = resolveTerminalShell()
     const child = spawn(shell.command, shell.args(command), {
@@ -71,7 +73,7 @@ export class TerminalRuntime {
     if (!child || !run) return false
     run.status = "cancelled"
     run.completedAt = Date.now()
-    child.kill()
+    killProcessTree(child)
     this.children.delete(runId)
     return true
   }
@@ -85,7 +87,7 @@ export class TerminalRuntime {
         run.status = "cancelled"
         run.completedAt = Date.now()
       }
-      try { child.kill() } catch { /* process may have already exited */ }
+      try { killProcessTree(child) } catch { /* process may have already exited */ }
     }
     this.children.clear()
   }
@@ -126,6 +128,18 @@ function gitBashPath(): string | null {
 function clamp(value: string): string {
   if (value.length <= MAX_OUTPUT) return value
   return value.slice(0, MAX_OUTPUT) + "\n[AgentHub: output truncated]"
+}
+
+function killProcessTree(child: ChildProcessWithoutNullStreams): void {
+  if (!child.pid) { try { child.kill() } catch { /* noop */ }; return }
+  if (process.platform === 'win32') {
+    try {
+      const { execSync } = require('child_process')
+      execSync(`taskkill /pid ${child.pid} /t /f`, { windowsHide: true, timeout: 5000 })
+    } catch { try { child.kill() } catch { /* noop */ } }
+  } else {
+    try { process.kill(-child.pid, 'SIGKILL') } catch { try { child.kill('SIGKILL') } catch { /* noop */ } }
+  }
 }
 
 let instance: TerminalRuntime | null = null

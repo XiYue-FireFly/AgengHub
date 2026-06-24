@@ -739,9 +739,22 @@ function anthropicStop(fr?: string): string {
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
-    req.on("data", (c) => chunks.push(c))
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")))
-    req.on("error", reject)
+    let totalSize = 0
+    const MAX_BODY_SIZE = 10 * 1024 * 1024 // 10MB
+    const READ_TIMEOUT_MS = 30000 // 30s timeout to prevent Slowloris
+    const timer = setTimeout(() => { req.destroy(); reject(new Error('Request body read timeout')) }, READ_TIMEOUT_MS)
+    req.on("data", (c) => {
+      totalSize += c.length
+      if (totalSize > MAX_BODY_SIZE) {
+        clearTimeout(timer)
+        req.destroy()
+        reject(new Error('Request body too large'))
+        return
+      }
+      chunks.push(c)
+    })
+    req.on("end", () => { clearTimeout(timer); resolve(Buffer.concat(chunks).toString("utf-8")) })
+    req.on("error", (e) => { clearTimeout(timer); reject(e) })
   })
 }
 

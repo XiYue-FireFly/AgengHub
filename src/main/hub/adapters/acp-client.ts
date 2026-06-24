@@ -346,9 +346,21 @@ export class AcpClient {
   stop(): void {
     const p = this.proc
     this.proc = null
-    if (p?.pid) {
-      try { p.kill() } catch { /* noop */ }
+    this.initResult = null
+    this.onCrash = null
+    if (p) {
+      p.removeAllListeners('exit')
+      p.removeAllListeners('error')
+      if (p.pid) {
+        try { p.kill() } catch { /* noop */ }
+      }
     }
+    for (const [, pend] of this.pending) {
+      pend.reject(new Error('ACP client stopped intentionally'))
+    }
+    this.pending.clear()
+    this.promptHandlers.clear()
+    this.sessionRoots.clear()
   }
 
   /* ---------------- JSON-RPC 收发 ---------------- */

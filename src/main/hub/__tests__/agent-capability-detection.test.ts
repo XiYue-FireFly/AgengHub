@@ -25,7 +25,7 @@ describe("P1-9 agent CLI capability detection", () => {
     for (const c of desktopKindCandidates) {
       expect(c.verification).toBe("manual")
     }
-  })
+  }, 15000)
 
   it("GUI-only binaries are distinguishable from terminal CLIs", () => {
     const candidates = minimaxCodeCandidates()

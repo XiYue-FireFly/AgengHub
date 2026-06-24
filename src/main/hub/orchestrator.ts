@@ -97,13 +97,13 @@ export function verifyPrompt(title: string, detail: string | undefined, result: 
   ].join('\n')
 }
 
-/** 解析 verify 输出：显式 PASS→通过；含 FAIL→不通过(带原因);否则宽松判通过(避免歧义致死循环)。 */
+/** 解析 verify 输出：显式 PASS→通过；含 FAIL→不通过(带原因);其他模糊输出默认不通过（安全优先）。 */
 export function parseVerdict(raw: string): { pass: boolean; note?: string } {
   const s = (raw || '').trim()
   if (/^\s*PASS\b/i.test(s)) return { pass: true }
   const fm = s.match(/FAIL\s*[:：]?\s*(.{0,200})/i)
   if (fm) return { pass: false, note: (fm[1] || '').trim() || undefined }
-  return { pass: true }
+  return { pass: false, note: 'ambiguous verify output' }
 }
 
 /** 重试时把上一次失败原因拼到子任务提示前，引导修复 */

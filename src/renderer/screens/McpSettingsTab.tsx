@@ -60,17 +60,21 @@ export function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) 
 
   const add = async () => {
     if (!draft.name.trim()) return
-    await window.electronAPI.mcp.upsert({
-      name: draft.name.trim(),
-      transport: draft.transport,
-      command: draft.transport === 'stdio' ? draft.command.trim() : undefined,
-      args: draft.args.split(/\s+/).map(item => item.trim()).filter(Boolean),
-      url: draft.transport !== 'stdio' ? draft.url.trim() : undefined,
-      enabled: true
-    })
-    setDraft({ name: '', transport: 'stdio', command: '', args: '', url: '' })
-    setAdding(false)
-    await refresh()
+    try {
+      await window.electronAPI.mcp.upsert({
+        name: draft.name.trim(),
+        transport: draft.transport,
+        command: draft.transport === 'stdio' ? draft.command.trim() : undefined,
+        args: draft.args.split(/\s+/).map(item => item.trim()).filter(Boolean),
+        url: draft.transport !== 'stdio' ? draft.url.trim() : undefined,
+        enabled: true
+      })
+      setDraft({ name: '', transport: 'stdio', command: '', args: '', url: '' })
+      setAdding(false)
+      await refresh()
+    } catch (err: any) {
+      setError(err?.message || tr('添加 MCP 失败', 'Failed to add MCP server'))
+    }
   }
 
   const scan = async () => {
@@ -162,16 +166,34 @@ export function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) 
               </div>
               <span className="ah-chip">{mcpSourceLabel(server.source)}</span>
               <span className={'wb-mcp-clean-status ' + (server.status || 'unknown')} title={server.error || ''}>{mcpStatusLabel(server.status || 'unknown')}</span>
-              <Switch on={server.enabled} onChange={async value => { await window.electronAPI.mcp.setEnabled(server.id, value, workspaceId); await refresh() }} />
+               <Switch on={server.enabled} onChange={async value => {
+                try {
+                  await window.electronAPI.mcp.setEnabled(server.id, value, workspaceId)
+                  await refresh()
+                } catch (err: any) {
+                  setError(err?.message || tr('设置状态失败', 'Failed to set state'))
+                }
+              }} />
               <span className="wb-card-actions">
-                <button className="ah-btn sm" onClick={async () => { await window.electronAPI.mcp.test(server.id, workspaceId); await refresh() }}>{tr('测试', 'Test')}</button>
+                <button className="ah-btn sm" onClick={async () => {
+                  try {
+                    await window.electronAPI.mcp.test(server.id, workspaceId)
+                    await refresh()
+                  } catch (err: any) {
+                    setError(err?.message || tr('测试失败', 'Test failed'))
+                  }
+                }}>{tr('测试', 'Test')}</button>
                 {server.transport === 'stdio' && <button className="ah-btn sm" onClick={() => listTools(server.id)}>{toolsForServer === server.id ? tr('收起工具', 'Hide tools') : tr('工具列表', 'Tools')}</button>}
                 <button className="ah-btn sm" onClick={() => copyCommand(server)}>{tr('复制命令', 'Copy')}</button>
                 {server.source === 'user' && <button className="ah-btn sm danger" onClick={async () => {
-                  const ok = await styledConfirm({ message: tr(`删除 MCP 服务「${server.name}」？`, `Delete MCP service "${server.name}"?`), danger: true })
-                  if (!ok) return
-                  await window.electronAPI.mcp.remove(server.id)
-                  await refresh()
+                  try {
+                    const ok = await styledConfirm({ message: tr(`删除 MCP 服务「${server.name}」？`, `Delete MCP service "${server.name}"?`), danger: true })
+                    if (!ok) return
+                    await window.electronAPI.mcp.remove(server.id)
+                    await refresh()
+                  } catch (err: any) {
+                    setError(err?.message || tr('删除失败', 'Failed to delete'))
+                  }
                 }}>{tr('删除', 'Delete')}</button>}
               </span>
               {server.error && <small className="wb-mcp-clean-error">{server.error}</small>}

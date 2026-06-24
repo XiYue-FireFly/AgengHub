@@ -43,12 +43,12 @@ describe('orchestrator helpers', () => {
     expect(s).toContain('需求')
   })
 
-  it('parseVerdict 识别 PASS / FAIL:原因 / 歧义宽松通过', () => {
+  it('parseVerdict 识别 PASS / FAIL:原因 / 歧义默认不通过', () => {
     expect(parseVerdict('PASS')).toEqual({ pass: true })
     expect(parseVerdict('  pass, looks good')).toEqual({ pass: true })
     expect(parseVerdict('FAIL: 缺少错误处理')).toEqual({ pass: false, note: '缺少错误处理' })
     expect(parseVerdict('FAIL')).toEqual({ pass: false })
-    expect(parseVerdict('看起来还行')).toEqual({ pass: true }) // 歧义→宽松通过，避免死循环
+    expect(parseVerdict('看起来还行')).toEqual({ pass: false, note: 'ambiguous verify output' })
   })
 
   it('verifyPrompt 含子任务与结果、要求单行判定', () => {

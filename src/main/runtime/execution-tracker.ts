@@ -44,6 +44,7 @@ export interface ExecutionTracker {
 }
 
 const LEDGER_FILE = join(app.getPath('userData'), 'execution-reports.json')
+const MAX_LEDGER_ENTRIES = 500
 
 export function createExecutionTracker(sessionId: string): ExecutionTracker {
   const tracker: ExecutionTracker = {
@@ -117,7 +118,14 @@ export function createExecutionTracker(sessionId: string): ExecutionTracker {
       }
 
       existing.push(report)
-      writeFileSync(LEDGER_FILE, JSON.stringify(existing, null, 2))
+      if (existing.length > MAX_LEDGER_ENTRIES) {
+        existing = existing.slice(-MAX_LEDGER_ENTRIES)
+      }
+      try {
+        writeFileSync(LEDGER_FILE, JSON.stringify(existing, null, 2))
+      } catch (err) {
+        console.error('[execution-tracker] Failed to write ledger:', err)
+      }
     }
   }
 

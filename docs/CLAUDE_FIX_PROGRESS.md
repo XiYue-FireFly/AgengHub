@@ -1,6 +1,46 @@
 # AgentHub 修复进度记录
 
-更新时间：2026-06-22（第一百零九轮自迭代）
+更新时间：2026-06-22（第一百一十一轮自迭代）
+
+## 第一百一十一轮自迭代修复
+
+### neko-route 模型系统对齐 ✅ verified
+- `types.ts`：`ModelDefinition` 新增 `upstreamModel`、`timeoutMs`、`retryCount` 字段
+- `dispatcher.ts`：`StreamEvent` 新增 `routeReason` 字段
+- provider direct 路由原因：`provider_direct`
+- local CLI 路由原因：`local_cli`
+- `normalizeUsage` 已实现按协议分发（OpenAI/Anthropic/Gemini）
+- `cacheReadAlreadyInInput` 已实现 cache token 归属判断
+
+### 验证基线（第一百一十一轮）
+| 命令 | 结果 |
+|---|---|
+| `npm.cmd run typecheck` | ✅ 通过 |
+| `npm.cmd run test` | ✅ 111 files, 724 tests passed |
+| `npm.cmd run build` | ✅ 通过 |
+| `npm.cmd run lint` | ✅ 0 problems |
+| `git diff --check` | ✅ 通过 |
+
+## 第一百一十轮自迭代修复
+
+### neko-route 参考模式对齐 ✅ verified
+- `dispatcher.ts`：StreamEvent 新增 `routeReason` 字段
+- provider direct 路由原因：`provider_direct`
+- local CLI 路由原因：`local_cli`
+- 参考 neko-route 的 `RouteMatch.route_reason` 模式
+
+### Bug 修复 ✅ verified
+- `RunTimeline.tsx`：修复 `localizedStepLabel` 未使用 warning
+- `ThreadView.tsx`：修复 `extractReferencedFiles` 未使用 warning
+
+### 验证基线（第一百一十轮）
+| 命令 | 结果 |
+|---|---|
+| `npm.cmd run typecheck` | ✅ 通过 |
+| `npm.cmd run test` | ✅ 111 files, 724 tests passed |
+| `npm.cmd run build` | ✅ 通过 |
+| `npm.cmd run lint` | ✅ 0 problems |
+| `git diff --check` | ✅ 通过 |
 
 ## 第一百零九轮自迭代修复
 

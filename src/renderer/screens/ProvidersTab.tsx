@@ -362,8 +362,12 @@ export function ProvidersTab({ providers, bindings, onSetEnabled, onSetKey, onRe
           </button>
           {!provider.builtIn && (
             <button className="ah-btn sm danger" onClick={async () => {
-              const ok = await styledConfirm({ message: tr(`删除供应商「${provider.name}」？`, `Delete provider "${provider.name}"?`), danger: true })
-              if (ok) onDelete(provider.id)
+              try {
+                const ok = await styledConfirm({ message: tr(`删除供应商「${provider.name}」？`, `Delete provider "${provider.name}"?`), danger: true })
+                if (ok) await onDelete(provider.id)
+              } catch (err: any) {
+                console.error('Failed to delete provider:', err)
+              }
             }}>
               {tr('删除', 'Delete')}
             </button>

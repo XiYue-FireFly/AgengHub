@@ -170,8 +170,10 @@ export async function gitRevertFile(workspaceId: string | null | undefined, file
 
 export async function gitRevertAll(workspaceId: string | null | undefined): Promise<GitStatus> {
   const rootPath = requireWorkspaceRoot(workspaceId)
-  await git(rootPath, ["restore", "--staged", "--worktree", "--", "."]).catch(() => null)
-  await git(rootPath, ["clean", "-f", "-d"]).catch(() => null)
+  const errors: string[] = []
+  await git(rootPath, ["restore", "--staged", "--worktree", "--", "."]).catch(e => { errors.push(`restore: ${e?.message || e}`); return null })
+  await git(rootPath, ["clean", "-f", "-d"]).catch(e => { errors.push(`clean: ${e?.message || e}`); return null })
+  if (errors.length) throw new Error(`git revert all failed:\n${errors.join('\n')}`)
   return gitStatus(workspaceId)
 }
 

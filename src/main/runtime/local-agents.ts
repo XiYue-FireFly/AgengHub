@@ -1,4 +1,6 @@
 import { execFileSync } from "node:child_process"
+import { isAbsolute } from "node:path"
+import { existsSync } from "node:fs"
 import { getProviderManager } from "../providers/manager"
 import { locateAgentCandidates, AgentBinaryCandidate } from "../hub/agent-locator"
 import { AGENTS } from "../hub/agents"
@@ -61,8 +63,20 @@ function manualAgentDispatchReady(agent: { manualOnly?: boolean; requiresPromptA
 
 function readVersion(binary?: string, args: string[] = ["--version"]): string | undefined {
   if (!binary) return undefined
+
+  const cmd = binary.trim()
+  const safeCommands = ['claude', 'gemini', 'codebuddy', 'antigravity', 'mimocode', 'zcode', 'reasonix', 'npx', 'npm', 'node', 'python', 'python3']
+
+  if (!isAbsolute(cmd) && !safeCommands.includes(cmd.toLowerCase())) {
+    return undefined
+  }
+
+  if (isAbsolute(cmd) && !existsSync(cmd)) {
+    return undefined
+  }
+
   try {
-    return execFileSync(binary, args, { encoding: "utf-8", timeout: 2500, windowsHide: true }).trim().split(/\r?\n/)[0]
+    return execFileSync(cmd, args, { encoding: "utf-8", timeout: 2500, windowsHide: true }).trim().split(/\r?\n/)[0]
   } catch {
     return undefined
   }

@@ -913,7 +913,7 @@ function conciseOrchestrateText(value: any, max: number): string {
   return short(text, max)
 }
 
-function extractReferencedFiles(events: RuntimeEvent[], extraText = ''): string[] {
+function _extractReferencedFiles(events: RuntimeEvent[], extraText = ''): string[] {
   const seen = new Set<string>()
   const out: string[] = []
   const scan = (value: any) => {

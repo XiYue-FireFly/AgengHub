@@ -58,7 +58,7 @@ describe("ProviderManager.fetchModels", () => {
     expect(provider.modelFetch).toMatchObject({ status: "error", error: "HTTP 500", lastSuccessCount: 1 })
   })
 
-  it("merges successful model refreshes with route-bound models", async () => {
+  it("uses the provider returned model list without inventing missing route-bound models", async () => {
     const { ProviderManager } = await import("../manager")
     const manager = new ProviderManager()
     manager.setProviderApiKey("openai", "key")
@@ -72,7 +72,7 @@ describe("ProviderManager.fetchModels", () => {
 
     expect(result.ok).toBe(true)
     expect(provider.models.some(model => model.id === "fresh-model")).toBe(true)
-    expect(provider.models.some(model => model.id === "gpt-4o")).toBe(true)
+    expect(provider.models.some(model => model.id === "gpt-4o")).toBe(false)
     expect(provider.modelFetch).toMatchObject({ status: "ok", lastSuccessCount: provider.models.length })
   })
 
@@ -160,6 +160,66 @@ describe("ProviderManager.fetchModels", () => {
       { id: "b", isActive: true },
       { id: "c" }
     ], 1, 0)).toEqual(["c", "b", "a"])
+  })
+
+  it("preserves model route fields when fetched models are merged", async () => {
+    const { ProviderManager } = await import("../manager")
+    const manager = new ProviderManager()
+    manager.setProviderApiKey("openai", "key")
+    manager.updateModelRoute("openai", "gpt-4o", {
+      enabled: false,
+      upstreamModel: "real-upstream",
+      timeoutMs: 12345,
+      retryCount: 2,
+      codexAlias: "main-alias",
+      reasoningEnabled: true,
+      defaultReasoningLevel: "high",
+      supportedReasoningLevels: ["low", "high"]
+    })
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      status: 200,
+      json: async () => ({ data: [{ id: "gpt-4o", context_window: 999000 }] })
+    })))
+
+    await manager.fetchModels("openai")
+    expect(manager.getProvider("openai")!.models.find(model => model.id === "gpt-4o")).toMatchObject({
+      enabled: false,
+      providerId: "openai",
+      upstreamModel: "real-upstream",
+      timeoutMs: 12345,
+      retryCount: 2,
+      codexAlias: "main-alias",
+      contextWindow: 999000
+    })
+  })
+
+  it("resolves direct, upstream, disabled fallback, and Codex default model routes", async () => {
+    const { ProviderManager } = await import("../manager")
+    const manager = new ProviderManager()
+    manager.setProviderApiKey("openai", "key")
+    manager.updateModelRoute("openai", "gpt-4o", { upstreamModel: "upstream-gpt", enabled: true })
+    manager.updateModelRoute("openai", "gpt-4o-mini", { enabled: true })
+    manager.setModelRouteSettings({
+      fallbackModelId: "openai/gpt-4o-mini",
+      codexDefaultModel: "gpt-4o",
+      codexInternalModelLock: true
+    })
+
+    expect(manager.resolveModelRoute("openai", "gpt-4o")).toMatchObject({
+      requestedModelId: "gpt-4o",
+      upstreamModelId: "upstream-gpt",
+      routeReason: "upstream"
+    })
+    expect(manager.resolveModelRoute("openai", "missing")).toMatchObject({
+      requestedModelId: "missing",
+      upstreamModelId: "gpt-4o-mini",
+      routeReason: "fallback_unknown"
+    })
+    expect(manager.resolveModelRoute("openai", "ignored", { codexSlot: "internal" })).toMatchObject({
+      requestedModelId: "gpt-4o",
+      upstreamModelId: "upstream-gpt",
+      routeReason: "codex_internal_locked"
+    })
   })
 
   it("persists Claude provider order without changing binding, enabled state, or api key", async () => {

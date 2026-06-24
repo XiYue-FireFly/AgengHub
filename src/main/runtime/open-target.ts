@@ -154,10 +154,16 @@ export function openWithEditor(editorId: string, filePath: string, line?: number
     // System default: use OS opener
     if (editor.id === 'system') {
       try {
-        const cmd = process.platform === 'win32' ? 'start' : process.platform === 'darwin' ? 'open' : 'xdg-open'
-        execFile(cmd, [filePath], { windowsHide: true }, err => {
-          resolve(err ? { ok: false, error: err.message } : { ok: true })
-        })
+        if (process.platform === 'win32') {
+          execFile('cmd.exe', ['/c', 'start', '', filePath], { windowsHide: true }, err => {
+            resolve(err ? { ok: false, error: err.message } : { ok: true })
+          })
+        } else {
+          const cmd = process.platform === 'darwin' ? 'open' : 'xdg-open'
+          execFile(cmd, [filePath], { windowsHide: true }, err => {
+            resolve(err ? { ok: false, error: err.message } : { ok: true })
+          })
+        }
       } catch (e: any) { resolve({ ok: false, error: e.message }) }
       return
     }
@@ -166,7 +172,7 @@ export function openWithEditor(editorId: string, filePath: string, line?: number
     if (editor.id === 'file-manager') {
       try {
         if (process.platform === 'win32') {
-          execFile('explorer.exe', ['/select,', filePath], { windowsHide: true }, err => {
+          execFile('explorer.exe', ['/select,' + filePath], { windowsHide: true }, err => {
             resolve(err ? { ok: false, error: err.message } : { ok: true })
           })
         } else if (process.platform === 'darwin') {

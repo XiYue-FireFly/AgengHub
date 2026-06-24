@@ -28,6 +28,8 @@ export interface ModelDefinition {
   id: string
   label: string
   contextWindow: number
+  enabled?: boolean
+  providerId?: string
   supportsTools: boolean
   supportsVision: boolean
   supportsThinking: boolean
@@ -35,6 +37,16 @@ export interface ModelDefinition {
   defaultThinkingLevel?: ThinkingLevel
   /** 给人类看的描述 */
   description?: string
+  /** neko-route aligned: upstream model ID when model.id differs from the actual upstream model */
+  upstreamModel?: string
+  /** neko-route aligned: timeout in milliseconds for this model */
+  timeoutMs?: number
+  /** neko-route aligned: retry count for this model */
+  retryCount?: number
+  reasoningEnabled?: boolean
+  defaultReasoningLevel?: ThinkingLevel
+  supportedReasoningLevels?: ThinkingLevel[]
+  codexAlias?: string
 }
 
 export interface ProviderCapabilities {
@@ -83,6 +95,8 @@ export interface ProviderDefinition {
   sortOrder?: number
   /** Claude Code 兼容模型映射，用作 Main/Haiku/Sonnet/Opus 建议和运行时选择。 */
   modelMapping?: ProviderModelMapping
+  /** Optional protocol override for model-route testing/routing UI. */
+  protocolOverride?: 'openai_responses' | 'openai_chat_completions' | 'anthropic_messages' | 'gemini_generate_content'
 }
 
 export interface ProviderModelMapping {
@@ -139,9 +153,25 @@ export interface RoutingConfig {
   strategy: 'single' | 'load-balance' | 'cost-aware'
 }
 
+export interface CodexSlotAssignment {
+  slot: string
+  targetModelId: string
+  mode: 'official_account' | 'third_party_api' | 'lan_share'
+  source: string
+}
+
+export interface ModelRouteSettings {
+  fallbackModelId?: string
+  codexDefaultModel?: string
+  codexInjectionMode: 'official_account' | 'third_party_api' | 'lan_share'
+  codexInternalModelLock: boolean
+  codexSlots: CodexSlotAssignment[]
+}
+
 export interface ProvidersConfig {
   providers: ProviderDefinition[]
   routing: RoutingConfig
+  modelRoutes?: ModelRouteSettings
   /** 当前激活的 Agent 路由（可由 UI 切换） */
   activeBindingId: string | null
   /** 配置 schema 版本（用于未来迁移；落盘的 apiKey 经 safeStorage 加密） */

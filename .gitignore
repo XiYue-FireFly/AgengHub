@@ -59,3 +59,14 @@ agenthub-dev-live*.log
 # Backup files (use backup system instead)
 *.bak
 mcp.ts.bak
+
+# Temporary Neko directory
+__neko_temp/
+
+# OpenCode / agent orchestration session files
+.omo/
+.mimocode/
+opencode.json
+
+# Runtime logs
+logs/

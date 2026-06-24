@@ -52,9 +52,13 @@ export function WorkspacesTab() {
   }
 
   const pickFolder = async () => {
-    const path = await window.electronAPI.app.pickFolder({ defaultPath: editing?.rootPath })
-    if (path) {
-      setEditing(current => ({ id: current?.id, name: current?.name || path.split(/[\\/]/).filter(Boolean).pop() || tr('工作目录', 'Workspace'), rootPath: path }))
+    try {
+      const path = await window.electronAPI.app.pickFolder({ defaultPath: editing?.rootPath })
+      if (path) {
+        setEditing(current => ({ id: current?.id, name: current?.name || path.split(/[\\/]/).filter(Boolean).pop() || tr('工作目录', 'Workspace'), rootPath: path }))
+      }
+    } catch (err: any) {
+      setError(err?.message || tr('选择目录失败', 'Failed to pick folder'))
     }
   }
 
@@ -93,14 +97,25 @@ export function WorkspacesTab() {
             {activeId === item.id && <span className="ah-chip mint">{tr('当前', 'Active')}</span>}
             <p>{item.rootPath}</p>
           </div>
-          <div className="wb-card-actions">
-            {activeId !== item.id && <button className="ah-btn sm" onClick={async () => { await window.electronAPI.workspaces.setActive(item.id); await refresh() }}>{tr('设为当前', 'Set active')}</button>}
+           <div className="wb-card-actions">
+            {activeId !== item.id && <button className="ah-btn sm" onClick={async () => {
+              try {
+                await window.electronAPI.workspaces.setActive(item.id)
+                await refresh()
+              } catch (err: any) {
+                setError(err?.message || tr('设置当前目录失败', 'Failed to set active workspace'))
+              }
+            }}>{tr('设为当前', 'Set active')}</button>}
             <button className="ah-btn sm" onClick={() => setEditing({ id: item.id, name: item.name, rootPath: item.rootPath })}>{tr('编辑', 'Edit')}</button>
             <button className="ah-btn sm danger" onClick={async () => {
-              const ok = await styledConfirm({ message: tr(`移除工作目录「${item.name}」？磁盘文件不会被删除。`, `Remove workspace "${item.name}"? Files on disk will not be deleted.`), danger: true })
-              if (!ok) return
-              await window.electronAPI.workspaces.remove(item.id)
-              await refresh()
+              try {
+                const ok = await styledConfirm({ message: tr(`移除工作目录「${item.name}」？磁盘文件不会被删除。`, `Remove workspace "${item.name}"? Files on disk will not be deleted.`), danger: true })
+                if (!ok) return
+                await window.electronAPI.workspaces.remove(item.id)
+                await refresh()
+              } catch (err: any) {
+                setError(err?.message || tr('移除工作目录失败', 'Failed to remove workspace'))
+              }
             }}>{tr('移除', 'Remove')}</button>
           </div>
         </div>
