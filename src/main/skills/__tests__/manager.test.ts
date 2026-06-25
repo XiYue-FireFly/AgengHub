@@ -233,4 +233,46 @@ describe('SkillManager', () => {
     const command = listWorkbenchCommands().find(item => item.id === `skill:${skill.id}`)
     expect(command?.payload?.category).toMatchObject({ id: 'research' })
   })
+
+  it('finds prompt-matching skills by name, description, and tags with instructions', async () => {
+    const { getSkillManager } = await import('../manager')
+    const m = getSkillManager()
+    const planner = m.add({
+      name: 'Planning Coach',
+      description: 'Break implementation work into safe steps',
+      instructions: 'Always write a plan before coding.',
+      tags: ['plan', 'architecture']
+    })
+    const tester = m.add({
+      name: 'TDD Helper',
+      description: 'Write failing tests before changing code',
+      instructions: 'Use red-green-refactor.',
+      tags: ['testing', 'vitest']
+    })
+    m.add({
+      name: 'Gardening Notes',
+      description: 'Plant watering schedule',
+      instructions: 'Water deeply.',
+      tags: ['plants']
+    })
+
+    const matches = m.findMatchingSkills('Please plan this architecture change and add vitest coverage')
+
+    expect(matches.map(match => match.id)).toEqual([planner.id, tester.id])
+    expect(matches[0]).toMatchObject({ name: 'Planning Coach', instructions: 'Always write a plan before coding.' })
+    expect(matches[1]).toMatchObject({ name: 'TDD Helper', instructions: 'Use red-green-refactor.' })
+  })
+
+  it('limits prompt skill matches to the top three ranked results', async () => {
+    const { getSkillManager } = await import('../manager')
+    const m = getSkillManager()
+    const first = m.add({ name: 'React Performance', description: 'React profiler and render performance', instructions: 'Profile renders.', tags: ['react', 'performance'] })
+    const second = m.add({ name: 'React Accessibility', description: 'Accessible React UI', instructions: 'Check ARIA.', tags: ['react', 'a11y'] })
+    const third = m.add({ name: 'React Testing', description: 'Vitest React component tests', instructions: 'Test components.', tags: ['react', 'testing'] })
+    m.add({ name: 'React Animation', description: 'Motion for React', instructions: 'Animate carefully.', tags: ['react', 'motion'] })
+
+    const matches = m.findMatchingSkills('react performance testing accessibility motion')
+
+    expect(matches.map(match => match.id)).toEqual([first.id, third.id, second.id])
+  })
 })

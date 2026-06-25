@@ -94,7 +94,7 @@ const api = {
   },
   app: {
     openExternal: (url: string) => ipcRenderer.invoke('app:openExternal', url),
-    openPath: (input: { path: string; target?: 'antigravity' | 'explorer' | 'system'; line?: number; column?: number; workspaceRoot?: string | null }) => ipcRenderer.invoke('app:openPath', input),
+    openPath: (input: { path: string; target?: 'editor' | 'antigravity' | 'explorer' | 'system' | 'vscode' | 'cursor' | 'windsurf' | 'zed' | 'file-manager'; line?: number; column?: number; workspaceRoot?: string | null }) => ipcRenderer.invoke('app:openPath', input),
     resolvePath: (input: { path: string; workspaceRoot?: string | null }) => ipcRenderer.invoke('app:resolvePath', input),
     readTextFile: (input: { path: string; workspaceRoot?: string | null }) => ipcRenderer.invoke('app:readTextFile', input),
     pickFolder: (options?: { defaultPath?: string }) => ipcRenderer.invoke('app:pickFolder', options),

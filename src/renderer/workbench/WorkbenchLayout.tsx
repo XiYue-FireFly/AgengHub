@@ -44,6 +44,7 @@ type WorkbenchThinking = { mode: 'off' | 'auto' | 'enabled'; level: 'minimal' | 
 const AGENT_SLOT_STORE_KEY = 'agenthub.workbench.agentSlots.v1'
 const INSPECTOR_WIDTH_STORE_KEY = 'agenthub.workbench.inspectorWidth.v1'
 const LAST_VIEW_STORE_KEY = 'agenthub.workbench.lastView.v1'
+const LAST_THREAD_STORE_KEY = 'agenthub.workbench.lastThread.v1'
 const CUSTOM_SCHEDULE_STORE_KEY = 'agenthub.workbench.customSchedule.v1'
 const SMART_SCHEDULE_STORE_KEY = 'agenthub.workbench.smartFiveRoleSchedule.v1'
 const SCHEDULE_OVERRIDES_STORE_KEY = 'agenthub.workbench.scheduleOverrides.v1'
@@ -103,10 +104,12 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const [view, setViewState] = useState<ViewMode>('chat')
   const [settingsTab, setSettingsTab] = useState<SettingsTabKey>('providers')
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot>({ threads: [], turns: [], runs: [], activeThreadId: null })
+  const [selectedThreadId, setSelectedThreadIdState] = useState<string | null>(null)
   const [allThreads, setAllThreads] = useState<WorkbenchThread[]>([])
   const [events, setEvents] = useState<RuntimeEvent[]>([])
   const [workspaces, setWorkspaces] = useState<WorkspaceItem[]>([])
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
+  const [pendingActiveThreadId, setPendingActiveThreadId] = useState<string | null>(null)
   const [mode, setMode] = useState<DispatchPreset>('lead-workers')
   const [targetAgent, setTargetAgent] = useState<string | null>(null)
   const [modelSelection, setModelSelection] = useState<ModelSelection | null>(null)
@@ -141,12 +144,24 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const pendingRuntimeEvents = useRef<RuntimeEvent[]>([])
   const seenImmediateStreamKeys = useRef<Set<string>>(new Set())
   const loadingThreadIdRef = useRef<string | null>(null)
+  const loadWorkbenchGenRef = useRef(0)
   const selectThreadGenRef = useRef(0)
   const runtimeEventFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const threadScrollRef = useRef<HTMLElement | null>(null)
   const shouldStickToBottom = useRef(true)
   const startupViewApplied = useRef(false)
   const smartScheduleStoreLoaded = useRef(false)
+  const userExplicitAgentRef = useRef<string | null>(null)  // 跟踪用户明确选择的 agent
+  const selectedThreadIdRef = useRef<string | null>(null)
+
+  const setSelectedThreadId = useCallback((threadId: string | null) => {
+    selectedThreadIdRef.current = threadId
+    setSelectedThreadIdState(threadId)
+    try {
+      if (threadId) localStorage.setItem(LAST_THREAD_STORE_KEY, threadId)
+      else localStorage.removeItem(LAST_THREAD_STORE_KEY)
+    } catch { /* noop */ }
+  }, [])
 
   const setView = useCallback((next: ViewMode) => {
     setViewState(next)
@@ -184,7 +199,10 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     })
   }, [setCustomSchedule, setSmartSchedule])
 
-  const activeThreadId = snapshot.activeThreadId
+  const selectedThreadStillVisible = selectedThreadId && snapshot.threads.some(thread => thread.id === selectedThreadId)
+  const activeThreadId = selectedThreadStillVisible ? selectedThreadId : null
+  const sidebarActiveThreadId = pendingActiveThreadId ?? activeThreadId
+  const visibleThreadId = pendingActiveThreadId ?? activeThreadId
 
   const refreshThreadTodos = useCallback(async (threadId = activeThreadId) => {
     if (!threadId) {
@@ -234,7 +252,20 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     }, 80)
   }, [appendRuntimeEvents])
 
+  const preserveSelectedSnapshot = useCallback((next: WorkbenchSnapshot, previous: WorkbenchSnapshot): WorkbenchSnapshot => {
+    const selected = selectedThreadIdRef.current
+    if (selected && next.threads.some(thread => thread.id === selected)) {
+      return { ...next, activeThreadId: selected }
+    }
+    const previousActive = previous.activeThreadId
+    if (previousActive && next.threads.some(thread => thread.id === previousActive)) {
+      return { ...next, activeThreadId: previousActive }
+    }
+    return next
+  }, [])
+
   const loadWorkbench = useCallback(async (nextWorkspaceId?: string | null) => {
+    const gen = ++loadWorkbenchGenRef.current
     clearRuntimeEventBuffer()
     const [wsList, activeWs, scheduleList, local] = await Promise.all([
       window.electronAPI.workspaces.list().catch(() => []),
@@ -248,26 +279,39 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       window.electronAPI.runtime.snapshot(resolvedWorkspaceId),
       window.electronAPI.runtime.snapshot(undefined)
     ])
+    if (loadWorkbenchGenRef.current !== gen) return
 
-    setSnapshot(snap)
+    let persistedThreadId: string | null = null
+    try { persistedThreadId = localStorage.getItem(LAST_THREAD_STORE_KEY) } catch { /* noop */ }
+    const selectedStillVisible = selectedThreadIdRef.current && snap.threads.some(thread => thread.id === selectedThreadIdRef.current)
+    const persistedStillVisible = persistedThreadId && snap.threads.some(thread => thread.id === persistedThreadId)
+    const nextVisibleThreadId = selectedStillVisible
+      ? selectedThreadIdRef.current
+      : persistedStillVisible
+        ? persistedThreadId
+        : snap.threads[0]?.id ?? null
+    setSnapshot({ ...snap, activeThreadId: nextVisibleThreadId })
     setAllThreads(allSnap.threads)
     setWorkspaces(wsList)
     setWorkspaceId(resolvedWorkspaceId)
     setSchedules(scheduleList)
     setLocalAgents(local)
+    if (!selectedStillVisible) setSelectedThreadId(nextVisibleThreadId)
 
-    if (snap.activeThreadId) {
-      loadingThreadIdRef.current = snap.activeThreadId
-      const loadedEvents = await window.electronAPI.runtime.eventsSince(snap.activeThreadId, 0)
+    if (nextVisibleThreadId) {
+      loadingThreadIdRef.current = nextVisibleThreadId
+      const loadedEvents = await window.electronAPI.runtime.eventsSince(nextVisibleThreadId, 0)
+      if (loadWorkbenchGenRef.current !== gen) return
       setEvents(prev => mergeRuntimeEventLists(
         loadedEvents,
         [
-          ...prev.filter(event => event.threadId === snap.activeThreadId),
-          ...pendingRuntimeEvents.current.filter(event => event.threadId === snap.activeThreadId)
+          ...prev.filter(event => event.threadId === nextVisibleThreadId),
+          ...pendingRuntimeEvents.current.filter(event => event.threadId === nextVisibleThreadId)
         ]
       ))
-      setThreadTodosState(await window.electronAPI.todos.list(snap.activeThreadId).catch(() => []))
-      if (loadingThreadIdRef.current === snap.activeThreadId) loadingThreadIdRef.current = null
+      setThreadTodosState(await window.electronAPI.todos.list(nextVisibleThreadId).catch(() => []))
+      if (loadWorkbenchGenRef.current !== gen) return
+      if (loadingThreadIdRef.current === nextVisibleThreadId) loadingThreadIdRef.current = null
     } else {
       setEvents([])
       setThreadTodosState([])
@@ -337,7 +381,15 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
 
   useEffect(() => {
     const unsubscribe = window.electronAPI.runtime.onEvent(event => {
-      if (event.threadId === activeThreadId || event.threadId === loadingThreadIdRef.current) {
+      const isPendingThreadEvent = pendingActiveThreadId !== null && event.threadId === loadingThreadIdRef.current
+      const isVisibleThreadEvent = event.threadId === selectedThreadIdRef.current
+
+      if (isPendingThreadEvent) {
+        pendingRuntimeEvents.current.push(event)
+        return
+      }
+
+      if (isVisibleThreadEvent) {
         if (isBufferedRuntimeEvent(event)) enqueueRuntimeEvent(event)
         else {
           flushRuntimeEvents()
@@ -347,10 +399,27 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
           void refreshThreadTodos(event.threadId)
         }
       }
+
+      if (pendingActiveThreadId) {
+        if (snapshotRefreshTimer.current) {
+          clearTimeout(snapshotRefreshTimer.current)
+          snapshotRefreshTimer.current = null
+        }
+        return
+      }
+
       const immediate = event.kind === 'turn:created' || event.kind === 'turn:status' || event.kind === 'agent:done' || event.kind === 'agent:error' || event.kind === 'run:created' || event.kind === 'run:status'
       if (snapshotRefreshTimer.current) clearTimeout(snapshotRefreshTimer.current)
       snapshotRefreshTimer.current = setTimeout(() => {
-        window.electronAPI.runtime.snapshot(workspaceId).then(setSnapshot).catch(() => {})
+        if (event.threadId === selectedThreadIdRef.current) {
+          window.electronAPI.runtime.snapshot(workspaceId).then(next => {
+            setSnapshot(prev => preserveSelectedSnapshot(next, prev))
+          }).catch(() => {})
+        } else {
+          window.electronAPI.runtime.snapshot(workspaceId).then(next => {
+            setSnapshot(prev => preserveSelectedSnapshot(next, prev))
+          }).catch(() => {})
+        }
         window.electronAPI.runtime.snapshot(undefined).then(snap => setAllThreads(snap.threads)).catch(() => {})
         snapshotRefreshTimer.current = null
       }, immediate ? 0 : 400)
@@ -360,20 +429,24 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       if (snapshotRefreshTimer.current) clearTimeout(snapshotRefreshTimer.current)
       clearRuntimeEventBuffer()
     }
-  }, [activeThreadId, workspaceId, refreshThreadTodos, appendRuntimeEvents, enqueueRuntimeEvent, flushRuntimeEvents, clearRuntimeEventBuffer])
+  }, [activeThreadId, pendingActiveThreadId, workspaceId, refreshThreadTodos, appendRuntimeEvents, enqueueRuntimeEvent, flushRuntimeEvents, clearRuntimeEventBuffer])
 
   useEffect(() => {
     refreshThreadTodos().catch(() => {})
   }, [refreshThreadTodos])
 
   const activeThread = useMemo(
-    () => snapshot.threads.find(t => t.id === snapshot.activeThreadId) ?? null,
-    [snapshot]
+    () => snapshot.threads.find(t => t.id === visibleThreadId) ?? null,
+    [snapshot.threads, visibleThreadId]
   )
 
   const activeTurns = useMemo(
     () => activeThread ? snapshot.turns.filter(t => t.threadId === activeThread.id) : [],
     [snapshot.turns, activeThread]
+  )
+  const activeEvents = useMemo(
+    () => visibleThreadId === activeThreadId ? events : events.filter(event => event.threadId === visibleThreadId),
+    [events, visibleThreadId, activeThreadId]
   )
 
   const connectionSummary = useMemo(
@@ -396,8 +469,12 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   }, [targetAgent, modelSelection, props.providers, selectableModelSignature])
 
   const selectTargetAgent = useCallback((agentId: string | null) => {
+    userExplicitAgentRef.current = agentId  // 记录用户明确选择
     setTargetAgent(agentId)
-    if (agentId) setModelSelection(null)
+    if (agentId) {
+      setModelSelection(null)
+      setMode('auto')
+    }
   }, [])
 
   useEffect(() => {
@@ -445,45 +522,52 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
 
   const selectThread = async (threadId: string | null) => {
     const gen = ++selectThreadGenRef.current
+    loadWorkbenchGenRef.current += 1
+    flushRuntimeEvents()
+    clearRuntimeEventBuffer()
+    setPendingActiveThreadId(threadId)
     loadingThreadIdRef.current = threadId
     const thread = allThreads.find(t => t.id === threadId)
     const threadWorkspaceId = thread ? thread.workspaceId : workspaceId
     if (threadWorkspaceId !== workspaceId) {
-      setWorkspaceId(threadWorkspaceId)
       await window.electronAPI.workspaces.setActive(threadWorkspaceId).catch(() => null)
     }
 
-    const selected = await window.electronAPI.threads.select(threadId)
-    if (selectThreadGenRef.current !== gen) return // stale — newer call in progress
-    const [snap, allSnap] = await Promise.all([
-      window.electronAPI.runtime.snapshot(threadWorkspaceId),
-      window.electronAPI.runtime.snapshot(undefined)
-    ])
-    if (selectThreadGenRef.current !== gen) return // stale
-    const loadedEvents = selected ? await window.electronAPI.runtime.eventsSince(selected, 0) : []
-    if (selectThreadGenRef.current !== gen) return // stale
-    const pendingForSelected = selected ? pendingRuntimeEvents.current.filter(event => event.threadId === selected) : []
-    clearRuntimeEventBuffer()
-    if (selectThreadGenRef.current !== gen) return // stale — newer call before final writes
-    setSnapshot(snap)
-    setAllThreads(allSnap.threads)
-    setEvents(prev => selected ? mergeRuntimeEventLists(
-      loadedEvents,
-      [
-        ...prev.filter(event => event.threadId === selected),
-        ...pendingForSelected
-      ]
-    ) : [])
-    const [todos, goal] = await Promise.all([
-      selected ? window.electronAPI.todos.list(selected).catch(() => []) : Promise.resolve([]),
-      selected ? window.electronAPI.goals.get(selected).catch(() => null) : Promise.resolve(null)
-    ])
-    if (selectThreadGenRef.current !== gen) return // stale
-    setThreadTodosState(todos)
-    setActiveGoal(goal)
-    if (loadingThreadIdRef.current === threadId) loadingThreadIdRef.current = null
-    shouldStickToBottom.current = true
-    setView('chat')
+    try {
+      const selected = await window.electronAPI.threads.select(threadId)
+      if (selectThreadGenRef.current !== gen) return // stale — newer call in progress
+      const [snap, allSnap, loadedEvents, todos, goal] = await Promise.all([
+        window.electronAPI.runtime.snapshot(threadWorkspaceId),
+        window.electronAPI.runtime.snapshot(undefined),
+        selected ? window.electronAPI.runtime.eventsSince(selected, 0) : Promise.resolve([]),
+        selected ? window.electronAPI.todos.list(selected).catch(() => []) : Promise.resolve([]),
+        selected ? window.electronAPI.goals.get(selected).catch(() => null) : Promise.resolve(null)
+      ])
+      if (selectThreadGenRef.current !== gen) return // stale
+      const pendingForSelected = selected ? pendingRuntimeEvents.current.filter(event => event.threadId === selected) : []
+      clearRuntimeEventBuffer()
+      if (selectThreadGenRef.current !== gen) return // stale — newer call before final writes
+      setSnapshot({ ...snap, activeThreadId: selected })
+      setAllThreads(allSnap.threads)
+      setEvents(prev => selected ? mergeRuntimeEventLists(
+        loadedEvents,
+        [
+          ...prev.filter(event => event.threadId === selected),
+          ...pendingForSelected
+        ]
+      ) : [])
+      setWorkspaceId(threadWorkspaceId)
+      setSelectedThreadId(selected)
+      setThreadTodosState(todos)
+      setActiveGoal(goal)
+      shouldStickToBottom.current = true
+      setView('chat')
+    } finally {
+      if (selectThreadGenRef.current === gen) {
+        setPendingActiveThreadId(null)
+        if (loadingThreadIdRef.current === threadId) loadingThreadIdRef.current = null
+      }
+    }
   }
 
   const updateThreadTodoStatus = useCallback(async (todo: ThreadTodo, status: ThreadTodoStatus) => {
@@ -715,6 +799,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
 
   const deleteThread = async (threadId: string) => {
     await window.electronAPI.threads.delete(threadId)
+    if (selectedThreadIdRef.current === threadId) setSelectedThreadId(null)
     await loadWorkbench(workspaceId)
   }
 
@@ -728,9 +813,10 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     const requestedTargetAgent = overrides.targetAgent !== undefined ? overrides.targetAgent : targetAgent
     const requestedModelSelection = requestedTargetAgent ? null : (overrides.modelSelection !== undefined ? overrides.modelSelection : modelSelection)
     const selectedProviderDirect = !requestedTargetAgent && requestedModelSelection?.source === 'provider'
+    const selectedLocalDirect = !!requestedTargetAgent
     const nextTargetAgent = selectedProviderDirect ? null : requestedTargetAgent
-    const nextMode = selectedProviderDirect ? 'auto' : (overrides.mode || mode)
-    const rawCustomSchedule = selectedProviderDirect
+    const nextMode = selectedProviderDirect || selectedLocalDirect ? 'auto' : (overrides.mode || mode)
+    const rawCustomSchedule = selectedProviderDirect || selectedLocalDirect
       ? undefined
       : (overrides.customSchedule || (!nextTargetAgent ? dispatchScheduleForMode(nextMode) : undefined))
     const usableLocalAgents = localAgentOptions(localAgents)
@@ -754,12 +840,15 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         mode: nextMode,
         targetAgent: nextTargetAgent,
         thinking,
-        modelSelection: requestedModelSelection || undefined,
+        modelSelection: selectedLocalDirect ? undefined : requestedModelSelection || undefined,
         attachments,
-        customSchedule: safeCustomSchedule
+        customSchedule: selectedProviderDirect || selectedLocalDirect ? undefined : safeCustomSchedule
       })
       const threadId = result?.thread?.id || activeThreadId
-      if (threadId) await selectThread(threadId)
+      if (threadId) {
+        setSelectedThreadId(threadId)
+        await selectThread(threadId)
+      }
       else await loadWorkbench(workspaceId)
     } catch (e: any) {
       setSendError(e?.message || tr('启动运行失败。', 'Failed to start the run.'))
@@ -778,7 +867,8 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
 
   const cancelAgent = async (turnId: string, agentId: string) => {
     await window.electronAPI.turns.cancelAgent(turnId, agentId).catch(() => false)
-    setSnapshot(await window.electronAPI.runtime.snapshot(workspaceId).catch(() => snapshot))
+    const next = await window.electronAPI.runtime.snapshot(workspaceId).catch(() => snapshot)
+    setSnapshot(prev => preserveSelectedSnapshot(next, prev))
   }
 
   const resolveGuard = async (requestId: string, approved: boolean) => {
@@ -809,7 +899,10 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const _selectedAgentName = selectedAgentId ? agentShortName(selectedAgentId) : null
 
   useEffect(() => {
-    if (targetAgent && !usableAgentIds.includes(targetAgent)) setTargetAgent(null)
+    // 不要重置用户明确选择的 agent（即使是通过 HTTP provider 绑定的）
+    if (targetAgent && !usableAgentIds.includes(targetAgent) && targetAgent !== userExplicitAgentRef.current) {
+      setTargetAgent(null)
+    }
   }, [targetAgent, usableAgentIds.join('|')])
 
   const _persistAgentSlots = useCallback((slots: string[]) => {
@@ -909,14 +1002,14 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
           setSendError(tr('请在 /plan 后写下要规划的需求。', 'Write the request after /plan.'))
           return true
         }
-        setTargetAgent(null)
+        // 保留用户选择的 agent，不重置为 null
         const nextPrompt = [
           instruction,
           '',
           '用户需求:',
           args
         ].join('\n')
-        await sendPrompt(nextPrompt, [], { targetAgent: null, mode: 'auto' })
+        await sendPrompt(nextPrompt, [], { mode: 'auto', targetAgent })
         return true
       }
       const nextPrompt = [
@@ -924,7 +1017,8 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         instruction,
         args ? `\n用户内容:\n${args}` : ''
       ].filter(Boolean).join('\n\n')
-      await sendPrompt(nextPrompt)
+      // 保留用户选择的 agent
+      await sendPrompt(nextPrompt, [], { targetAgent })
       return true
     }
     if (command.action === 'use-skill') {
@@ -949,7 +1043,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       return true
     }
     if (command.action === 'use-schedule' && command.payload?.preset) {
-      setTargetAgent(null)
+      // 保留用户选择的 agent，不重置为 null
       setModelSelection(null)
       setMode(command.payload.preset as DispatchPreset)
       return true
@@ -1058,7 +1152,8 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
           selectWorkspace={selectWorkspace}
           createProject={openCreateProject}
           threads={allThreads}
-          activeThreadId={activeThreadId}
+          activeThreadId={sidebarActiveThreadId}
+          pendingThreadId={pendingActiveThreadId}
           selectThread={selectThread}
           createThread={createThread}
           createThreadInWorkspace={createThreadInWorkspace}
@@ -1086,7 +1181,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
               openChat={() => setView('chat')}
               thread={activeThread}
               turns={activeTurns}
-              events={events}
+              events={activeEvents}
             />
             </ErrorBoundary>
           )}
@@ -1132,7 +1227,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
               <ThreadView
                 thread={activeThread}
                 turns={activeTurns}
-                events={events}
+                events={activeEvents}
                 onRetry={retryTurn}
                 onCancelAgent={cancelAgent}
                 onResolveGuard={resolveGuard}
@@ -1182,7 +1277,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
                 }
                 threadId={activeThread?.id ?? null}
                 turns={activeTurns}
-                events={events}
+                events={activeEvents}
               />
             </>
             </ErrorBoundary>
@@ -1257,7 +1352,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
             >
               {rightPanel === 'runs' ? (
                 <RunTimeline
-                  events={events}
+                  events={activeEvents}
                   turns={activeTurns}
                   localAgents={localAgents}
                   setLocalAgents={setLocalAgents}
@@ -1632,8 +1727,8 @@ function WorkbenchChatTopBar({
           className="wb-minimal-tool-button"
           type="button"
           disabled={!workspaceRoot}
-          onClick={() => workspaceRoot && window.electronAPI.app.openPath({ path: workspaceRoot, target: readAppearanceLocal().defaultOpenTarget })}
-          title={workspaceRoot ? tr('打开编辑器（默认打开目标）', 'Open editor (default open target)') : tr('选择工作目录后可用', 'Choose a working folder first')}
+          onClick={() => workspaceRoot && window.electronAPI.app.openPath({ path: workspaceRoot, target: 'editor' })}
+          title={workspaceRoot ? tr('打开编辑器', 'Open editor') : tr('选择工作目录后可用', 'Choose a working folder first')}
         >
           <Icon d={IC.folder} size={15} />
           <span>{tr('打开编辑器', 'Open editor')}</span>

@@ -89,11 +89,16 @@ export class WorkbenchRuntimeStore extends EventEmitter {
       ? state.threads
       : state.threads.filter(t => t.workspaceId === workspaceId)
     const ids = new Set(threads.map(t => t.id))
+    const activeThreadId = state.activeThreadId && ids.has(state.activeThreadId)
+      ? state.activeThreadId
+      : workspaceId === undefined
+        ? threads[0]?.id ?? null
+        : null
     return {
       threads: [...threads].sort((a, b) => b.updatedAt - a.updatedAt),
       turns: state.turns.filter(t => ids.has(t.threadId)).sort((a, b) => a.createdAt - b.createdAt),
       runs: state.runs.filter(r => state.turns.some(t => ids.has(t.threadId) && t.id === r.turnId)),
-      activeThreadId: state.activeThreadId && ids.has(state.activeThreadId) ? state.activeThreadId : threads[0]?.id ?? null
+      activeThreadId
     }
   }
 

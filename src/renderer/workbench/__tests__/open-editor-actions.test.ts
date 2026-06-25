@@ -1,0 +1,22 @@
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+import { describe, expect, it } from "vitest"
+
+describe("open editor actions", () => {
+  it("uses a real editor target for the workbench open-editor button", () => {
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+
+    expect(source).toContain("window.electronAPI.app.openPath({ path: workspaceRoot, target: 'editor' })")
+    expect(source).not.toContain("openPath({ path: workspaceRoot, target: readAppearanceLocal().defaultOpenTarget })")
+  })
+
+  it("offers editor and file-manager actions for markdown file references", () => {
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/MarkdownBlock.tsx"), "utf8")
+
+    expect(source).toContain("openFileReference(fileMenu.path, fileMenu.line, 'editor')")
+    expect(source).toContain("Open in editor")
+    expect(source).toContain("Reveal in file manager")
+    expect(source).toContain("Open failed:")
+    expect(source).not.toContain("鍦ㄩ粯璁ょ洰鏍囦腑鎵撳紑")
+  })
+})

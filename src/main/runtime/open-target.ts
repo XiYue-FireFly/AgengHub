@@ -7,9 +7,9 @@
  * Renderer passes a target ID; main resolves and launches.
  */
 
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 
 export interface EditorCandidate {
   id: string
@@ -102,6 +102,8 @@ export const EDITOR_CANDIDATES: EditorCandidate[] = [
   }
 ]
 
+const DEFAULT_EDITOR_ORDER = ['vscode', 'cursor', 'antigravity', 'windsurf', 'zed']
+
 /** Build editor arguments for jump-to-line. */
 export function buildEditorArgs(editor: EditorCandidate, filePath: string, line?: number, column?: number): string[] {
   if (!line) return [filePath]
@@ -121,7 +123,8 @@ export function buildEditorArgs(editor: EditorCandidate, filePath: string, line?
 
 /** Detect which editor binary is available on this system. */
 export function detectEditor(editorId: string): { found: boolean; path?: string } {
-  const editor = EDITOR_CANDIDATES.find(e => e.id === editorId)
+  const canonicalId = normalizeEditorTarget(editorId)
+  const editor = EDITOR_CANDIDATES.find(e => e.id === canonicalId)
   if (!editor) return { found: false }
   if (editor.id === 'system' || editor.id === 'file-manager') return { found: true, path: editor.id }
   // Check platform-specific paths first
@@ -133,7 +136,7 @@ export function detectEditor(editorId: string): { found: boolean; path?: string 
   for (const cmd of editor.commands) {
     try {
       const lookupCmd = process.platform === 'win32' ? 'where.exe' : 'which'
-      const result = require('child_process').execFileSync(lookupCmd, [cmd], {
+      const result = execFileSync(lookupCmd, [cmd], {
         encoding: 'utf-8',
         timeout: 3000,
         stdio: ['ignore', 'pipe', 'ignore'],
@@ -146,9 +149,28 @@ export function detectEditor(editorId: string): { found: boolean; path?: string 
 }
 
 /** Open a file path with the specified editor. */
+/** Legacy renderer target IDs → canonical EDITOR_CANDIDATES ids. */
+const TARGET_ALIASES: Record<string, string> = {
+  'explorer': 'file-manager'
+}
+
+export function normalizeEditorTarget(editorId: string): string {
+  return TARGET_ALIASES[editorId] || editorId
+}
+
+export function resolveEditorTarget(editorId: string): string {
+  const canonicalId = normalizeEditorTarget(editorId)
+  if (canonicalId !== 'editor') return canonicalId
+  for (const candidateId of DEFAULT_EDITOR_ORDER) {
+    if (detectEditor(candidateId).found) return candidateId
+  }
+  return 'system'
+}
+
 export function openWithEditor(editorId: string, filePath: string, line?: number, column?: number): Promise<{ ok: boolean; error?: string }> {
   return new Promise(resolve => {
-    const editor = EDITOR_CANDIDATES.find(e => e.id === editorId)
+    const canonicalId = resolveEditorTarget(editorId)
+    const editor = EDITOR_CANDIDATES.find(e => e.id === canonicalId)
     if (!editor) { resolve({ ok: false, error: `Unknown editor: ${editorId}` }); return }
 
     // System default: use OS opener
@@ -172,7 +194,8 @@ export function openWithEditor(editorId: string, filePath: string, line?: number
     if (editor.id === 'file-manager') {
       try {
         if (process.platform === 'win32') {
-          execFile('explorer.exe', ['/select,' + filePath], { windowsHide: true }, err => {
+          const args = isDirectoryPath(filePath) ? [filePath] : ['/select,' + filePath]
+          execFile('explorer.exe', args, { windowsHide: true }, err => {
             resolve(err ? { ok: false, error: err.message } : { ok: true })
           })
         } else if (process.platform === 'darwin') {
@@ -187,7 +210,7 @@ export function openWithEditor(editorId: string, filePath: string, line?: number
     }
 
     // Named editor: detect binary, build args, launch
-    const detected = detectEditor(editorId)
+    const detected = detectEditor(canonicalId)
     if (!detected.found || !detected.path) {
       resolve({ ok: false, error: `Editor not found: ${editor.name}` })
       return
@@ -197,4 +220,12 @@ export function openWithEditor(editorId: string, filePath: string, line?: number
       resolve(err ? { ok: false, error: err.message } : { ok: true })
     })
   })
+}
+
+function isDirectoryPath(filePath: string): boolean {
+  try {
+    return statSync(filePath).isDirectory()
+  } catch {
+    return false
+  }
 }

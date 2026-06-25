@@ -18,6 +18,7 @@ export function Icon({ d, size = 17, sw = 1.7, style }: { d: ReactNode; size?: n
 }
 
 export const IC = {
+  arrowLeft: <><path d="M19 12H5M12 19l-7-7 7-7"></path></>,
   home: <><path d="M4 11l8-7 8 7"></path><path d="M6 9.5V20h12V9.5"></path></>,
   chat: <><path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4z"></path></>,
   tasks: <><path d="M5 6h14"></path><path d="M5 12h14"></path><path d="M5 18h9"></path></>,

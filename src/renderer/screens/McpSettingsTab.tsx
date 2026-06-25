@@ -33,6 +33,20 @@ function mcpStatusLabel(status: string): string {
   return tr('未测试', 'Untested')
 }
 
+function dedupeMcpServers(servers: McpServerConfig[]): McpServerConfig[] {
+  const out: McpServerConfig[] = []
+  const seenIds = new Set<string>()
+  const seenNames = new Set<string>()
+  for (const server of servers) {
+    const nameKey = server.name.trim().toLowerCase()
+    if (seenIds.has(server.id) || seenNames.has(nameKey)) continue
+    seenIds.add(server.id)
+    seenNames.add(nameKey)
+    out.push(server)
+  }
+  return out
+}
+
 export function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) {
   const [servers, setServers] = useState<McpServerConfig[]>([])
   const [loading, setLoading] = useState(false)
@@ -47,7 +61,7 @@ export function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) 
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      setServers(await window.electronAPI.mcp.list(workspaceId))
+      setServers(dedupeMcpServers(await window.electronAPI.mcp.list(workspaceId)))
       setError(null)
     } catch (err: any) {
       setError(err?.message || tr('加载 MCP 失败', 'Failed to load MCP servers'))
@@ -81,7 +95,7 @@ export function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) 
     setLoading(true)
     try {
       await window.electronAPI.mcp.scanLocal(workspaceId)
-      setServers(await window.electronAPI.mcp.list(workspaceId))
+      setServers(dedupeMcpServers(await window.electronAPI.mcp.list(workspaceId)))
       setError(null)
     } catch (err: any) {
       setError(err?.message || tr('扫描 MCP 失败', 'Failed to scan MCP servers'))

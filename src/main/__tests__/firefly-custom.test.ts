@@ -61,7 +61,7 @@ describe("smart five-role custom schedule integration", () => {
     const source = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
 
     expect(source).toContain("function dispatchableLocalAgentIds()")
-    expect(source).toContain("const fireflyAgentIds = !providerDirect && mode === \"firefly-custom\" ? dispatchableLocalAgentIds() : []")
+    expect(source).toContain("const fireflyAgentIds = !directRun && mode === \"firefly-custom\" ? dispatchableLocalAgentIds() : []")
     expect(source).toContain("fireflyFiveRoleTemplate(fireflyAgentIds)")
     expect(source).toContain("fireflyFiveRoleTemplate(retryFireflyAgentIds)")
     expect(source).not.toContain("fireflyFiveRoleTemplate(registry.getAll().map(agent => agent.id))")
@@ -88,6 +88,19 @@ describe("smart five-role custom schedule integration", () => {
     expect(source).toContain("if (retrySchedule && !(\"id\" in task))")
     expect(source).not.toContain('(effectiveMode === "custom" || effectiveMode === "firefly-custom") && !directTarget && scheduleForTurn')
     expect(source).not.toContain('(turn.mode === "custom" || turn.mode === "firefly-custom") && !retryTargetAgent && retrySchedule')
+  })
+
+  it("forces local and provider direct runs out of schedule mode before persisting or retrying", () => {
+    const source = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
+
+    expect(source).toContain("const localDirect = !!directTarget")
+    expect(source).toContain("const directRun = providerDirect || localDirect")
+    expect(source).toContain('const effectiveMode = directRun ? "auto" : mode')
+    expect(source).toContain("const scheduleForTurn = directRun")
+    expect(source).toContain('customSchedule: retryDirectRun ? undefined : turn.customSchedule')
+    expect(source).toContain('mode: retryDirectRun ? "auto" : turn.mode')
+    expect(source).toContain("const retryDirectRun = retryProviderDirect || !!retryTargetAgent")
+    expect(source).toContain("const retrySchedule = retryDirectRun")
   })
 
   it("scores guard verdicts from agent output instead of guard prompt instructions", () => {

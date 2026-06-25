@@ -57,6 +57,19 @@ describe("WorkbenchRuntimeStore", () => {
     expect(runtime.snapshot(undefined).threads[0].workspaceId).toBeNull()
   })
 
+  it("does not substitute a workspace thread when the active thread belongs elsewhere", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+
+    const workspaceThread = runtime.createThread({ workspaceId: "ws-1", title: "Workspace thread" })
+    const personalThread = runtime.createThread({ workspaceId: null, title: "Personal thread" })
+
+    expect(runtime.snapshot(undefined).activeThreadId).toBe(personalThread.id)
+    expect(runtime.snapshot("ws-1").threads.map(thread => thread.id)).toContain(workspaceThread.id)
+    expect(runtime.snapshot("ws-1").activeThreadId).toBeNull()
+  })
+
   it("maps extended scheduling presets to existing dispatcher modes", async () => {
     const { WorkbenchRuntimeStore } = await import("../store")
     const runtime = new WorkbenchRuntimeStore()

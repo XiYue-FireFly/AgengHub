@@ -134,23 +134,82 @@ export function SkillsTab() {
   const [mode, setMode] = useState<'all' | 'selected'>('all')
   const [err, setErr] = useState<string | null>(null)
 
+  const [skillDirectory, setSkillDirectory] = useState<string>('~/.claude/skills')
+  const [availableDirectories, setAvailableDirectories] = useState<string[]>([
+    '~/.claude/skills',
+    '~/.codex/skills',
+    '~/.agents/skills',
+    '~/.opencode/skills'
+  ])
+
   const refresh = useCallback(async () => {
     try {
-      const [c, s, i, m, local] = await Promise.all([
+      const [c, s, i, m, local, storedDir] = await Promise.all([
         api()?.agentic?.capabilities?.() as Promise<CapState[]>,
         api()?.skills?.list?.() as Promise<SkillDef[]>,
         api()?.skills?.getInstalls?.() as Promise<Installs>,
         api()?.agentic?.getMode?.() as Promise<'all' | 'selected'>,
-        api()?.skills?.scanLocal?.() as Promise<LocalSkillCandidate[]>
+        api()?.skills?.scanLocal?.() as Promise<LocalSkillCandidate[]>,
+        api()?.store?.get?.('skills.customDirectory') as Promise<string | undefined>
       ])
       if (Array.isArray(c)) setCaps(c)
       if (Array.isArray(s)) setSkills(s)
       setInstalls(i && typeof i === 'object' ? i : {})
       if (m === 'all' || m === 'selected') setMode(m)
       if (Array.isArray(local)) setLocalSkills(local)
+      if (storedDir) {
+        setSkillDirectory(storedDir)
+        setAvailableDirectories(prev => {
+          if (!prev.includes(storedDir)) {
+            return [...prev, storedDir]
+          }
+          return prev
+        })
+      }
     } catch (e: any) { setErr(e?.message || 'load failed') }
   }, [])
   useEffect(() => { refresh() }, [refresh])
+
+  const handleDirectoryChange = async (path: string) => {
+    try {
+      setSkillDirectory(path)
+      setAvailableDirectories(prev => {
+        if (!prev.includes(path)) {
+          return [...prev, path]
+        }
+        return prev
+      })
+      await api()?.store?.set?.('skills.customDirectory', path)
+      await (api()?.skills?.scanLocal as any)?.({ refresh: true })
+      await refresh()
+    } catch (e: any) {
+      setErr(e?.message || 'failed to set directory')
+    }
+  }
+
+  const selectCustomDirectory = async () => {
+    try {
+      const picked = await api()?.app?.pickFolder()
+      if (picked) {
+        await handleDirectoryChange(picked)
+      }
+    } catch (e: any) {
+      setErr(e?.message || 'failed to pick folder')
+    }
+  }
+
+  const filteredLocalSkills = useMemo(() => {
+    return localSkills.filter(candidate => {
+      if (!skillDirectory) return true
+      const normalizedSource = candidate.sourcePath.replace(/\\/g, '/').toLowerCase()
+      const normalizedDir = skillDirectory.replace(/\\/g, '/').toLowerCase()
+      if (skillDirectory.startsWith('~')) {
+        const suffix = skillDirectory.slice(1).replace(/\\/g, '/').toLowerCase()
+        return normalizedSource.includes(suffix)
+      }
+      return normalizedSource.startsWith(normalizedDir)
+    })
+  }, [localSkills, skillDirectory])
 
   const agentIds = caps.map(c => c.agentId)
 
@@ -198,7 +257,38 @@ export function SkillsTab() {
 
       {caps.length > 0 && <ApprovalPolicyPanel caps={caps} />}
 
-      <SkillCatalog skills={skills} localSkills={localSkills} onChanged={refresh} onRemove={removeSkill} onEdit={editSkill}
+      <Enter className="glass" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }} delay={100}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+          <Icon d={IC.folder} size={17} style={{ color: 'var(--mint)' }} />
+          <div style={{ fontWeight: 700 }}>{tr('本地技能目录', 'Local Skill Directory')}</div>
+          <span className="ah-hint">{tr('选择或添加本地技能扫描路径', 'Select or add local skill scan paths')}</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <select
+            className="ah-select"
+            style={{ flex: 1, maxWidth: 400 }}
+            value={skillDirectory}
+            onChange={async (e) => {
+              const val = e.target.value
+              if (val === 'custom_pick') {
+                await selectCustomDirectory()
+              } else {
+                await handleDirectoryChange(val)
+              }
+            }}
+          >
+            {availableDirectories.map(dir => (
+              <option key={dir} value={dir}>{dir}</option>
+            ))}
+            <option value="custom_pick">{tr('添加自定义目录...', 'Add custom directory...')}</option>
+          </select>
+          <button className="ah-btn sm" onClick={selectCustomDirectory}>
+            <Icon d={IC.folder} size={13} /> {tr('浏览...', 'Browse...')}
+          </button>
+        </div>
+      </Enter>
+
+      <SkillCatalog skills={skills} localSkills={filteredLocalSkills} onChanged={refresh} onRemove={removeSkill} onEdit={editSkill}
         onInstallAll={installAllForSkill} onToggleInstall={toggleInstall} installs={installs} agentIds={agentIds} />
 
       {skills.length > 0 && agentIds.length > 0 && (

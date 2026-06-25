@@ -68,6 +68,40 @@ describe("MCP runtime", () => {
     expect(listMcpServers("ws-1").find(item => item.id === server!.id)?.enabled).toBe(false)
   })
 
+  it("keeps the first MCP server when duplicate names are discovered", async () => {
+    writeFileSync(join(workspaceRoot, "mcp.json"), JSON.stringify({
+      mcpServers: {
+        docs: {
+          command: "node",
+          args: ["first.js"],
+          enabled: true
+        }
+      }
+    }))
+    writeFileSync(join(workspaceRoot, ".mcp.json"), JSON.stringify({
+      mcpServers: {
+        docs: {
+          command: "node",
+          args: ["second.js"],
+          enabled: true
+        }
+      }
+    }))
+
+    const { listMcpServers } = await import("../mcp")
+
+    const servers = listMcpServers("ws-1").filter(item => item.name === "docs")
+
+    expect(servers).toHaveLength(1)
+    expect(servers[0]).toMatchObject({
+      name: "docs",
+      source: "workspace",
+      command: "node",
+      args: ["first.js"],
+      sourcePath: join(workspaceRoot, "mcp.json")
+    })
+  })
+
   it("parses nested capability and single-server MCP configs with metadata", async () => {
     writeFileSync(join(workspaceRoot, "mcp.json"), JSON.stringify({
       capabilities: {

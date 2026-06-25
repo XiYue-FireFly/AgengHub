@@ -124,6 +124,13 @@ export function SettingsScreen(props: SettingsScreenProps) {
 
   return (
     <div className="wb-settings wb-settings-shell" data-screen-label={tr('设置', 'Settings')}>
+      <button
+        className="wb-settings-back-btn"
+        onClick={() => props.goChat(null)}
+        aria-label={tr('返回对话', 'Back to chat')}
+      >
+        <Icon d={IC.arrowLeft} size={16} />
+      </button>
       <aside className="wb-settings-nav">
         <div className="wb-settings-nav-title">
           <strong>{tr('设置', 'Settings')}</strong>
@@ -438,7 +445,7 @@ function _stdioArgsHint(agentId: string): string {
   return englishHints[agentId] || DEFAULT_STDIO_ARGS[agentId] || 'Leave blank to use defaults'
 }
 
-function ModelsTab({ providers: _providers }: { providers: ProviderDef[] }) {
+function ModelsTab({ providers }: { providers: ProviderDef[] }) {
   const [filter, setFilter] = useState('')
   const [models, setModels] = useState<ModelRouteInfo[]>([])
   const [settings, setSettings] = useState<ModelRouteSettings | null>(null)
@@ -446,6 +453,10 @@ function ModelsTab({ providers: _providers }: { providers: ProviderDef[] }) {
   const [message, setMessage] = useState<string | null>(null)
   const [testing, setTesting] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<Record<string, any>>({})
+  const [expandedProviderId, setExpandedProviderId] = useState<string | null>(null)
+  const [selectedModelIds, setSelectedModelIds] = useState<Record<string, string>>({})
+  const [fetchErrors, setFetchErrors] = useState<Record<string, string>>({})
+  const [fetchingStatus, setFetchingStatus] = useState<Record<string, boolean>>({})
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -463,16 +474,32 @@ function ModelsTab({ providers: _providers }: { providers: ProviderDef[] }) {
 
   useEffect(() => { refresh().catch(error => setMessage(error?.message || String(error))) }, [refresh])
 
-  const filtered = useMemo(() => {
+  const activeProviders = useMemo(() => {
+    return providers.filter(p => !!p.apiKey)
+  }, [providers])
+
+  // Filter providers based on search text (matching provider name or model details)
+  const filteredProviders = useMemo(() => {
     const needle = filter.trim().toLowerCase()
-    if (!needle) return models
-    return models.filter(m =>
-      m.modelId.toLowerCase().includes(needle) ||
-      m.label.toLowerCase().includes(needle) ||
-      m.providerName.toLowerCase().includes(needle) ||
-      (m.upstreamModel || '').toLowerCase().includes(needle)
-    )
-  }, [models, filter])
+    if (!needle) return activeProviders
+    return activeProviders.filter(p => {
+      const nameMatch = p.name.toLowerCase().includes(needle)
+      const providerModels = models.filter(m => m.providerId === p.id)
+      const modelMatch = providerModels.some(m =>
+        m.modelId.toLowerCase().includes(needle) ||
+        m.label.toLowerCase().includes(needle) ||
+        (m.upstreamModel || '').toLowerCase().includes(needle)
+      )
+      return nameMatch || modelMatch
+    })
+  }, [activeProviders, models, filter])
+
+  // Expand the first provider by default when loaded, if none expanded
+  useEffect(() => {
+    if (!expandedProviderId && filteredProviders.length > 0) {
+      setExpandedProviderId(filteredProviders[0].id)
+    }
+  }, [filteredProviders, expandedProviderId])
 
   const formatContext = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${Math.round(n / 1_000)}K` : String(n)
   const modelRef = (m: ModelRouteInfo) => `${m.providerId}/${m.modelId}`
@@ -498,6 +525,61 @@ function ModelsTab({ providers: _providers }: { providers: ProviderDef[] }) {
       : tr(`导出失败：${result.error || '未知错误'}`, `Export failed: ${result.error || 'Unknown error'}`))
   }
 
+  const fetchProviderModels = async (provider: ProviderDef) => {
+    setFetchingStatus(prev => ({ ...prev, [provider.id]: true }))
+    setFetchErrors(prev => {
+      const next = { ...prev }
+      delete next[provider.id]
+      return next
+    })
+    try {
+      const result = await window.electronAPI.providers.fetchModels(provider.id)
+      if (result.ok) {
+        await refresh()
+      } else {
+        setFetchErrors(prev => ({
+          ...prev,
+          [provider.id]: `${tr('获取失败：', 'Fetch failed: ')}${result.error || 'Unknown Error'} (${tr('已保留现有模型', 'Existing models preserved')})`
+        }))
+      }
+    } catch (err: any) {
+      setFetchErrors(prev => ({
+        ...prev,
+        [provider.id]: `${tr('获取失败：', 'Fetch failed: ')}${err.message || String(err)} (${tr('已保留现有模型', 'Existing models preserved')})`
+      }))
+    } finally {
+      setFetchingStatus(prev => ({ ...prev, [provider.id]: false }))
+    }
+  }
+
+  const getProviderStatus = (p: ProviderDef) => {
+    if (!p.enabled) return { color: '#7f8c8d', label: tr('已关闭', 'Off'), statusClass: 'status-off' }
+    const health = p.health as any
+    if (!health) return { color: 'var(--wb-green)', label: tr('启用', 'Enabled'), statusClass: 'status-ok' }
+    if (health.reachable && health.status === 'ok') {
+      return { color: 'var(--wb-green)', label: tr('正常', 'OK'), statusClass: 'status-ok' }
+    }
+    if (health.status === 'unauthorized') {
+      return { color: 'var(--wb-warn)', label: tr('未授权', 'Unauthorized'), statusClass: 'status-unauthorized' }
+    }
+    return { color: 'var(--wb-red)', label: health.error || tr('异常', 'Error'), statusClass: 'status-error' }
+  }
+
+  const getFetchStatusText = (p: ProviderDef) => {
+    if (fetchErrors[p.id]) {
+      return fetchErrors[p.id]
+    }
+    const state = p.modelFetch
+    if (!state) return ''
+    if (state.status === 'error') {
+      return `${tr('获取失败：', 'Fetch failed: ')}${state.error || 'Unknown Error'} (${tr('已保留现有模型', 'Existing models preserved')})`
+    }
+    if (state.status === 'ok') {
+      return tr(`上次成功 ${state.lastSuccessCount || 0} 个`, `Last success: ${state.lastSuccessCount || 0}`)
+    }
+    return ''
+  }
+
   return (
     <div className="wb-settings-stack">
       <section className="glass">
@@ -516,11 +598,29 @@ function ModelsTab({ providers: _providers }: { providers: ProviderDef[] }) {
           <div className="wb-model-route-settings">
             <label className="wb-field">
               <span>{tr('默认模型', 'Default model')}</span>
-              <input className="ah-input" value={settings.codexDefaultModel || ''} onChange={e => updateSettings({ codexDefaultModel: e.target.value || undefined })} placeholder="provider/model or model id" />
+              <select
+                className="ah-select"
+                value={settings.codexDefaultModel || ''}
+                onChange={e => updateSettings({ codexDefaultModel: e.target.value || undefined })}
+              >
+                <option value="">{tr('请选择...', 'Select...')}</option>
+                {models.map(m => (
+                  <option key={modelRef(m)} value={modelRef(m)}>{m.providerName} - {m.label} ({modelRef(m)})</option>
+                ))}
+              </select>
             </label>
             <label className="wb-field">
               <span>{tr('Fallback 模型', 'Fallback model')}</span>
-              <input className="ah-input" value={settings.fallbackModelId || ''} onChange={e => updateSettings({ fallbackModelId: e.target.value || undefined })} placeholder="provider/model or model id" />
+              <select
+                className="ah-select"
+                value={settings.fallbackModelId || ''}
+                onChange={e => updateSettings({ fallbackModelId: e.target.value || undefined })}
+              >
+                <option value="">{tr('请选择...', 'Select...')}</option>
+                {models.map(m => (
+                  <option key={modelRef(m)} value={modelRef(m)}>{m.providerName} - {m.label} ({modelRef(m)})</option>
+                ))}
+              </select>
             </label>
             <label className="wb-field">
               <span>{tr('Codex 注入模式', 'Codex injection mode')}</span>
@@ -536,53 +636,207 @@ function ModelsTab({ providers: _providers }: { providers: ProviderDef[] }) {
           </div>
         )}
         {message && <div className="wb-memory-kun-message">{message}</div>}
-        <div className="wb-model-route-table">
-          <div className="wb-model-route-item head">
-            <span>{tr('模型', 'Model')}</span>
-            <span>{tr('上游 / 能力', 'Upstream / Caps')}</span>
-            <span>{tr('上下文 / 超时', 'Context / Timeout')}</span>
-            <span>{tr('状态 / 测试', 'Status / Test')}</span>
-          </div>
-          {filtered.map(m => (
-            <div key={`${m.providerId}::${m.modelId}`} className="wb-model-route-item">
-              <div className="wb-model-route-main">
-                <strong>{m.label}</strong>
-                <small className="mono">{m.providerId}/{m.modelId}</small>
-                <div className="wb-chip-row">
-                  <span className="ah-chip">{m.providerName}</span>
-                  <span className="ah-chip">{m.providerProtocol}</span>
-                  {!m.providerEnabled && <span className="ah-chip">{tr('供应商关闭', 'Provider off')}</span>}
-                  {!m.providerHasKey && <span className="ah-chip">{tr('无 Key', 'No key')}</span>}
+        <div className="wb-settings-grid" style={{ marginTop: 16 }}>
+          {filteredProviders.map(provider => {
+            const providerModels = models.filter(m => m.providerId === provider.id)
+            const isExpanded = expandedProviderId === provider.id
+            const statusInfo = getProviderStatus(provider)
+            const fetchStatusText = getFetchStatusText(provider)
+            const activeModelId = selectedModelIds[provider.id] || providerModels[0]?.modelId || ''
+            const activeModel = providerModels.find(m => m.modelId === activeModelId)
+
+            return (
+              <div
+                key={provider.id}
+                className={`glass wb-provider-card ${isExpanded ? 'expanded' : ''}`}
+                style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}
+              >
+                <div
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}
+                  onClick={() => setExpandedProviderId(isExpanded ? null : provider.id)}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span
+                      style={{
+                        display: 'inline-block',
+                        width: '10px',
+                        height: '10px',
+                        borderRadius: '50%',
+                        backgroundColor: statusInfo.color
+                      }}
+                      title={statusInfo.label}
+                    />
+                    <strong style={{ fontSize: '15px' }}>{provider.name}</strong>
+                    <span style={{ fontSize: '12px', color: 'var(--tx-3)' }}>({provider.kind})</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '16px', fontSize: '13px', color: 'var(--tx-2)' }}>
+                    <span>{tr(`已有模型 ${providerModels.length} 个`, `${providerModels.length} model(s)`)}</span>
+                    {fetchStatusText && (
+                      <span style={{ fontSize: '12px', color: fetchStatusText.includes('失败') ? 'var(--wb-red)' : 'var(--wb-green)' }}>
+                        {fetchStatusText}
+                      </span>
+                    )}
+                    <span>{isExpanded ? '▼' : '▶'}</span>
+                  </div>
                 </div>
-              </div>
-              <div className="wb-model-route-edit">
-                <input className="ah-input mono" value={m.upstreamModel || ''} placeholder={m.modelId} onChange={e => updateModel(m, { upstreamModel: e.target.value || undefined })} />
-                <div className="wb-model-card-meta">
-                  {m.supportsTools && <span className="wb-model-badge tools" title="Supports tool calls">tools</span>}
-                  {m.supportsVision && <span className="wb-model-badge vision" title="Supports vision">vision</span>}
-                  {m.supportsThinking && <span className="wb-model-badge thinking" title="Supports thinking/reasoning">thinking</span>}
-                </div>
-              </div>
-              <div className="wb-model-route-edit compact">
-                <input className="ah-input" type="number" min={1000} value={m.contextWindow || 258000} onChange={e => updateModel(m, { contextWindow: Number(e.target.value) || 258000 })} />
-                <input className="ah-input" type="number" min={0} placeholder="ms" value={m.timeoutMs || ''} onChange={e => updateModel(m, { timeoutMs: Number(e.target.value) || undefined })} />
-                <input className="ah-input" type="number" min={0} max={5} placeholder="retry" value={m.retryCount || 0} onChange={e => updateModel(m, { retryCount: Number(e.target.value) || 0 })} />
-                <span className="ah-hint">{formatContext(m.contextWindow)} ctx</span>
-              </div>
-              <div className="wb-model-route-actions">
-                <Switch on={m.enabled !== false} onChange={value => updateModel(m, { enabled: value })} />
-                <button className="ah-btn sm" onClick={() => runTest(m)} disabled={testing === modelRef(m) || !m.providerEnabled || !m.providerHasKey}>{testing === modelRef(m) ? tr('测试中', 'Testing') : tr('测试', 'Test')}</button>
-                {testResult[modelRef(m)] && (
-                  <small className={testResult[modelRef(m)].ok ? 'wb-model-test-ok' : 'wb-model-test-error'}>
-                    {testResult[modelRef(m)].ok ? `OK ${testResult[modelRef(m)].latencyMs}ms` : testResult[modelRef(m)].error}
-                  </small>
+
+                {isExpanded && (
+                  <div
+                    style={{
+                      borderTop: '1px solid var(--wb-line)',
+                      paddingTop: '16px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '16px'
+                    }}
+                  >
+                    {providerModels.length === 0 ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', padding: '16px', color: 'var(--tx-3)' }}>
+                        <span>{tr('暂无模型列表', 'No model list yet')}</span>
+                        <button
+                          className="ah-btn sm primary"
+                          disabled={fetchingStatus[provider.id]}
+                          onClick={() => fetchProviderModels(provider)}
+                        >
+                          {fetchingStatus[provider.id] ? tr('获取中...', 'Fetching...') : tr('获取模型列表', 'Fetch models')}
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                          <label className="wb-field">
+                            <span>{tr('选择模型', 'Select Model')}</span>
+                            <select
+                              className="ah-select"
+                              value={activeModelId}
+                              onChange={e => setSelectedModelIds(prev => ({ ...prev, [provider.id]: e.target.value }))}
+                            >
+                              {providerModels.map(m => (
+                                <option key={m.modelId} value={m.modelId}>
+                                  {m.label || m.modelId}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+
+                          {activeModel && (
+                            <label className="wb-field">
+                              <span>{tr('上下文窗口 (API)', 'Context Window (API)')}</span>
+                              <div style={{ display: 'flex', alignItems: 'center', height: '34px', padding: '0 12px', border: '1px solid var(--wb-line)', borderRadius: '6px', background: 'rgba(0,0,0,0.02)', color: 'var(--tx-2)', fontSize: '13px' }}>
+                                {activeModel.contextWindow ? `${activeModel.contextWindow} (${formatContext(activeModel.contextWindow)})` : tr('未知', 'Unknown')}
+                              </div>
+                            </label>
+                          )}
+                        </div>
+
+                        {activeModel && (
+                          <>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                              <label className="wb-field">
+                                <span>{tr('上游模型', 'Upstream Model')}</span>
+                                <input
+                                  className="ah-input mono"
+                                  value={activeModel.upstreamModel || ''}
+                                  placeholder={activeModel.modelId}
+                                  onChange={e => updateModel(activeModel, { upstreamModel: e.target.value || undefined })}
+                                />
+                              </label>
+
+                              <label className="wb-field">
+                                <span>{tr('模型能力', 'Capabilities')}</span>
+                                <div style={{ display: 'flex', gap: '8px', height: '34px', alignItems: 'center' }}>
+                                  {activeModel.supportsTools && (
+                                    <span className="wb-model-badge tools" title="Supports tool calls" style={{ background: 'var(--wb-accent-soft)', color: 'var(--wb-accent)', padding: '4px 8px', borderRadius: '4px', fontSize: '11px' }}>tools</span>
+                                  )}
+                                  {activeModel.supportsVision && (
+                                    <span className="wb-model-badge vision" title="Supports vision" style={{ background: 'var(--wb-green-soft)', color: 'var(--wb-green)', padding: '4px 8px', borderRadius: '4px', fontSize: '11px' }}>vision</span>
+                                  )}
+                                  {activeModel.supportsThinking && (
+                                    <span className="wb-model-badge thinking" title="Supports thinking/reasoning" style={{ background: 'var(--wb-warn-soft)', color: 'var(--wb-warn)', padding: '4px 8px', borderRadius: '4px', fontSize: '11px' }}>thinking</span>
+                                  )}
+                                  {!activeModel.supportsTools && !activeModel.supportsVision && !activeModel.supportsThinking && (
+                                    <span style={{ fontSize: '12px', color: 'var(--tx-3)' }}>{tr('基础文本', 'Text only')}</span>
+                                  )}
+                                </div>
+                              </label>
+                            </div>
+
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px' }}>
+                              <label className="wb-field">
+                                <span>{tr('超时时间 (ms)', 'Timeout (ms)')}</span>
+                                <input
+                                  className="ah-input"
+                                  type="number"
+                                  min={0}
+                                  placeholder="ms"
+                                  value={activeModel.timeoutMs || ''}
+                                  onChange={e => updateModel(activeModel, { timeoutMs: Number(e.target.value) || undefined })}
+                                />
+                              </label>
+
+                              <label className="wb-field">
+                                <span>{tr('重试次数', 'Retry Count')}</span>
+                                <input
+                                  className="ah-input"
+                                  type="number"
+                                  min={0}
+                                  max={5}
+                                  placeholder="retry"
+                                  value={activeModel.retryCount || 0}
+                                  onChange={e => updateModel(activeModel, { retryCount: Number(e.target.value) || 0 })}
+                                />
+                              </label>
+
+                              <label className="wb-field">
+                                <span>{tr('启用模型', 'Enable Model')}</span>
+                                <div style={{ display: 'flex', alignItems: 'center', height: '34px' }}>
+                                  <Switch
+                                    on={activeModel.enabled !== false}
+                                    onChange={value => updateModel(activeModel, { enabled: value })}
+                                  />
+                                </div>
+                              </label>
+                            </div>
+
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '8px' }}>
+                              <div style={{ display: 'flex', gap: '12px' }}>
+                                <button
+                                  className="ah-btn sm"
+                                  onClick={() => runTest(activeModel)}
+                                  disabled={testing === modelRef(activeModel)}
+                                >
+                                  {testing === modelRef(activeModel) ? tr('测试中', 'Testing') : tr('测试模型', 'Test Model')}
+                                </button>
+                                <button
+                                  className="ah-btn sm"
+                                  disabled={fetchingStatus[provider.id]}
+                                  onClick={() => fetchProviderModels(provider)}
+                                >
+                                  {fetchingStatus[provider.id] ? tr('刷新中...', 'Refreshing...') : tr('刷新模型列表', 'Fetch models')}
+                                </button>
+                              </div>
+                              {testResult[modelRef(activeModel)] && (
+                                <small className={testResult[modelRef(activeModel)].ok ? 'wb-model-test-ok' : 'wb-model-test-error'} style={{ color: testResult[modelRef(activeModel)].ok ? 'var(--wb-green)' : 'var(--wb-red)', fontWeight: 'bold' }}>
+                                  {testResult[modelRef(activeModel)].ok ? `OK ${testResult[modelRef(activeModel)].latencyMs}ms` : testResult[modelRef(activeModel)].error}
+                                </small>
+                              )}
+                            </div>
+                          </>
+                        )}
+                      </>
+                    )}
+                  </div>
                 )}
               </div>
+            )
+          })}
+          {filteredProviders.length === 0 && (
+            <div className="wb-memory-kun-empty">
+              <span>{tr('没有配置了 API Key 的供应商', 'No providers configured with API key')}</span>
             </div>
-          ))}
-          {filtered.length === 0 && <div className="wb-memory-kun-empty"><span>{tr('无匹配模型', 'No matching models')}</span></div>}
+          )}
         </div>
-        <div className="wb-models-summary"><span>{tr(`共 ${filtered.length} 个模型，来自 ${new Set(filtered.map(m => m.providerId)).size} 个供应商`, `${filtered.length} model(s) from ${new Set(filtered.map(m => m.providerId)).size} provider(s)`)}</span></div>
+        <div className="wb-models-summary"><span>{tr(`共 ${filteredProviders.length} 个已配置供应商，模型路由包含 ${models.length} 个模型`, `${filteredProviders.length} provider(s) configured, model routing contains ${models.length} model(s)`)}</span></div>
       </section>
     </div>
   )
@@ -889,236 +1143,6 @@ function MemorySettingsTab() {
   )
 }
 
-function _LegacyMemorySettingsTab() {
-  const [statusFilter, setStatusFilter] = useState<'all' | MemoryEntryStatus>('all')
-  const [query, setQuery] = useState('')
-  const [entries, setEntries] = useState<MemoryEntry[]>([])
-  const [candidates, setCandidates] = useState<MemoryEntry[]>([])
-  const [editing, setEditing] = useState<MemoryEntry | null>(null)
-  const [editDraft, setEditDraft] = useState({
-    title: '',
-    summary: '',
-    content: '',
-    tags: '',
-    status: 'approved' as MemoryEntryStatus,
-    category: 'preference' as MemoryCategory,
-    source: '',
-    scope: '',
-    confidence: 70,
-    pinned: false
-  })
-  const [importSource, setImportSource] = useState('Imported conversation')
-  const [importText, setImportText] = useState('')
-  const [message, setMessage] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
-
-  const refresh = useCallback(async () => {
-    setLoading(true)
-    try {
-      const catalog = await window.electronAPI.memory.catalog()
-      const allEntries: MemoryEntry[] = Array.isArray(catalog?.entries) ? catalog.entries : []
-      const q = query.trim().toLowerCase()
-      setEntries(allEntries.filter(entry => {
-        if (statusFilter !== 'all' && (entry.status || 'approved') !== statusFilter) return false
-        if (!q) return true
-        return [entry.title, entry.summary, entry.content, entry.category, ...(entry.tags || [])]
-          .filter(Boolean).join(' ').toLowerCase().includes(q)
-      }))
-      setCandidates(allEntries.filter(entry => entry.status === 'candidate'))
-    } finally {
-      setLoading(false)
-    }
-  }, [query, statusFilter])
-
-  useEffect(() => { refresh().catch(() => {}) }, [refresh])
-
-  const startEdit = (entry: MemoryEntry) => {
-    setEditing(entry)
-    setEditDraft({
-      title: entry.title || '',
-      summary: entry.summary || '',
-      content: String(entry.content || ''),
-      tags: (entry.tags || []).join(', '),
-      status: entry.status || 'approved',
-      category: entry.category || 'preference',
-      source: entry.source || '',
-      scope: String(entry.metadata?.scope || ''),
-      confidence: typeof entry.confidence === 'number' ? Math.round(entry.confidence * 100) : 70,
-      pinned: !!(entry.metadata?.pinned || entry.metadata?.pin)
-    })
-  }
-
-  const importConversation = async () => {
-    if (!importText.trim()) return
-    setLoading(true)
-    setMessage(null)
-    try {
-      const next = await window.electronAPI.memory.importConversation(importSource.trim() || 'Imported conversation', importText)
-      setImportText('')
-      setMessage(tr(`已生成 ${next.length} 条候选记忆`, `Generated ${next.length} memory candidates`))
-      await refresh()
-    } catch (e: any) {
-      setMessage(e?.message || tr('导入失败', 'Import failed'))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const approveCandidate = async (id: string) => {
-    await window.electronAPI.memory.approveCandidate(id)
-    await refresh()
-  }
-
-  const disableMemory = async (id: string) => {
-    await window.electronAPI.memory.disableEntry(id)
-    await refresh()
-  }
-
-  const saveEdit = async () => {
-    if (!editing) return
-    await window.electronAPI.memory.updateEntry(editing.id, {
-      title: editDraft.title,
-      summary: editDraft.summary,
-      content: editDraft.content,
-      tags: editDraft.tags.split(',').map(item => item.trim()).filter(Boolean),
-      status: editDraft.status,
-      category: editDraft.category,
-      source: editDraft.source.trim() || undefined,
-      confidence: Math.max(0, Math.min(100, Math.round(editDraft.confidence))) / 100,
-      metadata: {
-        ...(editing.metadata || {}),
-        pinned: editDraft.pinned,
-        scope: editDraft.scope.trim() || undefined,
-        updatedFrom: 'settings'
-      }
-    })
-    setEditing(null)
-    await refresh()
-  }
-
-  const deleteMemory = async (id: string) => {
-    const ok = await styledConfirm({ message: tr('删除这条记忆？此操作不可撤销。', 'Delete this memory? This cannot be undone.'), danger: true })
-    if (!ok) return
-    await window.electronAPI.memory.delete(id)
-    if (editing?.id === id) setEditing(null)
-    await refresh()
-  }
-
-  const togglePinned = async (entry: MemoryEntry) => {
-    await window.electronAPI.memory.updateEntry(entry.id, {
-      metadata: {
-        ...(entry.metadata || {}),
-        pinned: !(entry.metadata?.pinned || entry.metadata?.pin),
-        pin: undefined
-      }
-    })
-    await refresh()
-  }
-
-  return (
-    <div className="wb-settings-stack wb-memory-settings">
-      <div className="glass wb-provider-card">
-        <div className="wb-provider-head">
-          <div>
-            <strong>{tr('长期记忆', 'Long-Term Memory')}</strong>
-            <span>{tr('管理偏好、项目背景、反复纠正点和导入对话样本。', 'Manage preferences, project context, repeated corrections, and imported conversation samples.')}</span>
-          </div>
-          <button className="ah-btn sm" onClick={refresh} disabled={loading}><Icon d={IC.refresh} size={14} />{loading ? tr('刷新中', 'Refreshing') : tr('刷新', 'Refresh')}</button>
-        </div>
-        <div className="wb-tool-inline-form">
-          <input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') refresh().catch(() => {}) }} placeholder={tr('搜索记忆', 'Search memories')} />
-          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value as 'all' | MemoryEntryStatus)}>
-            <option value="all">{tr('全部状态', 'All statuses')}</option>
-            <option value="approved">{tr('已学习', 'Learned')}</option>
-            <option value="candidate">{tr('待确认', 'Pending')}</option>
-            <option value="disabled">{tr('已禁用', 'Disabled')}</option>
-          </select>
-          <button className="ah-btn sm" onClick={refresh}>{tr('搜索', 'Search')}</button>
-        </div>
-      </div>
-
-      <div className="glass wb-provider-card wb-memory-settings-card">
-        <div className="wb-provider-head"><strong>{tr('导入对话', 'Import Conversation')}</strong><span>{tr('从历史对话提取偏好、风格、项目和纠正记忆。', 'Extract preferences, style, project context, and corrections from chat history.')}</span></div>
-        <input className="ah-input" value={importSource} onChange={e => setImportSource(e.target.value)} placeholder={tr('来源名称 / 对话历史标题', 'Source name / chat history title')} />
-        <textarea className="ah-textarea" value={importText} onChange={e => setImportText(e.target.value)} placeholder={tr('粘贴对话记录...', 'Paste conversation transcript...')} />
-        <div className="wb-tool-actions">
-          <button className="ah-btn sm primary" onClick={importConversation} disabled={loading || !importText.trim()}>{tr('导入并提取候选', 'Import and extract candidates')}</button>
-          {message && <small>{message}</small>}
-        </div>
-      </div>
-
-      {candidates.length > 0 && (
-        <div className="glass wb-provider-card wb-memory-settings-card">
-          <div className="wb-provider-head"><strong>{tr('待确认记忆', 'Pending Memories')}</strong><span>{candidates.length} {tr('条', 'items')}</span></div>
-          {candidates.slice(0, 12).map(candidate => (
-            <MemorySettingsRow key={candidate.id} entry={candidate} onEdit={startEdit} onApprove={approveCandidate} onDisable={disableMemory} onDelete={deleteMemory} onTogglePinned={togglePinned} />
-          ))}
-        </div>
-      )}
-
-      {editing && (
-        <div className="glass wb-provider-card wb-memory-settings-card">
-          <div className="wb-provider-head"><strong>{tr('编辑记忆', 'Edit Memory')}</strong><span>{memoryMeta(editing)}</span></div>
-          <div className="wb-form-grid two">
-            <label className="wb-field">
-              <span>{tr('分类', 'Category')}</span>
-              <select className="ah-select" value={editDraft.category} onChange={e => setEditDraft({ ...editDraft, category: e.target.value as MemoryCategory })}>
-                {MEMORY_CATEGORIES.map(category => <option key={category} value={category}>{memoryCategoryLabel(category)}</option>)}
-              </select>
-            </label>
-            <label className="wb-field">
-              <span>{tr('状态', 'Status')}</span>
-              <select className="ah-select" value={editDraft.status} onChange={e => setEditDraft({ ...editDraft, status: e.target.value as MemoryEntryStatus })}>
-                <option value="approved">{tr('已学习', 'Learned')}</option>
-                <option value="candidate">{tr('待确认', 'Pending')}</option>
-                <option value="disabled">{tr('已禁用', 'Disabled')}</option>
-              </select>
-            </label>
-          </div>
-          <input className="ah-input" value={editDraft.title} onChange={e => setEditDraft({ ...editDraft, title: e.target.value })} placeholder={tr('标题', 'Title')} />
-          <input className="ah-input" value={editDraft.summary} onChange={e => setEditDraft({ ...editDraft, summary: e.target.value })} placeholder={tr('摘要', 'Summary')} />
-          <textarea className="ah-textarea" value={editDraft.content} onChange={e => setEditDraft({ ...editDraft, content: e.target.value })} placeholder={tr('完整内容 / 规则', 'Full content / rule')} />
-          <input className="ah-input" value={editDraft.tags} onChange={e => setEditDraft({ ...editDraft, tags: e.target.value })} placeholder={tr('标签，用逗号分隔', 'Tags, separated by commas')} />
-          <div className="wb-form-grid two">
-            <label className="wb-field">
-              <span>{tr('来源', 'Source')}</span>
-              <input className="ah-input" value={editDraft.source} onChange={e => setEditDraft({ ...editDraft, source: e.target.value })} placeholder={tr('来源对话 / 文件 / 规则', 'Source conversation / file / rule')} />
-            </label>
-            <label className="wb-field">
-              <span>{tr('作用域', 'Scope')}</span>
-              <input className="ah-input" value={editDraft.scope} onChange={e => setEditDraft({ ...editDraft, scope: e.target.value })} placeholder={tr('全局 / 项目 / 工作目录', 'Global / project / workspace')} />
-            </label>
-          </div>
-          <div className="wb-memory-governance-row">
-            <label>
-              <input type="checkbox" checked={editDraft.pinned} onChange={e => setEditDraft({ ...editDraft, pinned: e.target.checked })} />
-              <span>{tr('置顶并优先注入上下文', 'Pin and prioritize in context')}</span>
-            </label>
-            <label className="wb-appearance-range">
-              <span>{tr('置信度', 'Confidence')}</span>
-              <input type="range" min={0} max={100} value={editDraft.confidence} onChange={e => setEditDraft({ ...editDraft, confidence: Number(e.target.value) })} />
-              <span>{editDraft.confidence}%</span>
-            </label>
-          </div>
-          <div className="wb-tool-actions">
-            <button className="ah-btn sm" onClick={() => setEditing(null)}>{tr('取消', 'Cancel')}</button>
-            <button className="ah-btn sm primary" onClick={saveEdit} disabled={!editDraft.title.trim()}>{tr('保存', 'Save')}</button>
-            <button className="ah-btn sm danger" onClick={() => deleteMemory(editing.id)}>{tr('删除', 'Delete')}</button>
-          </div>
-        </div>
-      )}
-
-      <div className="glass wb-provider-card wb-memory-settings-card">
-        <div className="wb-provider-head"><strong>{tr('记忆库', 'Memory Library')}</strong><span>{entries.length} {tr('条', 'items')}</span></div>
-        {entries.length === 0 && <div className="wb-muted-box">{tr('暂无记忆。', 'No memories yet.')}</div>}
-        {entries.slice(0, 40).map(entry => (
-          <MemorySettingsRow key={entry.id} entry={entry} onEdit={startEdit} onApprove={approveCandidate} onDisable={disableMemory} onDelete={deleteMemory} onTogglePinned={togglePinned} />
-        ))}
-      </div>
-    </div>
-  )
-}
-
 function MemorySettingsRow({ entry, onEdit, onApprove, onDisable, onDelete, onTogglePinned }: {
   entry: MemoryEntry
   onEdit: (entry: MemoryEntry) => void
@@ -1131,7 +1155,7 @@ function MemorySettingsRow({ entry, onEdit, onApprove, onDisable, onDelete, onTo
   return (
     <div className={'wb-memory-kun-row wb-memory-settings-row' + (pinned ? ' pinned' : '')}>
       <div className="wb-memory-kun-row-main">
-        <strong>{pinned && <span className="wb-memory-pin">{tr('置顶', 'Pinned')}</span>}{entry.title || entry.category || entry.id}</strong>
+        <strong>{pinned && <span className="wb-memory-pin">{tr('置顶', 'Pinned')}</span>}{entry.title || entry.category || entry.id}<span className="wb-memory-category-badge">{memoryCategoryLabel(entry.category)}</span></strong>
         <small>{String(entry.summary || entry.content || entry.title || '').slice(0, 220)}</small>
         <div className="wb-memory-kun-row-meta">{memoryMeta(entry)}</div>
       </div>
@@ -1184,7 +1208,7 @@ function MemoryGraphSection({ entries }: { entries: MemoryEntry[] }) {
         <strong>{tr('记忆图谱', 'Memory Graph')}</strong>
         <span>{tr('可视化记忆条目之间的关系，查看清理建议。', 'Visualize relationships between memory entries and view cleanup suggestions.')}</span>
       </div>
-      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+      <div className="wb-memory-graph-actions">
         <button className="ah-btn sm" onClick={buildGraph} disabled={loading}>
           {loading ? tr('构建中...', 'Building...') : tr('构建图谱', 'Build Graph')}
         </button>
@@ -1194,25 +1218,25 @@ function MemoryGraphSection({ entries }: { entries: MemoryEntry[] }) {
           </button>
         )}
       </div>
-      {error && <div style={{ fontSize: 12, color: 'var(--color-error)', marginTop: 4 }}>{error}</div>}
+      {error && <div className="wb-memory-graph-error">{error}</div>}
       {graph && (
-        <div style={{ marginTop: 8, padding: 12, background: 'var(--bg-input)', borderRadius: 8, fontSize: 12 }}>
+        <div className="wb-memory-graph-stats">
           <div>{tr(`节点: ${graph.stats?.totalNodes || 0}，边: ${graph.stats?.totalEdges || 0}，孤立节点: ${graph.stats?.isolatedNodes || 0}`, `Nodes: ${graph.stats?.totalNodes || 0}, Edges: ${graph.stats?.totalEdges || 0}, Isolated: ${graph.stats?.isolatedNodes || 0}`)}</div>
           {graph.stats?.categories && (
-            <div style={{ marginTop: 4 }}>
+            <div className="wb-memory-graph-categories">
               {Object.entries(graph.stats.categories).map(([cat, count]) => (
-                <span key={cat} className="ah-chip" style={{ marginRight: 4, fontSize: 10 }}>{cat}: {count as number}</span>
+                <span key={cat} className="ah-chip">{cat}: {count as number}</span>
               ))}
             </div>
           )}
         </div>
       )}
       {cleanupSuggestions.length > 0 && (
-        <div className="wb-memory-kun-suggestions" style={{ marginTop: 8 }}>
+        <div className="wb-memory-kun-suggestions">
           <strong>{tr(`发现 ${cleanupSuggestions.length} 条可清理的记忆`, `Found ${cleanupSuggestions.length} memories to clean up`)}</strong>
-          <div style={{ display: 'grid', gap: 6, marginTop: 6 }}>
+          <div className="wb-memory-graph-suggestions-grid">
             {cleanupSuggestions.slice(0, 5).map((item: any, index) => (
-              <div key={item.id || item.entryId || index} className="ah-chip" style={{ justifyContent: 'flex-start', whiteSpace: 'normal' }}>
+              <div key={item.id || item.entryId || index} className="ah-chip wb-memory-graph-suggestion-chip">
                 {String(item.title || item.reason || item.summary || item.id || item.entryId || tr('清理建议', 'Cleanup suggestion')).slice(0, 160)}
               </div>
             ))}
@@ -1422,10 +1446,15 @@ function memoryScopeLabel(scope: MemoryScopeFilter): string {
 }
 
 function memoryMeta(entry: Partial<MemoryEntry>): string {
+  const timestamp = entry.updatedAt || entry.createdAt
+  const updatedAt = timestamp && !Number.isNaN(Date.parse(timestamp))
+    ? `${tr('更新', 'Updated')}:${new Date(timestamp).toLocaleDateString()}`
+    : ''
   return [
     memoryCategoryLabel(entry.category || 'conversation'),
     memoryStatusLabel(entry.status || 'approved'),
     typeof entry.confidence === 'number' ? `${Math.round(entry.confidence * 100)}%` : '',
+    updatedAt,
     entry.metadata?.pinned || entry.metadata?.pin ? tr('置顶', 'Pinned') : '',
     entry.metadata?.scope ? `${tr('作用域', 'Scope')}:${entry.metadata.scope}` : '',
     entry.source ? `${tr('来源', 'Source')}:${entry.source}` : '',
@@ -1527,15 +1556,14 @@ function AppearanceTab({ motion, setMotion }: { motion: MotionLevel; setMotion: 
   }, [])
 
   const update = useCallback((patch: Partial<AppearancePreferences>) => {
-    let next: AppearancePreferences
     setPrefs(current => {
-      next = normalizeAppearance({ ...current, ...patch })
+      const next = normalizeAppearance({ ...current, ...patch })
+      applyAppearance(next)
+      if (patch.motion) setMotion(next.motion)
+      if (patch.language) setLang(next.language as Lang)
+      void saveAppearance(next)
       return next
     })
-    applyAppearance(next!)
-    if (patch.motion) setMotion(next!.motion)
-    if (patch.language) setLang(next!.language as Lang)
-    void saveAppearance(next!)
   }, [setMotion])
 
   const reset = () => update(DEFAULT_APPEARANCE)

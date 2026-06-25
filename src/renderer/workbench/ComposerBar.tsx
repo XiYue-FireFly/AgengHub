@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Icon, IC, AgentMark } from '../glass/ui'
 import { getLang, tr } from '../glass/i18n'
 import { AGENT_META } from '../glass/meta'
@@ -16,11 +17,6 @@ type PickerAgentRow =
 type PickerModelRow = { source: 'provider-model'; id: string; label: string; subtitle: string; providerId: string; modelId: string; contextWindow?: number }
 type ComposerSendOverrides = { mode?: DispatchPreset; targetAgent?: string | null; customSchedule?: SchedulePreview; modelSelection?: ModelSelection | null }
 type ApprovalMode = 'ask' | 'auto' | 'full'
-type ComposerQuickCard =
-  | { id: string; kind: 'schedule'; mode: DispatchPreset; title: string; detail: string; icon: React.ReactNode; tone: string }
-  | { id: string; kind: 'quick-role'; role: 'reviewer' | 'executor' | 'gatekeeper'; title: string; detail: string; icon: React.ReactNode; tone: string }
-  | { id: string; kind: 'workspace'; title: string; detail: string; icon: React.ReactNode; tone: string }
-  | { id: string; kind: 'insert'; token: string; title: string; detail: string; icon: React.ReactNode; tone: string }
 
 type ComposerAddItem = {
   id: string
@@ -36,6 +32,7 @@ type ComposerAddItem = {
   body?: string
 }
 type AddPaletteMatch = { query: string; start: number; end: number }
+type PickerAnchor = { left: number; top: number } | null
 
 export function ComposerBar({
   mode,
@@ -109,9 +106,10 @@ export function ComposerBar({
   const [approvalPickerOpen, setApprovalPickerOpen] = useState(false)
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('full')
   const [quickRole, setQuickRole] = useState<'none' | 'reviewer' | 'executor' | 'gatekeeper'>('none')
-  const [quickCardsCollapsed, setQuickCardsCollapsed] = useState(false)
   const [queue, setQueue] = useState<Array<{ text: string; attachments: WorkbenchAttachment[]; overrides?: any }>>([])
   const [cursorIndex, setCursorIndex] = useState(0)
+  const [modelPickerAnchor, setModelPickerAnchor] = useState<PickerAnchor>(null)
+  const [workspacePickerAnchor, setWorkspacePickerAnchor] = useState<PickerAnchor>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const modelPickerRef = useRef<HTMLDivElement | null>(null)
   const workspacePickerRef = useRef<HTMLDivElement | null>(null)
@@ -193,24 +191,50 @@ export function ComposerBar({
 
   useEffect(() => {
     if (!modelPickerOpen) return
-    const onPointerDown = (event: PointerEvent) => {
+    const updateAnchor = () => {
+      const rect = modelPickerRef.current?.getBoundingClientRect()
+      setModelPickerAnchor(rect ? { left: rect.right, top: rect.bottom } : null)
+    }
+    updateAnchor()
+    const onClickOutside = (event: MouseEvent) => {
       const target = event.target as Node
+      // Check if click is inside the trigger OR the portaled picker
       if (modelPickerRef.current?.contains(target)) return
+      if (document.querySelector('.wb-agent-picker')?.contains(target)) return
       setModelPickerOpen(false)
     }
-    document.addEventListener('pointerdown', onPointerDown)
-    return () => document.removeEventListener('pointerdown', onPointerDown)
+    document.addEventListener('mousedown', onClickOutside)
+    window.addEventListener('resize', updateAnchor)
+    window.addEventListener('scroll', updateAnchor, true)
+    return () => {
+      document.removeEventListener('mousedown', onClickOutside)
+      window.removeEventListener('resize', updateAnchor)
+      window.removeEventListener('scroll', updateAnchor, true)
+    }
   }, [modelPickerOpen])
 
   useEffect(() => {
     if (!workspacePickerOpen) return
-    const onPointerDown = (event: PointerEvent) => {
+    const updateAnchor = () => {
+      const rect = workspacePickerRef.current?.getBoundingClientRect()
+      setWorkspacePickerAnchor(rect ? { left: rect.left, top: rect.bottom } : null)
+    }
+    updateAnchor()
+    const onClickOutside = (event: MouseEvent) => {
       const target = event.target as Node
+      // Check if click is inside the trigger OR the portaled picker
       if (workspacePickerRef.current?.contains(target)) return
+      if (document.querySelector('.wb-workspace-popover')?.contains(target)) return
       setWorkspacePickerOpen(false)
     }
-    document.addEventListener('pointerdown', onPointerDown)
-    return () => document.removeEventListener('pointerdown', onPointerDown)
+    document.addEventListener('mousedown', onClickOutside)
+    window.addEventListener('resize', updateAnchor)
+    window.addEventListener('scroll', updateAnchor, true)
+    return () => {
+      document.removeEventListener('mousedown', onClickOutside)
+      window.removeEventListener('resize', updateAnchor)
+      window.removeEventListener('scroll', updateAnchor, true)
+    }
   }, [workspacePickerOpen])
 
   useEffect(() => {
@@ -235,12 +259,6 @@ export function ComposerBar({
     })
     return filterComposerAddItems([...base, ...pluginAddItems], addQuery || '').slice(0, 12)
   }, [addQuery, pluginAddItems, readyAgentIds.length, workspaceId])
-  const quickCards = useMemo(() => buildComposerQuickCards({
-    mode,
-    readyAgentIds,
-    hasWorkspace: !!workspaceId,
-    text: text.trim()
-  }), [mode, readyAgentIds, workspaceId, text])
 
   useEffect(() => {
     setPaletteOpen(slashQuery !== null)
@@ -272,7 +290,7 @@ export function ComposerBar({
     if (!prompt) return
     // If currently sending, queue the message
     if (sending) {
-      setQueue(prev => [...prev, { text: prompt, attachments: [...attachments], overrides: quickRoleSendOverrides(quickRole === 'none' ? undefined : quickRoleSchedule(quickRole, readyAgentIds)) }])
+      setQueue(prev => [...prev, { text: prompt, attachments: [...attachments], overrides: quickRoleSendOverrides(quickRole === 'none' ? undefined : quickRoleSchedule(quickRole, readyAgentIds), targetAgent) }])
       setText('')
       setAttachments([])
       setQuickRole('none')
@@ -297,41 +315,7 @@ export function ComposerBar({
     setText('')
     setAttachments([])
     setQuickRole('none')
-    onSend(prompt, nextAttachments, quickRoleSendOverrides(quickSchedule))
-  }
-
-  const applyQuickCard = (card: ComposerQuickCard) => {
-    setAttachError(null)
-    if (card.kind === 'schedule') {
-      selectScheduleMode(card.mode)
-      return
-    }
-    if (card.kind === 'quick-role') {
-      const schedule = quickRoleSchedule(card.role, readyAgentIds)
-      if (!schedule) {
-        setAttachError(tr('没有可用本地 Agent，无法派发子 Agent。请先在设置里配置 CLI。', 'No usable local agent is available. Configure a CLI first.'))
-        return
-      }
-      if (text.trim()) {
-        const nextAttachments = attachments
-        setText('')
-        setAttachments([])
-        setQuickRole('none')
-        onSend(text.trim(), nextAttachments, quickRoleSendOverrides(schedule))
-      } else {
-        setQuickRole(card.role)
-        textareaRef.current?.focus()
-      }
-      return
-    }
-    if (card.kind === 'workspace') {
-      onCreateProject()
-      return
-    }
-    if (card.kind === 'insert') {
-      insertToken(card.token)
-      textareaRef.current?.focus()
-    }
+    onSend(prompt, nextAttachments, quickRoleSendOverrides(quickSchedule, targetAgent))
   }
 
   const isImeConfirming = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -394,35 +378,13 @@ export function ComposerBar({
     setCursorIndex(typeof next === 'number' ? next : text.length)
   }
 
-  const insertToken = (token: string) => {
-    setText(current => {
-      const prefix = current.trim() ? `${current.trimEnd()} ` : ''
-      return `${prefix}${token} `
-    })
-  }
-
-  const openAddPalette = () => {
-    setText(current => {
-      const prefix = current.trim() ? `${current.trimEnd()} ` : ''
-      const next = `${prefix}@`
-      setCursorIndex(next.length)
-      return next
-    })
-    window.requestAnimationFrame(() => {
-      const el = textareaRef.current
-      if (!el) return
-      el.focus()
-      const end = el.value.length
-      el.setSelectionRange(end, end)
-      setCursorIndex(end)
-    })
-  }
-
   const selectAgentChoice = (agentId: string) => {
     setTargetAgent(agentId)
     setModelSelection(null)
+    setMode('auto')
     setModelQuery('')
     setActiveProviderId(null)
+    setModelPickerOpen(false)
   }
 
   const selectProviderChoice = (providerId: string) => {
@@ -435,6 +397,7 @@ export function ComposerBar({
   const selectProviderModel = (providerId: string, modelId: string) => {
     setTargetAgent(null)
     setModelSelection({ providerId, modelId, source: 'provider' })
+    setMode('auto')
     setModelPickerOpen(false)
     setModelQuery('')
     setActiveProviderId(providerId)
@@ -577,22 +540,6 @@ export function ComposerBar({
       onDrop={handleDrop}
     >
       <div className="wb-composer">
-        {!quickCardsCollapsed && quickCards.length > 0 && (
-          <div className="wb-composer-quick-cards" role="list" aria-label={tr('快速选择', 'Quick choices')}>
-            {quickCards.map(card => (
-              <button key={card.id} type="button" className={'wb-composer-quick-card ' + card.tone} onClick={() => applyQuickCard(card)}>
-                <Icon d={card.icon} size={15} />
-                <span>
-                  <strong>{card.title}</strong>
-                  <small>{card.detail}</small>
-                </span>
-              </button>
-            ))}
-            <button type="button" className="wb-composer-quick-card-close" onClick={() => setQuickCardsCollapsed(true)} title={tr('隐藏快速选择', 'Hide quick choices')}>
-              <Icon d={IC.x} size={12} />
-            </button>
-          </div>
-        )}
         <div className="wb-composer-input-layer">
           <textarea
             ref={textareaRef}
@@ -752,8 +699,20 @@ export function ComposerBar({
                 <span>{selectedPickerLabel}</span>
                 <Icon d={IC.chevDown} size={12} />
               </button>
-              {modelPickerOpen && (
-                <div className={'wb-agent-picker' + (activeModelRows.length > 0 ? ' has-models' : '')} role="menu" aria-label={tr('选择 Agent', 'Choose agent')}>
+              {modelPickerOpen && modelPickerAnchor && createPortal(
+                <div
+                  className={'wb-agent-picker' + (activeModelRows.length > 0 ? ' has-models' : '')}
+                  role="menu"
+                  aria-label={tr('选择 Agent', 'Choose agent')}
+                  style={{
+                    position: 'fixed',
+                    left: `${modelPickerAnchor.left}px`,
+                    top: `${modelPickerAnchor.top}px`,
+                    right: 'auto',
+                    bottom: 'auto',
+                    transform: 'translate(-100%, calc(-100% - 12px))'
+                  }}
+                >
                   <section className="wb-agent-picker-agents">
                     <div className="wb-agent-picker-title">Agents</div>
                     <div className="wb-agent-picker-list">
@@ -815,6 +774,7 @@ export function ComposerBar({
                   )}
                   {/* Local model config loading placeholder removed */}
                 </div>
+                , document.body
               )}
             </div>
             {!sending && text.trim() && (
@@ -925,8 +885,20 @@ export function ComposerBar({
                 <span>{workspace?.name || tr('个人会话', 'Personal chat')}</span>
                 <Icon d={IC.chevDown} size={12} />
               </button>
-              {workspacePickerOpen && (
-                <div className="wb-workspace-popover" role="menu" aria-label={tr('选择工作目录', 'Choose working folder')}>
+              {workspacePickerOpen && workspacePickerAnchor && createPortal(
+                <div
+                  className="wb-workspace-popover"
+                  role="menu"
+                  aria-label={tr('选择工作目录', 'Choose working folder')}
+                  style={{
+                    position: 'fixed',
+                    left: `${workspacePickerAnchor.left}px`,
+                    top: `${workspacePickerAnchor.top}px`,
+                    right: 'auto',
+                    bottom: 'auto',
+                    transform: 'translateY(calc(-100% - 12px))'
+                  }}
+                >
                   <button
                     type="button"
                     className={!workspaceId ? 'selected' : ''}
@@ -962,6 +934,7 @@ export function ComposerBar({
                     </span>
                   </button>
                 </div>
+                , document.body
               )}
             </div>
             {gitBranchNode}
@@ -978,12 +951,7 @@ export function ComposerBar({
               ))}
             </select>
           </div>
-          <button className="wb-command-open-hint" type="button" onClick={() => insertToken('/')} title={tr('输入 / 打开命令', 'Type / to open commands')}>
-            {tr('输入 / 打开命令', 'Type / for commands')}
-          </button>
-          <button className="wb-command-open-hint" type="button" onClick={openAddPalette} title={tr('Type @ to add plugins', 'Type @ to add plugins')}>
-            {tr('Type @ for plugins', 'Type @ for plugins')}
-          </button>
+          <span className="wb-composer-key-hint">{tr('Type / for commands, @ for context', 'Type / for commands, @ for context')}</span>
         </div>
       </div>
     </div>
@@ -1376,11 +1344,11 @@ export function quickRoleSchedule(role: 'reviewer' | 'executor' | 'gatekeeper', 
   }
 }
 
-export function quickRoleSendOverrides(schedule: SchedulePreview | null | undefined): ComposerSendOverrides | undefined {
+export function quickRoleSendOverrides(schedule: SchedulePreview | null | undefined, selectedAgent?: string | null): ComposerSendOverrides | undefined {
   if (!schedule) return undefined
   return {
     mode: 'custom',
-    targetAgent: null,
+    targetAgent: selectedAgent ?? null,
     customSchedule: schedule,
     modelSelection: null
   }
@@ -1392,67 +1360,6 @@ export function pickAgentForRole(role: 'reviewer' | 'executor' | 'gatekeeper', r
     ? ['codex', 'minimax-code', 'claude']
     : ['claude', 'codex', 'minimax-code']
   return preferred.find(id => readyAgentIds.includes(id)) || fallback
-}
-
-function buildComposerQuickCards(input: {
-  mode: DispatchPreset
-  readyAgentIds: string[]
-  hasWorkspace: boolean
-  text: string
-}): ComposerQuickCard[] {
-  const cards: ComposerQuickCard[] = []
-  const hasAgents = input.readyAgentIds.length > 0
-  if (hasAgents && input.mode !== 'firefly-custom') {
-    cards.push({
-      id: 'smart-five-role',
-      kind: 'schedule',
-      mode: 'firefly-custom',
-      title: tr('智能五角色', 'Smart five-role'),
-      detail: tr('主对话、路由、审查、执行、门禁一起运行', 'Main, router, review, execute, gate'),
-      icon: IC.brain,
-      tone: 'primary'
-    })
-  }
-  if (hasAgents) {
-    cards.push({
-      id: 'quick-reviewer',
-      kind: 'quick-role',
-      role: 'reviewer',
-      title: tr('让子 Agent 审查', 'Ask reviewer'),
-      detail: input.text ? tr('直接发送当前内容进行审查', 'Send current text for review') : tr('选择后输入内容再发送', 'Select, then type and send'),
-      icon: IC.check,
-      tone: 'neutral'
-    })
-    cards.push({
-      id: 'quick-executor',
-      kind: 'quick-role',
-      role: 'executor',
-      title: tr('执行前审查', 'Review then execute'),
-      detail: tr('适合文件、终端、浏览器操作', 'For file, terminal, browser actions'),
-      icon: IC.bolt,
-      tone: 'warn'
-    })
-  }
-  if (!input.hasWorkspace) {
-    cards.push({
-      id: 'bind-workspace',
-      kind: 'workspace',
-      title: tr('绑定工作目录', 'Bind folder'),
-      detail: tr('启用文件、Git、终端上下文', 'Enable files, Git, terminal context'),
-      icon: IC.folder,
-      tone: 'neutral'
-    })
-  }
-  cards.push({
-    id: 'open-commands',
-    kind: 'insert',
-    token: '/',
-    title: tr('打开指令', 'Open commands'),
-    detail: tr('计划、审查、验证等快捷入口', 'Plan, review, verify shortcuts'),
-    icon: IC.terminal,
-    tone: 'subtle'
-  })
-  return cards.slice(0, 4)
 }
 
 function approvalModes(): Array<{ id: ApprovalMode; label: string; detail: string; icon: React.ReactNode }> {

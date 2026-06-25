@@ -25,7 +25,8 @@ export function SessionSidebar({
   deleteThread,
   search,
   setSearch,
-  proxyHost
+  proxyHost,
+  pendingThreadId
 }: {
   view: 'chat' | 'write' | 'tasks' | 'settings' | 'workflows'
   setView: (view: 'chat' | 'write' | 'tasks' | 'settings' | 'workflows') => void
@@ -43,6 +44,7 @@ export function SessionSidebar({
   search: string
   setSearch: (value: string) => void
   proxyHost: string
+  pendingThreadId: string | null
 }) {
   const [sidebarWidth, setSidebarWidth] = useState(312)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
@@ -232,6 +234,7 @@ export function SessionSidebar({
                     key={thread.id}
                     thread={thread}
                     active={thread.id === activeThreadId}
+                    pending={thread.id === pendingThreadId}
                     selectThread={selectThread}
                     onRename={startRename}
                     onDelete={removeThread}
@@ -299,6 +302,7 @@ export function SessionSidebar({
                       key={thread.id}
                       thread={thread}
                       active={thread.id === activeThreadId}
+                      pending={thread.id === pendingThreadId}
                       selectThread={selectThread}
                       onRename={startRename}
                       onDelete={removeThread}
@@ -361,23 +365,26 @@ function clampSidebarWidth(width: number): number {
 function ThreadItem({
   thread,
   active,
+  pending,
   selectThread,
   onRename,
   onDelete
 }: {
   thread: WorkbenchThread
   active: boolean
+  pending: boolean
   selectThread: (id: string | null) => void
   onRename: (thread: WorkbenchThread) => void
   onDelete: (thread: WorkbenchThread) => void
 }) {
   const running = thread.lastTurnStatus === 'running' || thread.lastTurnStatus === 'queued'
   return (
-    <div className={'wb-thread-item' + (active ? ' active' : '')}>
-      <button className="wb-thread-main" onClick={() => selectThread(thread.id)} title={thread.title}>
+    <div className={'wb-thread-item' + (active ? ' active' : '') + (pending ? ' pending' : '')}>
+      <button className="wb-thread-main" onClick={() => selectThread(thread.id)} title={thread.title} aria-busy={pending}>
         <span>{thread.title}</span>
         <small>
           <i className={'wb-thread-status ' + statusClass(thread.lastTurnStatus)}></i>
+          {pending && <i className="wb-thread-running" title={tr('切换中', 'Switching')} />}
           {statusLabel(thread.lastTurnStatus)} / {relativeTime(thread.updatedAt)}
         </small>
       </button>

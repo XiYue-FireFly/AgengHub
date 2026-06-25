@@ -548,11 +548,13 @@ ipcMain.handle("turns:create", async (_event, payload: { threadId?: string | nul
   const mode = payload.mode || "auto"
   const directTarget = payload.targetAgent?.trim() || undefined
   const providerDirect = !directTarget && isProviderDirectSelection(payload.modelSelection)
+  const localDirect = !!directTarget
+  const directRun = providerDirect || localDirect
   const turnModelSelection = providerDirect ? payload.modelSelection : directTarget ? undefined : payload.modelSelection
-  const effectiveMode = providerDirect ? "auto" : mode
-  const dispatchMode = directTarget || providerDirect ? "auto" : runtimeStore.dispatcherMode(mode)
-  const fireflyAgentIds = !providerDirect && mode === "firefly-custom" ? dispatchableLocalAgentIds() : []
-  const scheduleForTurn = providerDirect
+  const effectiveMode = directRun ? "auto" : mode
+  const dispatchMode = directRun ? "auto" : runtimeStore.dispatcherMode(mode)
+  const fireflyAgentIds = !directRun && mode === "firefly-custom" ? dispatchableLocalAgentIds() : []
+  const scheduleForTurn = directRun
     ? undefined
     : mode === "firefly-custom"
     ? payload.customSchedule || fireflyFiveRoleTemplate(fireflyAgentIds)
@@ -584,7 +586,7 @@ ipcMain.handle("turns:create", async (_event, payload: { threadId?: string | nul
     }),
     customSchedule: scheduleForTurn
   })
-  const routeDecision = !providerDirect && !directTarget && mode === "firefly-custom"
+  const routeDecision = !directRun && mode === "firefly-custom"
     ? makeRouteDecision(thread.id, turn.id, dispatchUserPrompt, fireflyAgentIds)
     : undefined
   const messages = modelMessagesForTurn(thread.id, dispatchUserPrompt, attachments)
@@ -691,29 +693,30 @@ ipcMain.handle("turns:retry", async (_event, turnId: string) => {
   const activeDispatcher = dispatcher!
   const retryTargetAgent = turn.targetAgent || undefined
   const retryProviderDirect = !retryTargetAgent && isProviderDirectSelection(turn.modelSelection)
+  const retryDirectRun = retryProviderDirect || !!retryTargetAgent
   const retryModelSelection = retryProviderDirect ? turn.modelSelection : retryTargetAgent ? undefined : turn.modelSelection
   const created = runtimeStore.createTurn({
     threadId: thread.id,
     workspaceId: thread.workspaceId,
     prompt: turn.prompt,
-    mode: turn.mode,
+    mode: retryDirectRun ? "auto" : turn.mode,
     targetAgent: retryTargetAgent || null,
     attachments: turn.attachments ?? [],
     modelSelection: retryModelSelection,
     thinking: turn.thinking,
     contextProjection: turn.contextProjection,
-    customSchedule: turn.customSchedule
+    customSchedule: retryDirectRun ? undefined : turn.customSchedule
   })
   const retryUserPrompt = promptWithGoalContext(turn.prompt, getWorkbenchGoal(thread.id))
   const retryMessages = modelMessagesForTurn(thread.id, retryUserPrompt, turn.attachments, turn.id)
   const retryPrompt = retryMessages[retryMessages.length - 1]?.content || promptWithAttachments(retryUserPrompt, turn.attachments)
-  const retryFireflyAgentIds = !retryProviderDirect && turn.mode === "firefly-custom" ? dispatchableLocalAgentIds() : []
-  const retrySchedule = retryProviderDirect
+  const retryFireflyAgentIds = !retryDirectRun && turn.mode === "firefly-custom" ? dispatchableLocalAgentIds() : []
+  const retrySchedule = retryDirectRun
     ? undefined
     : turn.mode === "firefly-custom"
     ? turn.customSchedule || fireflyFiveRoleTemplate(retryFireflyAgentIds)
     : turn.customSchedule
-  const retryRouteDecision = !retryProviderDirect && !retryTargetAgent && turn.mode === "firefly-custom"
+  const retryRouteDecision = !retryDirectRun && turn.mode === "firefly-custom"
     ? makeRouteDecision(thread.id, created.turn.id, retryUserPrompt, retryFireflyAgentIds)
     : undefined
   const retryRunner = retryProviderDirect && retryModelSelection

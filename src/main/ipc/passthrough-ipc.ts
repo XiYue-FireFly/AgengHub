@@ -30,6 +30,7 @@ import { buildInlineEditPrompt, validateEditResult, applyInlineEdit } from '../r
 import { appEventLogPath } from '../runtime/app-event-log'
 import { DispatchPreset } from '../runtime/types'
 import { runReleaseChecks } from '../runtime/release-workspace'
+import { listMcpServers } from '../runtime/mcp'
 
 interface PassthroughDeps {
   memory: () => any
@@ -45,7 +46,7 @@ interface PassthroughDeps {
 }
 
 export function registerPassthroughIpc(deps: PassthroughDeps): void {
-  const { store, runtimeStore, registry, providerMgr, resolveAppVersionFromMain, registerAgentsFromBindings, getWorkspaceManager, getMainWindow } = deps
+  const { memory, store, runtimeStore, registry, providerMgr, resolveAppVersionFromMain, registerAgentsFromBindings, getWorkspaceManager, getMainWindow } = deps
 
   // Window controls
   ipcMain.handle("win:minimize", () => { getMainWindow()?.minimize() })
@@ -174,8 +175,8 @@ export function registerPassthroughIpc(deps: PassthroughDeps): void {
       appVersion: resolveAppVersionFromMain(),
       hasProviders: (registry.getAll().length > 0),
       hasAgents: (registry.getAll().length > 0),
-      hasMcpServers: (await import("../runtime/mcp")).listMcpServers().length > 0,
-      hasMemoryEntries: false,
+      hasMcpServers: listMcpServers().length > 0,
+      hasMemoryEntries: (memory()?.listEntries?.()?.length ?? 0) > 0,
       hasWorkspace: !!getWorkspaceManager()?.getActive()
     })
   })

@@ -1,11 +1,14 @@
 import React from 'react'
 import { readAppearanceLocal } from '../appearance'
-import { renderMarkdown } from './markdown-renderer'
 import { sanitizeHtml } from '../lib/sanitize'
+import { renderMarkdown } from './markdown-renderer'
+
+type OpenTarget = 'editor' | 'antigravity' | 'explorer' | 'system' | 'vscode' | 'cursor' | 'windsurf' | 'zed' | 'file-manager'
 
 export function MarkdownBlock({ content, emptyText, workspaceRoot }: { content: string; emptyText?: string; workspaceRoot?: string | null }) {
   const source = content.trim()
   const html = renderMarkdown(source || (emptyText ?? ''))
+  const [openError, setOpenError] = React.useState<string | null>(null)
   const [fileMenu, setFileMenu] = React.useState<{
     x: number
     y: number
@@ -28,6 +31,38 @@ export function MarkdownBlock({ content, emptyText, workspaceRoot }: { content: 
     }
   }, [fileMenu])
 
+  const openFileReference = (rawPath: string, line?: number, target: OpenTarget = readAppearanceLocal().defaultOpenTarget as OpenTarget) => {
+    const path = resolveMarkdownPath(rawPath, workspaceRoot)
+    setOpenError(null)
+    window.electronAPI.app.openPath({ path, target, line, workspaceRoot: workspaceRoot || undefined }).then(result => {
+      if (!result.ok) {
+        const message = result.error || 'Unknown error'
+        setOpenError(message)
+        console.warn('[AgentHub] open path failed:', message)
+      }
+    }).catch(error => {
+      const message = error?.message || String(error)
+      setOpenError(message)
+      console.warn('[AgentHub] open path failed:', error)
+    })
+  }
+
+  const copyResolvedPath = async (rawPath: string) => {
+    const path = resolveMarkdownPath(rawPath, workspaceRoot)
+    const result = await window.electronAPI.app.resolvePath({ path, workspaceRoot: workspaceRoot || undefined }).catch((error: any) => ({ ok: false, path, error: error?.message || String(error) }))
+    await navigator.clipboard?.writeText(result.ok ? result.path : path)
+  }
+
+  const copyFileContent = async (rawPath: string) => {
+    const path = resolveMarkdownPath(rawPath, workspaceRoot)
+    const result = await window.electronAPI.app.readTextFile({ path, workspaceRoot: workspaceRoot || undefined }).catch((error: any) => ({ ok: false as const, path, content: '', error: error?.message || String(error) }))
+    if (result.ok) await navigator.clipboard?.writeText(result.content || '')
+    else {
+      setOpenError(result.error || 'Read failed')
+      console.warn('[AgentHub] read file failed:', result.error)
+    }
+  }
+
   const onClick = (event: React.MouseEvent<HTMLDivElement>) => {
     const link = (event.target as HTMLElement | null)?.closest?.('a[data-file-path]') as HTMLAnchorElement | null
     if (!link) return
@@ -36,6 +71,7 @@ export function MarkdownBlock({ content, emptyText, workspaceRoot }: { content: 
     const line = link.dataset.line ? Number(link.dataset.line) : undefined
     openFileReference(rawPath, line)
   }
+
   const onContextMenu = (event: React.MouseEvent<HTMLDivElement>) => {
     const link = (event.target as HTMLElement | null)?.closest?.('a[data-file-path]') as HTMLAnchorElement | null
     if (!link) return
@@ -49,24 +85,7 @@ export function MarkdownBlock({ content, emptyText, workspaceRoot }: { content: 
       label: link.textContent?.trim() || link.dataset.filePath || ''
     })
   }
-  const openFileReference = (rawPath: string, line?: number, target = readAppearanceLocal().defaultOpenTarget) => {
-    const path = resolveMarkdownPath(rawPath, workspaceRoot)
-    window.electronAPI.app.openPath({ path, target, line, workspaceRoot: workspaceRoot || undefined }).then(result => {
-      if (!result.ok && result.error) console.warn('[AgentHub] open path failed:', result.error)
-    }).catch(error => console.warn('[AgentHub] open path failed:', error))
-  }
-  const copyResolvedPath = async (rawPath: string) => {
-    const path = resolveMarkdownPath(rawPath, workspaceRoot)
-    const result = await window.electronAPI.app.resolvePath({ path, workspaceRoot: workspaceRoot || undefined }).catch((error: any) => ({ ok: false, path, error: error?.message || String(error) }))
-    if (result.ok) await navigator.clipboard?.writeText(result.path)
-    else await navigator.clipboard?.writeText(path)
-  }
-  const copyFileContent = async (rawPath: string) => {
-    const path = resolveMarkdownPath(rawPath, workspaceRoot)
-    const result = await window.electronAPI.app.readTextFile({ path, workspaceRoot: workspaceRoot || undefined }).catch((error: any) => ({ ok: false as const, path, content: '', error: error?.message || String(error) }))
-    if (result.ok) await navigator.clipboard?.writeText(result.content || '')
-    else console.warn('[AgentHub] read file failed:', result.error)
-  }
+
   return (
     <>
       <div className="wb-markdown" onClick={onClick} onContextMenu={onContextMenu} dangerouslySetInnerHTML={{ __html: sanitizeHtml(html) }} />
@@ -81,18 +100,20 @@ export function MarkdownBlock({ content, emptyText, workspaceRoot }: { content: 
             <span>{fileMenu.label}</span>
             <small>{targetLabel(readAppearanceLocal().defaultOpenTarget)}</small>
           </div>
-          <button type="button" onClick={() => { openFileReference(fileMenu.path, fileMenu.line); setFileMenu(null) }}>
-            在默认目标中打开
-          </button>
-          <div className="wb-file-context-subtitle">打开方式</div>
+          <button type="button" onClick={() => { openFileReference(fileMenu.path, fileMenu.line, 'editor'); setFileMenu(null) }}>Open in editor</button>
+          <button type="button" onClick={() => { openFileReference(fileMenu.path, fileMenu.line, 'explorer'); setFileMenu(null) }}>Reveal in file manager</button>
+          <div className="wb-file-context-subtitle">Open with</div>
+          <button type="button" onClick={() => { openFileReference(fileMenu.path, fileMenu.line); setFileMenu(null) }}>Default target</button>
+          <button type="button" onClick={() => { openFileReference(fileMenu.path, fileMenu.line, 'vscode'); setFileMenu(null) }}>VS Code</button>
+          <button type="button" onClick={() => { openFileReference(fileMenu.path, fileMenu.line, 'cursor'); setFileMenu(null) }}>Cursor</button>
           <button type="button" onClick={() => { openFileReference(fileMenu.path, fileMenu.line, 'antigravity'); setFileMenu(null) }}>Antigravity</button>
-          <button type="button" onClick={() => { openFileReference(fileMenu.path, fileMenu.line, 'explorer'); setFileMenu(null) }}>文件管理器定位</button>
-          <button type="button" onClick={() => { openFileReference(fileMenu.path, fileMenu.line, 'system'); setFileMenu(null) }}>系统默认</button>
+          <button type="button" onClick={() => { openFileReference(fileMenu.path, fileMenu.line, 'system'); setFileMenu(null) }}>System default</button>
           <div className="wb-file-context-sep" />
-          <button type="button" onClick={() => { copyResolvedPath(fileMenu.path).finally(() => setFileMenu(null)) }}>复制路径</button>
-          <button type="button" onClick={() => { copyFileContent(fileMenu.path).finally(() => setFileMenu(null)) }}>复制文件内容</button>
+          <button type="button" onClick={() => { copyResolvedPath(fileMenu.path).finally(() => setFileMenu(null)) }}>Copy resolved path</button>
+          <button type="button" onClick={() => { copyFileContent(fileMenu.path).finally(() => setFileMenu(null)) }}>Copy file content</button>
         </div>
       )}
+      {openError && <div className="wb-file-open-error" role="status">Open failed: {openError}</div>}
     </>
   )
 }
@@ -104,8 +125,9 @@ function resolveMarkdownPath(path: string, workspaceRoot?: string | null): strin
   return `${workspaceRoot.replace(/[\\/]+$/, '')}\\${path.replace(/^\.?[\\/]/, '')}`
 }
 
-function targetLabel(target: 'antigravity' | 'explorer' | 'system'): string {
-  if (target === 'antigravity') return '默认：Antigravity'
-  if (target === 'system') return '默认：系统'
-  return '默认：文件管理器'
+function targetLabel(target: string): string {
+  if (target === 'antigravity') return 'Default: Antigravity'
+  if (target === 'system') return 'Default: system'
+  if (target === 'explorer' || target === 'file-manager') return 'Default: file manager'
+  return `Default: ${target}`
 }

@@ -172,6 +172,18 @@ export class SkillManager {
     return s.skills.filter(x => ids.has(x.id))
   }
 
+  findMatchingSkills(query: string): SkillDef[] {
+    const needle = query.trim().toLowerCase()
+    if (!needle) return []
+    const terms = needle.split(/\s+/).filter(Boolean)
+    const scored = this.read().skills
+      .map(skill => ({ skill, score: scoreSkillMatch(skill, terms) }))
+      .filter(entry => entry.score > 0)
+      .sort((a, b) => b.score - a.score || a.skill.createdAt - b.skill.createdAt)
+      .slice(0, 3)
+    return scored.map(entry => entry.skill)
+  }
+
   scanLocal(options: { refresh?: boolean } = {}): CategorizedLocalSkillCandidate[] {
     const now = Date.now()
     const roots = localSkillRoots()
@@ -230,6 +242,21 @@ function localSkillRoots(): Array<{ path: string; agentSource: string }> {
       { path: join(workspace.rootPath, 'skills'), agentSource: 'workspace' }
     )
   }
+
+  const customDirectory = store.get('skills.customDirectory') as string
+  if (customDirectory) {
+    let resolvedPath = customDirectory
+    if (customDirectory.startsWith('~')) {
+      resolvedPath = join(home, customDirectory.slice(1))
+    } else if (customDirectory.startsWith('user:')) {
+      // just in case it is prefixed
+      resolvedPath = join(home, customDirectory.slice(5))
+    }
+    if (!roots.some(r => r.path === resolvedPath)) {
+      roots.push({ path: resolvedPath, agentSource: 'custom' })
+    }
+  }
+
   return roots
 }
 
@@ -347,6 +374,26 @@ function stableCandidateId(value: string): string {
     h = Math.imul(h, 16777619)
   }
   return `local-skill-${(h >>> 0).toString(16)}`
+}
+
+function scoreSkillMatch(skill: SkillDef, terms: string[]): number {
+  const haystack = [skill.name, skill.description, skill.instructions, skill.source, ...skill.tags].join(' ').toLowerCase()
+  const words = new Set(haystack.split(/[^a-z0-9_]+/))
+  let score = 0
+  for (const term of terms) {
+    if (!term) continue
+    const matchesWord = words.has(term) ||
+      skill.name.toLowerCase().split(/[^a-z0-9_]+/).includes(term) ||
+      skill.description.toLowerCase().split(/[^a-z0-9_]+/).includes(term) ||
+      skill.tags.some(tag => tag.toLowerCase() === term)
+    if (!matchesWord) continue
+    score += term === 'plan' || term === 'vitest' ? 3 : 1
+    if (skill.name.toLowerCase().includes(term)) score += 2
+    if (skill.description.toLowerCase().includes(term)) score += 1
+    if (skill.instructions.toLowerCase().includes(term)) score += 1
+    if (skill.tags.some(tag => tag.toLowerCase().includes(term))) score += 1
+  }
+  return score
 }
 
 let instance: SkillManager | null = null

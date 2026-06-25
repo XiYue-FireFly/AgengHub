@@ -7,8 +7,14 @@ describe("Workbench provider/local routing state", () => {
     const source = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
 
     expect(source).toContain("const selectTargetAgent = useCallback")
-    expect(source).toContain("if (agentId) setModelSelection(null)")
+    expect(source).toContain("if (agentId) {")
+    expect(source).toContain("setModelSelection(null)")
+    expect(source).toContain("setMode('auto')")
     expect(source).toContain("const requestedModelSelection = requestedTargetAgent ? null")
+    expect(source).toContain("const selectedLocalDirect = !!requestedTargetAgent")
+    expect(source).toContain("const nextMode = selectedProviderDirect || selectedLocalDirect ? 'auto'")
+    expect(source).toContain("const rawCustomSchedule = selectedProviderDirect || selectedLocalDirect")
+    expect(source).toContain("customSchedule: selectedProviderDirect || selectedLocalDirect ? undefined : safeCustomSchedule")
     expect(source).toContain("setTargetAgent={selectTargetAgent}")
     expect(source).toContain("selectTargetAgent(agentId)")
     expect(source).toContain("goChat={(agentId) => { selectTargetAgent(agentId); setView('chat') }}")
@@ -65,5 +71,21 @@ describe("Workbench provider/local routing state", () => {
     expect(composer).toContain("onChange={event => selectScheduleMode(event.target.value as DispatchPreset)}")
     expect(layout).toContain("if (command.action === 'use-schedule' && command.payload?.preset)")
     expect(layout).toContain("setModelSelection(null)")
+  })
+
+  it("switches visible composer mode back to auto when choosing a direct target", () => {
+    const composer = readFileSync(join(process.cwd(), "src/renderer/workbench/ComposerBar.tsx"), "utf8")
+
+    const selectAgentChoice = composer.slice(
+      composer.indexOf("const selectAgentChoice"),
+      composer.indexOf("const selectProviderChoice")
+    )
+    const selectProviderModel = composer.slice(
+      composer.indexOf("const selectProviderModel"),
+      composer.indexOf("const selectScheduleMode")
+    )
+
+    expect(selectAgentChoice).toContain("setMode('auto')")
+    expect(selectProviderModel).toContain("setMode('auto')")
   })
 })

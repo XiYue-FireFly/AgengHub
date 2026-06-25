@@ -728,13 +728,15 @@ export class Dispatcher extends EventEmitter {
 
   private systemPromptFor(agentId: string, overridePrompt?: string, taskText = "", workspaceId?: string | null): string {
     if (overridePrompt) return overridePrompt
-    const base = buildAgentRuntimeSystemPrompt(agentId, agentSystemPrompt(agentId), this.memoryContext(taskText), taskText, this.skillsBlockFor(agentId))
+    const matchedSkillsBlock = this.matchedSkillsBlockFor(taskText)
+    const base = buildAgentRuntimeSystemPrompt(agentId, agentSystemPrompt(agentId), this.memoryContext(taskText), taskText, this.skillsBlockFor(agentId) + matchedSkillsBlock)
     const ws = this.workspaceContextFor(workspaceId)
     return ws ? base + "\n\n" + ws : base
   }
 
   private promptForAgent(agentId: string, text: string, workspaceId?: string | null): string {
-    const base = buildAgentTaskPrompt(agentId, text, this.memoryContext(text), this.skillsBlockFor(agentId))
+    const matchedSkillsBlock = this.matchedSkillsBlockFor(text)
+    const base = buildAgentTaskPrompt(agentId, text, this.memoryContext(text), this.skillsBlockFor(agentId) + matchedSkillsBlock)
     const ws = this.workspaceContextFor(workspaceId)
     // 项目上下文置顶（CLAUDE.md/AGENTS.md 约定），其后才是 runtime 指令 + 用户任务
     return ws ? ws + "\n\n" + base : base
@@ -754,6 +756,20 @@ export class Dispatcher extends EventEmitter {
   private skillsBlockFor(agentId: string): string {
     try {
       return buildSkillBlock(getSkillManager().installedFor(agentId))
+    } catch {
+      return ""
+    }
+  }
+
+  /**
+   * 根据用户输入匹配相关的 skill，并将匹配到的 skill 指令注入到 prompt 中
+   * 用于在用户发送请求时优先使用匹配的 skill
+   */
+  private matchedSkillsBlockFor(taskText: string): string {
+    try {
+      const matchedSkills = getSkillManager().findMatchingSkills(taskText)
+      if (matchedSkills.length === 0) return ""
+      return "\n\n[自动匹配的相关技能]\n" + matchedSkills.map(s => `## ${s.name}\n${s.instructions}`).join("\n\n")
     } catch {
       return ""
     }

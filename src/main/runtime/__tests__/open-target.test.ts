@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { EDITOR_CANDIDATES, buildEditorArgs, detectEditor } from "../open-target"
+import { EDITOR_CANDIDATES, buildEditorArgs, detectEditor, normalizeEditorTarget, resolveEditorTarget } from "../open-target"
 
 describe("open-target editor detection", () => {
   it("has required editors in candidate list", () => {
@@ -42,6 +42,15 @@ describe("open-target editor detection", () => {
   it("detectEditor returns found for system and file-manager", () => {
     expect(detectEditor("system").found).toBe(true)
     expect(detectEditor("file-manager").found).toBe(true)
+  })
+
+  it("maps legacy explorer target to file-manager", () => {
+    expect(normalizeEditorTarget("explorer")).toBe("file-manager")
+    expect(detectEditor("explorer").found).toBe(true)
+  })
+
+  it("supports a generic editor target for UI open-editor actions", () => {
+    expect(["vscode", "cursor", "antigravity", "windsurf", "zed", "system"]).toContain(resolveEditorTarget("editor"))
   })
 
   it("detectEditor returns not found for unknown editor", () => {

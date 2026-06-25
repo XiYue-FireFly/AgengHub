@@ -36,10 +36,10 @@ function writeState(state: McpConfigState): void {
 export function listMcpServers(workspaceId?: string | null): McpServerConfig[] {
   const state = readState()
   const discovered = scanLocalMcpServers(workspaceId)
-  const merged = new Map<string, McpServerConfig>()
-  for (const server of discovered) merged.set(server.id, applyOverride(server, state))
-  for (const server of state.servers) merged.set(server.id, applyOverride(server, state))
-  return [...merged.values()].sort((a, b) => sourceRank(a.source) - sourceRank(b.source) || a.name.localeCompare(b.name))
+  const merged: McpServerConfig[] = []
+  for (const server of discovered) merged.push(applyOverride(server, state))
+  for (const server of state.servers) merged.push(applyOverride(server, state))
+  return dedupeServers(merged).sort((a, b) => sourceRank(a.source) - sourceRank(b.source) || a.name.localeCompare(b.name))
 }
 
 export function enabledMcpServers(workspaceId?: string | null): McpServerConfig[] {
@@ -273,6 +273,38 @@ export function acpMcpServersForWorkspace(workspaceId?: string | null): any[] {
   })
 }
 
+/**
+ * 获取匹配用户输入的 MCP 服务器列表
+ * 用于在用户发送请求时优先使用相关的 MCP 服务
+ */
+export function findMatchingMcpServers(query: string, workspaceId?: string | null): McpServerConfig[] {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return []
+  const terms = needle.split(/\s+/).filter(Boolean)
+  const servers = enabledMcpServers(workspaceId)
+  const scored = servers
+    .map(server => ({
+      server,
+      score: scoreMcpMatch(server, terms)
+    }))
+    .filter(entry => entry.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3)
+  return scored.map(entry => entry.server)
+}
+
+function scoreMcpMatch(server: McpServerConfig, terms: string[]): number {
+  const haystack = [server.name, server.source, server.url || '', server.command || ''].join(' ').toLowerCase()
+  let score = 0
+  for (const term of terms) {
+    if (!term) continue
+    if (!haystack.includes(term)) continue
+    score += 1
+    if (server.name.toLowerCase().includes(term)) score += 2
+  }
+  return score
+}
+
 function persistStatus(server: McpServerConfig, status: "ok" | "error", error?: string): McpServerConfig {
   const state = readState()
   const updated = { ...server, status, error }
@@ -487,9 +519,21 @@ function applyOverride(server: McpServerConfig, state: McpConfigState): McpServe
 }
 
 function dedupeServers(servers: McpServerConfig[]): McpServerConfig[] {
-  const out = new Map<string, McpServerConfig>()
-  for (const server of servers) out.set(server.id, server)
-  return [...out.values()]
+  const out: McpServerConfig[] = []
+  const seenIds = new Set<string>()
+  const seenNames = new Set<string>()
+  for (const server of servers) {
+    const nameKey = normalizeDedupeName(server.name)
+    if (seenIds.has(server.id) || seenNames.has(nameKey)) continue
+    seenIds.add(server.id)
+    seenNames.add(nameKey)
+    out.push(server)
+  }
+  return out
+}
+
+function normalizeDedupeName(name: string): string {
+  return name.trim().toLowerCase()
 }
 
 function sourceRank(source: McpServerConfig["source"]): number {

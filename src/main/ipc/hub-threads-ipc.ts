@@ -35,13 +35,14 @@ export function registerHubThreadsIpc(deps: HubThreadsDeps): void {
   ipcMain.handle("hub:dispatch", async (_event, payload: any) => {
     if (!dispatcher) return null
     const directTarget = payload.targetAgent?.trim()
-    if (!directTarget && isProviderDirectSelection(payload.modelSelection)) {
+    const providerDirect = !directTarget && isProviderDirectSelection(payload.modelSelection)
+    if (providerDirect) {
       return dispatcher.dispatchProviderDirect(payload.text, payload.modelSelection, {
         thinking: payload.thinking,
         workspaceId: payload.workspaceId ?? null
       })
     }
-    return dispatcher.dispatch(payload.text, payload.mode || "auto", directTarget, { thinking: payload.thinking, modelSelection: directTarget ? undefined : payload.modelSelection, workspaceId: payload.workspaceId ?? null })
+    return dispatcher.dispatch(payload.text, directTarget ? "auto" : payload.mode || "auto", directTarget, { thinking: payload.thinking, modelSelection: directTarget ? undefined : payload.modelSelection, workspaceId: payload.workspaceId ?? null })
   })
 
   ipcMain.handle("hub:routePreview", async (_event, text: string) => routePreview(text, registry, router))

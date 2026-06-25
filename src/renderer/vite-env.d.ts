@@ -75,7 +75,7 @@ interface ElectronAPI {
   }
   app: {
     openExternal: (url: string) => Promise<void>
-    openPath: (input: { path: string; target?: 'antigravity' | 'explorer' | 'system' | 'vscode' | 'cursor' | 'windsurf' | 'zed' | 'file-manager'; line?: number; column?: number; workspaceRoot?: string | null }) => Promise<{ ok: boolean; path: string; target: string; error?: string }>
+    openPath: (input: { path: string; target?: 'editor' | 'antigravity' | 'explorer' | 'system' | 'vscode' | 'cursor' | 'windsurf' | 'zed' | 'file-manager'; line?: number; column?: number; workspaceRoot?: string | null }) => Promise<{ ok: boolean; path: string; target: string; error?: string }>
     resolvePath: (input: { path: string; workspaceRoot?: string | null }) => Promise<{ ok: boolean; path: string; error?: string }>
     readTextFile: (input: { path: string; workspaceRoot?: string | null }) => Promise<{ ok: boolean; path: string; content?: string; error?: string }>
     pickFolder: (options?: { defaultPath?: string }) => Promise<string | null>

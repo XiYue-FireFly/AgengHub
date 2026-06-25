@@ -127,15 +127,17 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
     }
   })
   ipcMain.handle("app:openPath", async (_e, input: { path: string; target?: string; line?: number; column?: number; workspaceRoot?: string | null }) => {
-    try { return openWithEditor(input.target || 'system', input.path, input.line, input.column) } catch (e: any) { return { ok: false, error: e?.message } }
+    try {
+      const resolvedPath = resolveAppPath(input?.path || '', input?.workspaceRoot)
+      const target = input.target || 'system'
+      const result = await openWithEditor(target, resolvedPath, input.line, input.column)
+      return { ...result, path: resolvedPath, target }
+    } catch (e: any) { return { ok: false, path: input?.path || '', target: input?.target || 'system', error: e?.message } }
   })
   ipcMain.handle("app:resolvePath", async (_e, input: { path: string; workspaceRoot?: string | null }) => {
-    const p = input?.path || ''
-    if (isAbsolute(p)) return p
-    const activeId = getWorkspaceManager()?.getActive()
-    const ws = activeId ? getWorkspaceManager()?.getById(activeId) : null
-    const root = input?.workspaceRoot || ws?.rootPath || app.getPath('userData')
-    return resolve(root, p)
+    try {
+      return { ok: true, path: resolveAppPath(input?.path || '', input?.workspaceRoot) }
+    } catch (e: any) { return { ok: false, path: input?.path || '', error: e?.message } }
   })
   ipcMain.handle("app:readTextFile", async (_e, input: { path: string; workspaceRoot?: string | null }) => {
     try {
@@ -226,4 +228,13 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
       return { ok: true, content }
     } catch (e: any) { return { ok: false, error: e?.message } }
   })
+}
+
+function resolveAppPath(pathText: string, workspaceRoot?: string | null): string {
+  const p = pathText || ''
+  if (isAbsolute(p)) return p
+  const activeId = getWorkspaceManager()?.getActive()
+  const ws = activeId ? getWorkspaceManager()?.getById(activeId) : null
+  const root = workspaceRoot || ws?.rootPath || app.getPath('userData')
+  return resolve(root, p)
 }
