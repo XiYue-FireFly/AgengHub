@@ -96,7 +96,6 @@
       }
     ],
     "win": {
-      "_smartScreenNotice": "Windows SmartScreen warning is expected until code signing certificate is configured.",
       "target": [
         {
           "target": "nsis",
