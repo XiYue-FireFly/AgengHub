@@ -574,6 +574,10 @@ export class ProviderManager extends EventEmitter {
   }
   // ---- 查询 ----
   getConfig(): ProvidersConfig {
+    if (!Array.isArray(this.cfg.providers) || this.cfg.providers.length === 0) {
+      this.cfg = this.mergeWithBuiltins({ ...this.cfg, providers: [] })
+      this.scheduleSave()
+    }
     const config = JSON.parse(JSON.stringify(this.cfg)) as ProvidersConfig
     config.providers = sortProvidersForClaude(config.providers, claudeCurrentProviderId(config))
     return config

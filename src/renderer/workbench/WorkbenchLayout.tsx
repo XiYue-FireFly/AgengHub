@@ -299,6 +299,9 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     const resolvedWorkspaceId = nextWorkspaceId !== undefined
       ? nextWorkspaceId
       : (workspaceId ?? (activeWorkspaceVisible ? activeWs : null) ?? (persistedWorkspaceVisible ? persistedWorkspaceId : null) ?? wsList[0]?.id ?? null)
+    if (nextWorkspaceId === undefined && resolvedWorkspaceId && resolvedWorkspaceId !== activeWs) {
+      window.electronAPI.workspaces.setActive(resolvedWorkspaceId).catch(() => null)
+    }
     const [snap, allSnap] = await Promise.all([
       window.electronAPI.runtime.snapshot(resolvedWorkspaceId),
       window.electronAPI.runtime.snapshot(undefined)
@@ -341,6 +344,11 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       setEvents([])
       setThreadTodosState([])
       loadingThreadIdRef.current = null
+      if (nextWorkspaceId === undefined && wsList.length === 0) {
+        window.setTimeout(() => {
+          if (loadWorkbenchGenRef.current === gen) loadWorkbench().catch(() => {})
+        }, 500)
+      }
     }
   }, [workspaceId, clearRuntimeEventBuffer, rememberWorkspaceId])
 

@@ -68,7 +68,8 @@ function AppInner() {
 
   const applyProviderConfig = useCallback((cfg: any) => {
     if (!cfg) return
-    setProviders(cfg.providers ?? [])
+    const nextProviders = Array.isArray(cfg.providers) ? cfg.providers : []
+    setProviders(current => nextProviders.length > 0 ? nextProviders : current)
     setBindings(cfg.routing?.bindings ?? [])
     setFallbackChain(cfg.routing?.fallbackChain ?? [])
   }, [])
@@ -140,6 +141,11 @@ function AppInner() {
     try {
       const cfg = await window.electronAPI.providers.get()
       if (requestId === configRequestId.current) applyProviderConfig(cfg)
+      if (requestId === configRequestId.current && (!Array.isArray(cfg?.providers) || cfg.providers.length === 0)) {
+        window.setTimeout(() => {
+          if (requestId === configRequestId.current) loadConfig().catch(() => {})
+        }, 500)
+      }
     } catch { /* main 进程未就绪 */ }
   }, [])
 
