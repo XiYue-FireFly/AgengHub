@@ -141,6 +141,11 @@ function settingsNavDescription(item: typeof NAV_ITEMS[number]): string {
 export function SettingsScreen(props: SettingsScreenProps) {
   const [tab, setTab] = useState<TabKey>(props.initialTab || 'appearance')
   useEffect(() => setTab(props.initialTab || 'appearance'), [props.initialTab])
+  useEffect(() => {
+    if (props.providers.length > 0) return
+    const timer = window.setTimeout(() => props.onReload(), 350)
+    return () => window.clearTimeout(timer)
+  }, [props.providers.length, props.onReload])
 
   const visibleTab = tab
   const active = VISIBLE_NAV_ITEMS.find(item => item.value === visibleTab) ?? VISIBLE_NAV_ITEMS[0]

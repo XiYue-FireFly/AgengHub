@@ -65,11 +65,17 @@ function AppInner() {
   const memoryReady = useRef(false)
   const orchestrateTasks = useRef<Set<string>>(new Set())  // 编排模式任务 id（其内部 agent 事件不渲染气泡）
   const configRequestId = useRef(0)
+  const emptyProviderRetryRef = useRef(0)
 
   const applyProviderConfig = useCallback((cfg: any) => {
     if (!cfg) return
     const nextProviders = Array.isArray(cfg.providers) ? cfg.providers : []
-    setProviders(current => nextProviders.length > 0 ? nextProviders : current)
+    if (nextProviders.length > 0) {
+      emptyProviderRetryRef.current = 0
+      setProviders(nextProviders)
+    } else {
+      setProviders(current => current)
+    }
     setBindings(cfg.routing?.bindings ?? [])
     setFallbackChain(cfg.routing?.fallbackChain ?? [])
   }, [])
@@ -142,9 +148,11 @@ function AppInner() {
       const cfg = await window.electronAPI.providers.get()
       if (requestId === configRequestId.current) applyProviderConfig(cfg)
       if (requestId === configRequestId.current && (!Array.isArray(cfg?.providers) || cfg.providers.length === 0)) {
+        emptyProviderRetryRef.current += 1
+        if (emptyProviderRetryRef.current > 8) return
         window.setTimeout(() => {
           if (requestId === configRequestId.current) loadConfig().catch(() => {})
-        }, 500)
+        }, 350)
       }
     } catch { /* main 进程未就绪 */ }
   }, [])

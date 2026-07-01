@@ -56,6 +56,7 @@ export function ComposerBar({
   setTargetAgent,
   agents,
   onRunCommand,
+  onRefreshProviders,
   externalAttachments,
   onExternalAttachmentsConsumed,
   gitBranchNode
@@ -132,6 +133,7 @@ export function ComposerBar({
     ? providerModelRows(providers, modelSelection.providerId)
     : []
   const pickerAvailable = readyAgentIds.length > 0 || apiProviderRows.length > 0
+  const hasProviderConfig = providers.length > 0
   const selectedAgentId = targetAgent && readyAgentIds.includes(targetAgent) ? targetAgent : null
   const selectedAgentLabel = selectedAgentId ? agentDisplayName(selectedAgentId) : tr('未检测到可用 Agent', 'No available agent')
 
@@ -167,6 +169,12 @@ export function ComposerBar({
     window.electronAPI.commands.list().then(setCommands).catch(() => {})
     refreshApprovalMode().catch(() => {})
   }, [refreshApprovalMode])
+
+  useEffect(() => {
+    if (providers.length > 0 || !onRefreshProviders) return
+    const timer = window.setTimeout(() => onRefreshProviders(), 350)
+    return () => window.clearTimeout(timer)
+  }, [providers.length, onRefreshProviders])
 
   useEffect(() => {
     let alive = true
@@ -684,15 +692,21 @@ export function ComposerBar({
               <button
                 type="button"
                 className="wb-agent-picker-trigger"
-                disabled={!pickerAvailable}
+                disabled={!pickerAvailable && hasProviderConfig}
                 title={pickerTitle}
                 aria-label={pickerTitle}
                 aria-expanded={modelPickerOpen}
-                onClick={() => setModelPickerOpen(open => {
+                onClick={() => {
+                  if (!pickerAvailable && !hasProviderConfig) {
+                    onRefreshProviders?.()
+                    return
+                  }
+                  setModelPickerOpen(open => {
                   const next = !open
                   if (next) setActiveProviderId(null)
                   return next
-                })}
+                  })
+                }}
               >
                 {selectedAgentId
                   ? <AgentMark id={selectedAgentId} size={24} radius={7} />

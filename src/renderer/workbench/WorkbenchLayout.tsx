@@ -115,6 +115,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const [workspaces, setWorkspaces] = useState<WorkspaceItem[]>([])
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [pendingActiveThreadId, setPendingActiveThreadId] = useState<string | null>(null)
+  const emptyWorkspaceRetryRef = useRef(0)
   const [mode, setMode] = useState<DispatchPreset>('lead-workers')
   const [targetAgent, setTargetAgent] = useState<string | null>(null)
   const [modelSelection, setModelSelection] = useState<ModelSelection | null>(null)
@@ -307,6 +308,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       window.electronAPI.runtime.snapshot(undefined)
     ])
     if (loadWorkbenchGenRef.current !== gen) return
+    if (wsList.length > 0) emptyWorkspaceRetryRef.current = 0
 
     let persistedThreadId: string | null = null
     try { persistedThreadId = localStorage.getItem(LAST_THREAD_STORE_KEY) } catch { /* noop */ }
@@ -344,11 +346,12 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       setEvents([])
       setThreadTodosState([])
       loadingThreadIdRef.current = null
-      if (nextWorkspaceId === undefined && wsList.length === 0) {
-        window.setTimeout(() => {
-          if (loadWorkbenchGenRef.current === gen) loadWorkbench().catch(() => {})
-        }, 500)
-      }
+    }
+    if (nextWorkspaceId === undefined && wsList.length === 0 && emptyWorkspaceRetryRef.current < 8) {
+      emptyWorkspaceRetryRef.current += 1
+      window.setTimeout(() => {
+        if (loadWorkbenchGenRef.current === gen) loadWorkbench().catch(() => {})
+      }, 350)
     }
   }, [workspaceId, clearRuntimeEventBuffer, rememberWorkspaceId])
 
@@ -508,6 +511,12 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     if (modelSelection && isSelectableModel(modelSelection, props.providers)) return
     if (modelSelection) setModelSelection(null)
   }, [targetAgent, modelSelection, props.providers, selectableModelSignature])
+
+  useEffect(() => {
+    if (props.providers.length > 0) return
+    const timer = window.setTimeout(() => props.providerActions.onReload(), 350)
+    return () => window.clearTimeout(timer)
+  }, [props.providers.length, props.providerActions])
 
   const selectTargetAgent = useCallback((agentId: string | null) => {
     userExplicitAgentRef.current = agentId  // 记录用户明确选择
