@@ -49,6 +49,7 @@ const AGENT_SLOT_STORE_KEY = 'agenthub.workbench.agentSlots.v1'
 const INSPECTOR_WIDTH_STORE_KEY = 'agenthub.workbench.inspectorWidth.v1'
 const LAST_VIEW_STORE_KEY = 'agenthub.workbench.lastView.v1'
 const LAST_THREAD_STORE_KEY = 'agenthub.workbench.lastThread.v1'
+const LAST_WORKSPACE_STORE_KEY = 'agenthub.workbench.lastWorkspace.v1'
 const CUSTOM_SCHEDULE_STORE_KEY = 'agenthub.workbench.customSchedule.v1'
 const SMART_SCHEDULE_STORE_KEY = 'agenthub.workbench.smartFiveRoleSchedule.v1'
 const SCHEDULE_OVERRIDES_STORE_KEY = 'agenthub.workbench.scheduleOverrides.v1'
@@ -174,6 +175,12 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     } catch { /* noop */ }
   }, [])
 
+  const rememberWorkspaceId = useCallback((id: string | null) => {
+    try {
+      if (id) localStorage.setItem(LAST_WORKSPACE_STORE_KEY, id)
+    } catch { /* noop */ }
+  }, [])
+
   const setView = useCallback((next: ViewMode) => {
     setViewState(next)
     if (startupViewApplied.current) {
@@ -285,7 +292,13 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       window.electronAPI.localAgents.status().catch(() => [])
     ])
 
-    const resolvedWorkspaceId = nextWorkspaceId !== undefined ? nextWorkspaceId : (workspaceId ?? activeWs ?? null)
+    let persistedWorkspaceId: string | null = null
+    try { persistedWorkspaceId = localStorage.getItem(LAST_WORKSPACE_STORE_KEY) } catch { /* noop */ }
+    const persistedWorkspaceVisible = persistedWorkspaceId && wsList.some(workspace => workspace.id === persistedWorkspaceId)
+    const activeWorkspaceVisible = activeWs && wsList.some(workspace => workspace.id === activeWs)
+    const resolvedWorkspaceId = nextWorkspaceId !== undefined
+      ? nextWorkspaceId
+      : (workspaceId ?? (activeWorkspaceVisible ? activeWs : null) ?? (persistedWorkspaceVisible ? persistedWorkspaceId : null) ?? wsList[0]?.id ?? null)
     const [snap, allSnap] = await Promise.all([
       window.electronAPI.runtime.snapshot(resolvedWorkspaceId),
       window.electronAPI.runtime.snapshot(undefined)
@@ -305,6 +318,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     setAllThreads(allSnap.threads)
     setWorkspaces(wsList)
     setWorkspaceId(resolvedWorkspaceId)
+    rememberWorkspaceId(resolvedWorkspaceId)
     setSchedules(scheduleList)
     setLocalAgents(local)
     if (!selectedStillVisible) setSelectedThreadId(nextVisibleThreadId)
@@ -328,7 +342,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       setThreadTodosState([])
       loadingThreadIdRef.current = null
     }
-  }, [workspaceId, clearRuntimeEventBuffer])
+  }, [workspaceId, clearRuntimeEventBuffer, rememberWorkspaceId])
 
   useEffect(() => {
     loadWorkbench().catch(() => {})
@@ -536,6 +550,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
 
   const selectWorkspace = async (id: string | null) => {
     setWorkspaceId(id)
+    rememberWorkspaceId(id)
     await window.electronAPI.workspaces.setActive(id).catch(() => null)
     await loadWorkbench(id)
     setView('chat')
@@ -578,6 +593,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         ]
       ) : [])
       setWorkspaceId(threadWorkspaceId)
+      rememberWorkspaceId(threadWorkspaceId)
       setSelectedThreadId(selected)
       setThreadTodosState(todos)
       setActiveGoal(goal)
@@ -809,6 +825,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       const ws = await window.electronAPI.workspaces.create({ name, rootPath })
       await window.electronAPI.workspaces.setActive(ws.id)
       setWorkspaceId(ws.id)
+      rememberWorkspaceId(ws.id)
       setProjectDialogOpen(false)
       await loadWorkbench(ws.id)
       const thread = await window.electronAPI.threads.create({ workspaceId: ws.id, title: tr('新对话', 'New chat') })

@@ -8,6 +8,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { Icon, IC } from '../../glass/ui'
 import { tr } from '../../glass/i18n'
+import { MarkdownBlock } from '../../workbench/MarkdownBlock'
 import {
   SDD_FRAMEWORK_GROUPS,
   frameworksForStage,
@@ -284,7 +285,9 @@ export function SddAssistantPanel({
                   <span className="sdd-message-time">{formatTime(msg.timestamp)}</span>
                 </div>
                 <div className="sdd-message-content">
-                  {msg.content}
+                  {msg.role === 'assistant'
+                    ? <MarkdownBlock content={msg.content} workspaceRoot={workspaceRoot} />
+                    : msg.content}
                 </div>
               </div>
             ))}

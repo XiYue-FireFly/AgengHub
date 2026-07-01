@@ -12768,6 +12768,14 @@ html[data-motion="off"] .wb-processing-dots i {
   white-space: pre-wrap;
 }
 
+.sdd-message-content .wb-markdown {
+  white-space: normal;
+}
+
+.sdd-message-content .wb-markdown pre {
+  white-space: pre;
+}
+
 .sdd-message-loading {
   color: var(--tx-3);
   animation: sdd-pulse 1.5s ease-in-out infinite;

@@ -8,7 +8,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { Icon, IC } from '../../glass/ui'
 import { tr } from '../../glass/i18n'
 import { useSddDraftStore } from '../sdd-draft-store'
-import { listDrafts, createNewDraft, deleteDraft, loadDraft } from '../sdd-draft-actions'
+import { listDrafts, createNewDraft, deleteDraft, loadDraft, saveDraftToDisk, parseRequirementBlocks } from '../sdd-draft-actions'
 import { buildAssistantPrompt } from '../sdd-assistant-prompt'
 import { buildPlanPrompt } from '../sdd-plan-prompt'
 import { SddDraftEditor } from './SddDraftEditor'
@@ -19,6 +19,22 @@ interface SddRequirementsListProps {
 }
 
 const PLAN_GENERATION_TRIGGER_MESSAGE = 'Generate an implementation plan from the current requirement document.'
+const AI_REQUIREMENT_SECTION_TITLE = '## AI 需求整理'
+
+function cleanAssistantMarkdown(content: string): string {
+  const trimmed = content.trim()
+  const fenced = trimmed.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/i)
+  return (fenced ? fenced[1] : trimmed).trim()
+}
+
+function appendAssistantRequirementContent(current: string, response: string): string {
+  const cleaned = cleanAssistantMarkdown(response)
+  if (!cleaned) return current
+  const base = current.trimEnd()
+  const timestamp = new Date().toLocaleString()
+  const section = `${AI_REQUIREMENT_SECTION_TITLE}\n\n> 更新时间：${timestamp}\n\n${cleaned}`
+  return base ? `${base}\n\n${section}\n` : `${section}\n`
+}
 
 export function SddRequirementsList({ workspaceRoot }: SddRequirementsListProps) {
   const [drafts, setDrafts] = useState<any[]>([])
@@ -139,6 +155,7 @@ export function SddRequirementsList({ workspaceRoot }: SddRequirementsListProps)
             workspaceRoot={activeDraft.workspaceRoot}
             initialMessage={assistantMode === 'plan' ? PLAN_GENERATION_TRIGGER_MESSAGE : undefined}
             onSendMessage={async (message: string, history: Array<{ role: 'user' | 'assistant'; content: string }>) => {
+              const modeForRequest = assistantMode
               const store = useSddDraftStore.getState()
               const draft = store.activeDraft
               if (!draft) throw new Error('No active draft')
@@ -146,7 +163,7 @@ export function SddRequirementsList({ workspaceRoot }: SddRequirementsListProps)
               let systemPrompt: string
               let userPrompt: string = message
 
-              if (assistantMode === 'plan') {
+              if (modeForRequest === 'plan') {
                 // 计划生成模式：使用计划 prompt 构建器
                 const planResult = buildPlanPrompt({
                   draft,
@@ -177,7 +194,15 @@ export function SddRequirementsList({ workspaceRoot }: SddRequirementsListProps)
                 systemPrompt
               })
               if (!result?.ok) throw new Error(result?.error || 'AI request failed')
-              return result.content || ''
+              const content = result.content || ''
+              if (modeForRequest === 'chat' && content.trim()) {
+                const latest = useSddDraftStore.getState()
+                latest.setContent(appendAssistantRequirementContent(latest.content, content))
+                await saveDraftToDisk()
+                await parseRequirementBlocks()
+                if (workspaceRoot) await refreshDrafts()
+              }
+              return content
             }}
             onClose={() => setAssistantOpen(false)}
           />
